@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+    <meta charset="UTF-8">
+    <title>Património Familiar</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<div class="app-container">
+
+    <!-- HEADER -->
+    <header>
+        <h1>Património Familiar</h1>
+        <p>Dashboard Financeiro Pessoal</p>
+    </header>
+
+    <!-- NAVIGATION -->
+    <nav class="tabs">
+        <button onclick="showTab('dashboard')">Dashboard</button>
+        <button onclick="showTab('assets')">Património</button>
+        <button onclick="showTab('investments')">Investimentos</button>
+        <button onclick="showTab('expenses')">Despesas</button>
+    </nav>
+
+    <!-- CONTENT -->
+
+    <main>
+
+        <section id="dashboard" class="tab-content">
+            <h2>Resumo Geral</h2>
+            <div id="summary-box">
+                <p>Net Worth: <span id="networth">0 €</span></p>
+                <p>Rendimentos Mensais: <span id="income">0 €</span></p>
+                <p>Despesas Mensais: <span id="expenses-total">0 €</span></p>
+            </div>
+        </section>
+
+        <section id="assets" class="tab-content hidden">
+            <h2>Património</h2>
+            <p>Casas, carros, terrenos, metais físicos</p>
+            <div id="assets-list"></div>
+        </section>
+
+        <section id="investments" class="tab-content hidden">
+            <h2>Investimentos</h2>
+            <p>Ações, ETFs, Criptomoedas</p>
+            <div id="investments-list"></div>
+        </section>
+
+        <section id="expenses" class="tab-content hidden">
+            <h2>Despesas</h2>
+            <p>Empréstimos, combustível, custos mensais</p>
+            <div id="expenses-list"></div>
+        </section>
+
+    </main>
+
+</div>
+
+<script src="app.js"></script>
+
+</body>
+</html>
