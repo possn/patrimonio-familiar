@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+  <meta name="theme-color" content="#0b1220"/>
+  <title>Património Familiar</title>
+  <meta name="description" content="Dashboard simples para acompanhar património familiar (ativos, passivos, distribuição e rendimento passivo). Offline-first, sem login.">
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Património">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+  <!-- Libs (CDN) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img class="brand__icon" src="assets/icon-192.png" alt="Ícone">
+      <div class="brand__text">
+        <div class="brand__title">Património Familiar</div>
+        <div class="brand__sub">Net worth • Distribuição • Rendimento passivo</div>
+      </div>
+    </div>
+    <div class="topbar__actions">
+      <button id="btnAddQuick" class="btn btn--primary" title="Adicionar ativo">＋</button>
+    </div>
+  </header>
+
+  <main class="app" id="appRoot">
+    <!-- DASHBOARD -->
+    <section class="view view--active" id="viewDashboard" aria-label="Dashboard">
+      <div class="grid">
+        <div class="card card--hero">
+          <div class="hero">
+            <div>
+              <div class="label">Património líquido</div>
+              <div class="value" id="netWorth">—</div>
+              <div class="muted" id="netWorthSub">Ativos — | Passivos —</div>
+            </div>
+            <div class="hero__right">
+              <div class="pill">
+                <div class="pill__label">Rendimento passivo (anual)</div>
+                <div class="pill__value" id="passiveAnnual">—</div>
+              </div>
+              <div class="pill pill--ghost">
+                <div class="pill__label">Mensal (estim.)</div>
+                <div class="pill__value" id="passiveMonthly">—</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="title">Distribuição</div>
+              <div class="muted">Por classe (Ativos)</div>
+            </div>
+            <button class="btn btn--text" id="btnAddSnapshot">Registar mês</button>
+          </div>
+
+          <div class="dist">
+            <div class="dist__bar" id="distBar" aria-label="Barra de distribuição"></div>
+            <div class="dist__content">
+              <canvas id="chartAlloc" height="180"></canvas>
+              <div class="legend" id="allocLegend"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="title">Tendência do património</div>
+              <div class="muted">Histórico (snapshots)</div>
+            </div>
+            <button class="btn btn--text" id="btnClearHistory">Limpar</button>
+          </div>
+          <canvas id="chartNetWorth" height="200"></canvas>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="title">Resumo rápido</div>
+              <div class="muted">Top 6 ativos por valor</div>
+            </div>
+            <a class="btn btn--text" href="#" id="linkGoAssets">Ver tudo</a>
+          </div>
+          <div class="list" id="topAssets"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ASSETS -->
+    <section class="view" id="viewAssets" aria-label="Ativos e Passivos">
+      <div class="grid">
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="title">Ativos</div>
+              <div class="muted">Imobiliário, liquidez, ações/ETFs, metais, arte, fundos, PPR, depósitos…</div>
+            </div>
+            <button class="btn btn--primary" id="btnAddAsset">Adicionar</button>
+          </div>
+
+          <div class="filters">
+            <input id="qAssets" class="input" placeholder="Pesquisar (nome ou classe)"/>
+            <select id="fClass" class="select">
+              <option value="">Todas as classes</option>
+            </select>
+          </div>
+
+          <div class="list" id="assetsList"></div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="title">Passivos</div>
+              <div class="muted">Créditos, dívidas, cartões… (valores positivos = dívida)</div>
+            </div>
+            <button class="btn btn--primary" id="btnAddLiab">Adicionar</button>
+          </div>
+          <div class="list" id="liabsList"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- IMPORT -->
+    <section class="view" id="viewImport" aria-label="Importar e Exportar">
+      <div class="grid">
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="title">Importar ficheiro (Excel/CSV)</div>
+              <div class="muted">Lê XLSX, XLS, CSV. Offline. Não envia dados para lado nenhum.</div>
+            </div>
+          </div>
+
+          <div class="stack">
+            <input id="fileInput" type="file" accept=".csv,.xlsx,.xls"/>
+            <div class="row">
+              <button class="btn btn--primary" id="btnImport">Importar</button>
+              <button class="btn" id="btnDownloadTemplate">Template CSV</button>
+            </div>
+            <div class="note" id="importNote"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="title">Exportar / Backup</div>
+              <div class="muted">Guarda um JSON com tudo (ativos, passivos, histórico).</div>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn btn--primary" id="btnExport">Exportar JSON</button>
+            <button class="btn" id="btnImportJson">Importar JSON</button>
+            <input id="jsonInput" type="file" accept=".json" hidden/>
+          </div>
+          <div class="note">Dica: no GitHub Pages isto corre só no teu browser. Para sincronizar entre dispositivos, usa export/import (ou iCloud Drive).</div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="title">Metodologia</div>
+              <div class="muted">Como é calculado o rendimento passivo</div>
+            </div>
+          </div>
+          <div class="text">
+            <ul>
+              <li><b>Dividendos (ações/ETFs/fundos)</b>: podes inserir <i>yield %</i> ou <i>€ / ano</i>.</li>
+              <li><b>Depósitos/PPR</b>: podes inserir <i>taxa %</i> sobre o capital (valor do ativo).</li>
+              <li><b>Imobiliário</b>: podes inserir <i>renda mensal</i> (a app anualiza).</li>
+              <li>Não inclui impostos por defeito (podes ajustar via taxa efectiva na aba Definições).</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="viewSettings" aria-label="Definições">
+      <div class="grid">
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="title">Definições</div>
+              <div class="muted">Preferências locais (no dispositivo)</div>
+            </div>
+          </div>
+
+          <div class="stack">
+            <div class="row row--wrap">
+              <div class="field">
+                <div class="label">Moeda base</div>
+                <select id="baseCurrency" class="select">
+                  <option value="EUR">EUR (€)</option>
+                  <option value="USD">USD ($)</option>
+                  <option value="GBP">GBP (£)</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <div class="label">Impostos efectivos no rendimento passivo</div>
+                <div class="row">
+                  <input id="taxRate" class="input" type="number" min="0" max="100" step="0.1" placeholder="ex: 28">
+                  <span class="suffix">%</span>
+                </div>
+                <div class="hint">Aplicado ao rendimento passivo estimado (para aproximação).</div>
+              </div>
+            </div>
+
+            <div class="row">
+              <button class="btn" id="btnReset">Reset total (apaga dados)</button>
+            </div>
+            <div class="note">Esta app é “offline-first”: os dados ficam em <code>localStorage</code>.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="title">Sobre</div>
+              <div class="muted">Versão v1 • GitHub Pages-ready</div>
+            </div>
+          </div>
+          <div class="text">
+            <p><b>Objectivo:</b> acompanhar património familiar completo com foco em net worth, alocação e rendimento passivo — inspirado no fluxo da Percento.</p>
+            <p><b>Privacidade:</b> não há login e não há backend. Tudo corre no teu browser. (Podes auditar o código.)</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Bottom Nav -->
+  <nav class="bottomnav" aria-label="Navegação">
+    <button class="tab tab--active" data-view="Dashboard" aria-label="Dashboard">
+      <span class="tab__icon">▣</span><span class="tab__text">Dashboard</span>
+    </button>
+    <button class="tab" data-view="Assets" aria-label="Ativos">
+      <span class="tab__icon">≡</span><span class="tab__text">Ativos</span>
+    </button>
+    <button class="tab" data-view="Import" aria-label="Importar">
+      <span class="tab__icon">⇅</span><span class="tab__text">Importar</span>
+    </button>
+    <button class="tab" data-view="Settings" aria-label="Definições">
+      <span class="tab__icon">⚙</span><span class="tab__text">Definições</span>
+    </button>
+  </nav>
+
+  <!-- Modal -->
+  <div class="modal" id="modal" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="modal__overlay" data-close="1"></div>
+    <div class="modal__panel">
+      <div class="modal__head">
+        <div class="modal__title" id="modalTitle">Adicionar</div>
+        <button class="btn btn--text" data-close="1">Fechar</button>
+      </div>
+      <div class="modal__body">
+        <form id="formItem" class="form">
+          <input type="hidden" id="itemId">
+          <input type="hidden" id="itemKind">
+
+          <div class="row row--wrap">
+            <div class="field">
+              <div class="label">Classe</div>
+              <select id="itemClass" class="select" required></select>
+            </div>
+            <div class="field">
+              <div class="label">Nome</div>
+              <input id="itemName" class="input" required placeholder="ex: VWCE, Casa, Ouro, Depósito X">
+            </div>
+          </div>
+
+          <div class="row row--wrap">
+            <div class="field">
+              <div class="label">Valor (moeda base)</div>
+              <input id="itemValue" class="input" type="number" step="0.01" required placeholder="ex: 12500">
+              <div class="hint">Para passivos: valor positivo = dívida. (A app subtrai ao património.)</div>
+            </div>
+
+            <div class="field">
+              <div class="label">Rendimento passivo</div>
+              <select id="incomeType" class="select">
+                <option value="none">Sem rendimento</option>
+                <option value="div_yield">Dividendos (%/ano)</option>
+                <option value="div_amount">Dividendos (€ / ano)</option>
+                <option value="rate">Taxa (%/ano)</option>
+                <option value="rent">Renda (€/mês)</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <div class="label">Valor do rendimento</div>
+              <input id="incomeValue" class="input" type="number" step="0.01" placeholder="ex: 3.2">
+              <div class="hint" id="incomeHint">Consoante o tipo escolhido.</div>
+            </div>
+          </div>
+
+          <div class="row row--wrap">
+            <div class="field">
+              <div class="label">Notas</div>
+              <input id="itemNotes" class="input" placeholder="opcional">
+            </div>
+          </div>
+
+          <div class="row">
+            <button class="btn btn--primary" type="submit" id="btnSaveItem">Guardar</button>
+            <button class="btn btn--danger" type="button" id="btnDeleteItem" style="display:none">Eliminar</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
