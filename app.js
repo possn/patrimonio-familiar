@@ -1716,3 +1716,46 @@ function expandTransactions(){
   return out;
 }
 
+let distShowAll = false;
+
+function renderDistList(labels, values, colors, total){
+  const box = document.getElementById("distList");
+  const btn = document.getElementById("btnDistToggle");
+  if (!box) return;
+
+  const items = labels.map((name,i)=>{
+    const v = Number(values[i])||0;
+    const p = total>0 ? (v/total) : 0;
+    return { name, v, p, color: (colors && colors[i]) ? colors[i] : null };
+  }).filter(x=>x.v>0).sort((a,b)=> b.v-a.v);
+
+  const topN = 10;
+  const show = distShowAll ? items : items.slice(0, topN);
+  box.innerHTML = "";
+
+  for (const it of show){
+    const row = document.createElement("div");
+    row.className = "distRow";
+    const pct = (it.p*100);
+    row.innerHTML = `
+      <div class="distLeft">
+        <span class="dot" style="${it.color ? "background:"+it.color : ""}"></span>
+        <div class="distName">${escapeHtml(it.name)}</div>
+        <div class="distMeta">${pct.toFixed(0)}%</div>
+      </div>
+      <div class="distVal">${fmtMoney(it.v)}</div>
+    `;
+    box.appendChild(row);
+  }
+
+  if (btn){
+    if (items.length > topN){
+      btn.style.display = "inline-flex";
+      btn.textContent = distShowAll ? "Mostrar menos" : "Ver o resto";
+      btn.onclick = ()=>{ distShowAll = !distShowAll; renderDistList(labels, values, colors, total); };
+    }else{
+      btn.style.display = "none";
+    }
+  }
+}
+
