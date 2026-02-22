@@ -623,3 +623,43 @@ code{ background: rgba(255,255,255,.06); padding:.12rem .35rem; border-radius:10
   cursor:pointer;
 }
 .star--on{ background: rgba(167,139,250,.18); border-color: rgba(167,139,250,.35); }
+
+
+/* === v9: remove haze/fog overlays === */
+body::before, body::after,
+.app::before, .app::after,
+.bg, .bg::before, .bg::after,
+.glow, .glow::before, .glow::after,
+#bgGlow, #bgGlow::before, #bgGlow::after{
+  content: none !important;
+  background: none !important;
+  filter: none !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+}
+/* hard override: solid background */
+body{
+  background: #0b1220 !important;
+  background-image: none !important;
+}
+.view, .card, header, .header{
+  backdrop-filter: none !important;
+}
+
+
+/* v9: dashboard all assets modal */
+
+
+/* v10: Dashboard daily mode */
+body.dash-daily [data-dash-full="1"]{ display:none !important; }
+body.dash-daily .dash-daily-only{ display:block !important; }
+.dash-daily-only{ display:none; }
+
+/* Templates manager list item actions */
+.item__actions{ display:flex; gap:8px; align-items:center; }
+.btn--mini{
+  padding: 8px 10px;
+  border-radius: 12px;
+  font-weight: 850;
+  font-size: 12px;
+}
