@@ -109,7 +109,16 @@ const DEFAULT_STATE = {
   settings: { currency: "EUR" },
   assets: [],       // {id, class, name, value, yieldType, yieldValue, notes, fav}
   liabilities: [],  // {id, class, name, value, notes}
-  transactions: [], // {id, type:'in'|'out', category, amount, date, recurring:'none'|'monthly'|'yearly'}
+  transactions: [],
+  projection: {
+    months: 6,
+    years: 30,
+    scenarios: {
+      cons: { r: 4.0, inf: 3.0, swr: 3.25 },
+      base: { r: 6.0, inf: 2.5, swr: 3.75 },
+      opt: { r: 8.0, inf: 2.0, swr: 4.0 }
+    }
+  }, // {id, type:'in'|'out', category, amount, date, recurring:'none'|'monthly'|'yearly'}
   history: []       // {dateISO, net, assets, liabilities, passiveAnnual}
 };
 
@@ -268,6 +277,7 @@ function setView(view){
   if (view === "dashboard") renderDashboard();
   if (view === "assets") renderItems();
   if (view === "cashflow") renderCashflow();
+  if (view === "projection") renderProjection();
   // ensure top of main content on switch (avoid manual scroll)
   window.scrollTo({ top: 0, behavior: "instant" });
 }
@@ -1169,7 +1179,7 @@ function wire(){
   $("navAssets").addEventListener("click", ()=>setView("assets"));
   $("navImport").addEventListener("click", ()=>setView("import"));
   $("navCashflow").addEventListener("click", ()=>setView("cashflow"));
-  $("navSettings").addEventListener("click", ()=>setView("settings"));
+  $("navSettings").addEventListener("click", ()=>setView("projection"));
 
   // fab
   $("btnFab").addEventListener("click", ()=>{
@@ -1277,3 +1287,266 @@ document.addEventListener("DOMContentLoaded", async () => {
   wire();
   renderAll();
 });
+
+function classifyInvestible(item){
+  const cls = (item.class || "").toLowerCase();
+  const name = (item.name || "").toLowerCase();
+  // exclude primary residence by common naming
+  if (cls.includes("imobili") || cls.includes("casa")) return false;
+  if (name.includes("casa") || name.includes("resid") || name.includes("habita")) return false;
+  return true;
+}
+
+function getInvestibleCapital(){
+  return (state.items || [])
+    .filter(i => i.kind === "asset")
+    .filter(classifyInvestible)
+    .reduce((s,i)=> s + (Number(i.value)||0), 0);
+}
+
+function monthKeyFromISO(iso){
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+
+function computeCashflowStats(months){
+  const tx = (state.transactions || []).slice();
+  // group by month
+  const map = new Map();
+  for (const t of tx){
+    const mk = monthKeyFromISO(t.date);
+    if (!mk) continue;
+    if (!map.has(mk)) map.set(mk, {in:0,out:0, passiveIn:0});
+    const rec = map.get(mk);
+    const v = Number(t.value)||0;
+    if (t.type === "in"){
+      rec.in += v;
+      const cat = String(t.category||"").toLowerCase();
+      if (/(dividend|dividendo|juros|renda|reit|income|passivo)/.test(cat)) rec.passiveIn += v;
+    } else if (t.type === "out"){
+      rec.out += v;
+    }
+  }
+  const monthsSorted = Array.from(map.keys()).sort().reverse();
+  const windowKeys = monthsSorted.slice(0, Math.max(0, months));
+  if (windowKeys.length === 0){
+    return { has:false, avgIn:0, avgOut:0, avgNet:0, avgPassiveIn:0 };
+  }
+  let sIn=0,sOut=0,sPass=0;
+  for (const k of windowKeys){
+    const r = map.get(k);
+    sIn += r.in; sOut += r.out; sPass += r.passiveIn;
+  }
+  const n = windowKeys.length;
+  return {
+    has:true,
+    avgIn: sIn/n,
+    avgOut: sOut/n,
+    avgNet: (sIn - sOut)/n,
+    avgPassiveIn: sPass/n
+  };
+}
+
+function computePassiveFromAssetsMonthly(){
+  // existing helper getPassiveAnnual may exist; fallback compute here
+  const annual = (state.items || [])
+    .filter(i => i.kind === "asset")
+    .reduce((s,i)=> s + (Number(i.passiveAnnual)||0), 0);
+  return annual/12;
+}
+
+function projectScenario(cap0, exp0Annual, passive0Annual, saveMonthly, years, rPct, infPct, swrPct){
+  const r = (Number(rPct)||0)/100;
+  const inf = (Number(infPct)||0)/100;
+  const swr = (Number(swrPct)||0)/100;
+  const horizon = Math.max(1, Number(years)||30);
+  const saveAnnual = (Number(saveMonthly)||0)*12;
+
+  const labels = [];
+  const cap = [];
+  const exp = [];
+  const passive = [];
+  const fireNum = [];
+
+  // yield implied from current passive
+  const y = cap0 > 0 ? (passive0Annual / cap0) : 0;
+
+  let C = cap0;
+  let D = exp0Annual;
+
+  let fireYear = null;
+  let why = "";
+
+  for (let t=0; t<=horizon; t++){
+    labels.push(String(new Date().getFullYear() + t));
+    cap.push(C);
+    exp.push(D);
+    passive.push(C * y);
+    fireNum.push(swr>0 ? (D / swr) : Infinity);
+
+    const cond1 = (swr>0) ? (C >= (D / swr)) : false;
+    const cond2 = (C * y >= D);
+    if (fireYear === null && cond1 && cond2){
+      fireYear = t;
+      why = `Cond.1 ok e Cond.2 ok`;
+    }
+
+    // step
+    C = C * (1 + r) + saveAnnual;
+    D = D * (1 + inf);
+  }
+
+  if (fireYear === null){
+    why = "Não atinge no horizonte.";
+  } else if (fireYear === 0){
+    why = "Já cumpre hoje.";
+  } else {
+    why = `≈ ${fireYear} anos`;
+  }
+
+  return { labels, cap, exp, passive, fireNum, fireYear, why };
+}
+
+let projChart = null;
+
+function renderProjection(){
+  const monthsSel = $("projMonths");
+  const yearsSel = $("projYears");
+  const note = $("projBaseNote");
+
+  // load persisted settings into UI once
+  if (!renderProjection._init){
+    const p = state.projection || {};
+    if (monthsSel) monthsSel.value = String(p.months || 6);
+    if (yearsSel) yearsSel.value = String(p.years || 30);
+
+    const sc = (p.scenarios || {});
+    if ($("rCons")) $("rCons").value = (sc.cons?.r ?? 4.0);
+    if ($("infCons")) $("infCons").value = (sc.cons?.inf ?? 3.0);
+    if ($("swrCons")) $("swrCons").value = (sc.cons?.swr ?? 3.25);
+
+    if ($("rBase")) $("rBase").value = (sc.base?.r ?? 6.0);
+    if ($("infBase")) $("infBase").value = (sc.base?.inf ?? 2.5);
+    if ($("swrBase")) $("swrBase").value = (sc.base?.swr ?? 3.75);
+
+    if ($("rOpt")) $("rOpt").value = (sc.opt?.r ?? 8.0);
+    if ($("infOpt")) $("infOpt").value = (sc.opt?.inf ?? 2.0);
+    if ($("swrOpt")) $("swrOpt").value = (sc.opt?.swr ?? 4.0);
+
+    renderProjection._init = true;
+
+    // listeners
+    const rerender = ()=>{ saveProjectionSettingsFromUI(); renderProjection(); };
+    for (const id of ["projMonths","projYears","rCons","infCons","swrCons","rBase","infBase","swrBase","rOpt","infOpt","swrOpt","baseCurrency"]){
+      const el = $(id);
+      if (el) el.addEventListener("change", rerender);
+      if (el) el.addEventListener("input", rerender);
+    }
+    const resetBtn = $("btnProjReset");
+    if (resetBtn) resetBtn.addEventListener("click", ()=>{
+      state.projection = {
+        months: 6,
+        years: 30,
+        scenarios: {
+          cons: { r: 4.0, inf: 3.0, swr: 3.25 },
+          base: { r: 6.0, inf: 2.5, swr: 3.75 },
+          opt: { r: 8.0, inf: 2.0, swr: 4.0 }
+        }
+      };
+      saveState();
+      renderProjection._init = false;
+      renderProjection();
+    });
+  }
+
+  // base values
+  const months = Number(monthsSel?.value || state.projection?.months || 6);
+  const years = Number(yearsSel?.value || state.projection?.years || 30);
+
+  const cap0 = getInvestibleCapital();
+  const stats = computeCashflowStats(months);
+  const exp0Annual = stats.has ? (stats.avgOut * 12) : 0;
+
+  const passiveFromTxAnnual = stats.has ? (stats.avgPassiveIn * 12) : 0;
+  const passiveFromAssetsAnnual = computePassiveFromAssetsMonthly()*12;
+  const passive0Annual = Math.max(passiveFromTxAnnual, passiveFromAssetsAnnual);
+
+  const saveMonthly = stats.has ? stats.avgNet : 0;
+
+  const currency = state.settings?.baseCurrency || "EUR";
+  if ($("baseCurrency")) $("baseCurrency").value = currency;
+
+  if (note){
+    note.innerHTML = `
+      <b>Base actual:</b> Capital investível ${formatMoney(cap0)} · Despesas anuais ${formatMoney(exp0Annual)} · Income passivo anual ${formatMoney(passive0Annual)} · Poupança média mensal ${formatMoney(saveMonthly)}.
+      ${stats.has ? "" : "<br><b>Nota:</b> Sem histórico suficiente de movimentos — adiciona entradas/saídas para o simulador usar médias."}
+    `;
+  }
+
+  const cons = projectScenario(cap0, exp0Annual, passive0Annual, saveMonthly, years, $("rCons")?.value, $("infCons")?.value, $("swrCons")?.value);
+  const base = projectScenario(cap0, exp0Annual, passive0Annual, saveMonthly, years, $("rBase")?.value, $("infBase")?.value, $("swrBase")?.value);
+  const opt  = projectScenario(cap0, exp0Annual, passive0Annual, saveMonthly, years, $("rOpt")?.value, $("infOpt")?.value, $("swrOpt")?.value);
+
+  $("fireCons").textContent = cons.fireYear === null ? "—" : (cons.fireYear===0 ? "Agora" : `+${cons.fireYear}a`);
+  $("fireBase").textContent = base.fireYear === null ? "—" : (base.fireYear===0 ? "Agora" : `+${base.fireYear}a`);
+  $("fireOpt").textContent  = opt.fireYear  === null ? "—" : (opt.fireYear===0  ? "Agora" : `+${opt.fireYear}a`);
+
+  $("fireConsWhy").textContent = cons.why;
+  $("fireBaseWhy").textContent = base.why;
+  $("fireOptWhy").textContent  = opt.why;
+
+  // chart
+  const ctx = document.getElementById("projChart");
+  if (!ctx || typeof Chart === "undefined") return;
+
+  const datasets = [
+    { label: "Capital (Conserv.)", data: cons.cap, tension: 0.25 },
+    { label: "FIRE # (Conserv.)", data: cons.fireNum, tension: 0.25, borderDash: [6,4] },
+    { label: "Capital (Base)", data: base.cap, tension: 0.25 },
+    { label: "FIRE # (Base)", data: base.fireNum, tension: 0.25, borderDash: [6,4] },
+    { label: "Capital (Otim.)", data: opt.cap, tension: 0.25 },
+    { label: "FIRE # (Otim.)", data: opt.fireNum, tension: 0.25, borderDash: [6,4] },
+  ];
+
+  if (projChart) projChart.destroy();
+  projChart = new Chart(ctx, {
+    type: "line",
+    data: { labels: base.labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: true }
+      },
+      scales: {
+        y: {
+          ticks: {
+            callback: (v)=> formatMoney(Number(v))
+          }
+        }
+      }
+    }
+  });
+}
+
+function saveProjectionSettingsFromUI(){
+  state.projection = state.projection || {};
+  state.projection.months = Number($("projMonths")?.value || 6);
+  state.projection.years  = Number($("projYears")?.value || 30);
+  state.projection.scenarios = {
+    cons: { r: Number($("rCons")?.value||4.0), inf: Number($("infCons")?.value||3.0), swr: Number($("swrCons")?.value||3.25) },
+    base: { r: Number($("rBase")?.value||6.0), inf: Number($("infBase")?.value||2.5), swr: Number($("swrBase")?.value||3.75) },
+    opt:  { r: Number($("rOpt")?.value||8.0),  inf: Number($("infOpt")?.value||2.0),  swr: Number($("swrOpt")?.value||4.0) }
+  };
+  // base currency is stored in settings already elsewhere; keep sync if selector exists
+  const bc = $("baseCurrency")?.value;
+  if (bc){
+    state.settings = state.settings || {};
+    state.settings.baseCurrency = bc;
+  }
+  saveState();
+}
+
+
