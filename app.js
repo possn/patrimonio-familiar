@@ -1,1924 +1,1221 @@
-// Património Familiar — app.js (offline-first, vanilla JS)
-// Libs: Chart.js (alloc + trend) | SheetJS (XLSX/CSV import)
-// ===== Debug / errores =====
-(function(){
-  const boxId = "pfErrorBox";
-  function ensureBox(){
-    let b = document.getElementById(boxId);
-    if (b) return b;
-    b = document.createElement("div");
-    b.id = boxId;
-    b.style.cssText = "position:fixed;left:12px;right:12px;bottom:84px;z-index:99999;background:rgba(0,0,0,.88);color:#fff;padding:10px 12px;border-radius:12px;font:12px/1.35 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial;display:none;";
-    b.innerHTML = "<div style="display:flex;gap:8px;align-items:center;justify-content:space-between"><b>Erro na app</b><button id="pfErrClose" style="background:transparent;border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:10px;padding:4px 8px">Fechar</button></div><pre id="pfErrText" style="white-space:pre-wrap;margin:8px 0 0"></pre>";
-    document.addEventListener("click", (e)=>{ if (e.target && e.target.id==="pfErrClose") b.style.display="none"; });
-    document.body.appendChild(b);
-    return b;
-  }
-  function showErr(msg){
-    try{
-      const b = ensureBox();
-      const p = b.querySelector("#pfErrText");
-      if (p) p.textContent = msg;
-      b.style.display = "block";
-    }catch(_){ }
-  }
-  window.addEventListener("error", (ev)=>{
-    const msg = (ev && ev.error && ev.error.stack) ? ev.error.stack : (ev.message || "Erro desconhecido");
-    showErr(msg);
-  });
-  window.addEventListener("unhandledrejection", (ev)=>{
-    const msg = (ev && ev.reason && ev.reason.stack) ? ev.reason.stack : String(ev.reason || "Promise rejeitada");
-    showErr(msg);
-  });
-})();
+(() => {
+  'use strict';
 
+  // --------------------
+  // Util
+  // --------------------
+  const $ = (q, el=document) => el.querySelector(q);
+  const $$ = (q, el=document) => Array.from(el.querySelectorAll(q));
 
-const STORAGE_KEY = "PF_STATE_V1";
-const STORAGE_KEY_ENC = "PF_STATE_V1_ENC";
-const STORAGE_META = "PF_SEC_META_V1";
+  const DEFAULT_CLASSES = [
+    'Imobiliário','Liquidez','Ações','ETFs','Fundos','PPR','Depósitos a prazo','Ouro','Prata','Arte','Cripto','Outros'
+  ];
 
-function showToast(msg, ms=2200){
-  const t = document.getElementById('toast');
-  if (!t) return;
-  t.textContent = msg;
-  t.classList.add('toast--show');
-  clearTimeout(showToast._timer);
-  showToast._timer = setTimeout(()=> t.classList.remove('toast--show'), ms);
-}
+  const STORAGE_KEY = 'pf_state_v12';
 
-function openSheet(){
-  const s = document.getElementById('actionSheet');
-  if (!s) return;
-  s.setAttribute('aria-hidden','false');
-  document.body.style.overflow = 'hidden';
-  tryVibrate(6);
-}
-function closeSheet(){
-  const s = document.getElementById('actionSheet');
-  if (!s) return;
-  s.setAttribute('aria-hidden','true');
-  document.body.style.overflow = '';
-}
+  const nowISO = () => new Date().toISOString();
+  const ym = (d=new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-
-// ===== Local encryption (AES-GCM + PBKDF2) =====
-function b64u(bytes){
-  const bin = String.fromCharCode(...new Uint8Array(bytes));
-  return btoa(bin).replaceAll("+","-").replaceAll("/","_").replaceAll("=","");
-}
-function ub64u(str){
-  str = str.replaceAll("-","+").replaceAll("_","/");
-  while (str.length % 4) str += "=";
-  const bin = atob(str);
-  const bytes = new Uint8Array(bin.length);
-  for (let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-async function deriveKey(pass, salt){
-  const enc = new TextEncoder();
-  const baseKey = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(pass),
-    "PBKDF2",
-    false,
-    ["deriveKey"]
-  );
-  return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 250000, hash: "SHA-256" },
-    baseKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt","decrypt"]
-  );
-}
-async function encryptJson(pass, obj){
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await deriveKey(pass, salt);
-  const enc = new TextEncoder();
-  const pt = enc.encode(JSON.stringify(obj));
-  const ct = await crypto.subtle.encrypt({name:"AES-GCM", iv}, key, pt);
-  return {
-    v: 1,
-    alg: "AES-GCM",
-    kdf: "PBKDF2-SHA256",
-    it: 250000,
-    salt: b64u(salt),
-    iv: b64u(iv),
-    ct: b64u(ct)
+  const fmtMoney = (v, cur) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '—';
+    try {
+      return new Intl.NumberFormat('pt-PT', { style:'currency', currency: cur || 'EUR', maximumFractionDigits: 0 }).format(n);
+    } catch {
+      return `${Math.round(n)} ${cur||'EUR'}`;
+    }
   };
-}
-async function decryptJson(pass, payload){
-  const salt = ub64u(payload.salt);
-  const iv = ub64u(payload.iv);
-  const ct = ub64u(payload.ct);
-  const key = await deriveKey(pass, salt);
-  const pt = await crypto.subtle.decrypt({name:"AES-GCM", iv}, key, ct);
-  const dec = new TextDecoder();
-  return JSON.parse(dec.decode(new Uint8Array(pt)));
-}
-function secMeta(){
-  try{ return JSON.parse(localStorage.getItem(STORAGE_META) || "{}"); }catch{ return {}; }
-}
-function setSecMeta(m){
-  localStorage.setItem(STORAGE_META, JSON.stringify(m || {}));
-}
-function isEncryptedEnabled(){
-  const m = secMeta();
-  return !!m.enabled;
-}
-function lockApp(){
-  const m = secMeta();
-  m.locked = true;
-  setSecMeta(m);
-}
-function unlockApp(){
-  const m = secMeta();
-  m.locked = false;
-  setSecMeta(m);
-}
-function tryVibrate(ms=12){
-  try{ if (navigator.vibrate) navigator.vibrate(ms); } catch {}
-}
 
+  const fmtPct = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '—';
+    return `${n.toFixed(1)}%`;
+  };
 
-const DEFAULT_CLASSES = [
-  { key: "Liquidez", color: "#a78bfa" },
-  { key: "Ações", color: "#22d3ee" },
-  { key: "ETFs", color: "#4ade80" },
-  { key: "Fundos", color: "#fbbf24" },
-  { key: "PPR", color: "#fb7185" },
-  { key: "Depósitos a prazo", color: "#60a5fa" },
-  { key: "Imobiliário", color: "#34d399" },
-  { key: "Ouro", color: "#f59e0b" },
-  { key: "Prata", color: "#cbd5e1" },
-  { key: "Arte", color: "#f472b6" },
-  { key: "Outros", color: "#94a3b8" },
-];
+  const uid = () => Math.random().toString(16).slice(2) + Date.now().toString(16);
 
-const state = loadState();
+  const safeParse = (s, fallback=null) => {
+    try { return JSON.parse(s); } catch { return fallback; }
+  };
 
-let chartAlloc = null;
-let chartNW = null;
-let chartPassive = null;
-let chartCashflow = null;
-let chartExpenseClass = null;
-
-const el = (id) => document.getElementById(id);
-const fmtMoney = (n) => {
-  const ccy = state.settings.baseCurrency || "EUR";
-  try {
-    return new Intl.NumberFormat("pt-PT", { style: "currency", currency: ccy, maximumFractionDigits: 0 }).format(n || 0);
-  } catch {
-    return (n || 0).toFixed(0) + " " + ccy;
-  }
-};
-
-function uid(){
-  return Math.random().toString(16).slice(2) + Date.now().toString(16);
-}
-
-function deepClone(x){ return JSON.parse(JSON.stringify(x)); }
-
-
-async function bootState(){
-  // If encryption enabled, state is stored encrypted in localStorage under STORAGE_KEY_ENC.
-  if (!isEncryptedEnabled()){
-    // state loaded via bootState()
-    return;
-  }
-  const m = secMeta();
-  const payloadStr = localStorage.getItem(STORAGE_KEY_ENC);
-  if (!payloadStr){
-    // enabled but missing payload: fall back to empty
-    state = defaultState();
-    return;
-  }
-  const payload = JSON.parse(payloadStr);
-  // Ask for password if locked OR no cached session.
-  let pass = sessionStorage.getItem("PF_SEC_PASS") || "";
-  if (m.locked || !pass){
-    pass = prompt("Password para desbloquear Património Familiar:");
-    if (!pass){ throw new Error("locked"); }
-  }
-  try{
-    const obj = await decryptJson(pass, payload);
-    state = obj;
-    // normalize
-    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1 };
-        if (state.settings.autoLockMin==null) state.settings.autoLockMin = 5;
-        if (state.settings.hideValues==null) state.settings.hideValues = 0;
-        if (state.settings.haptics==null) state.settings.haptics = 1;
-    state.settings.txTemplates = Array.isArray(state.settings.txTemplates) ? state.settings.txTemplates : [];
-    state.assets = Array.isArray(state.assets) ? state.assets : [];
-    state.liabilities = Array.isArray(state.liabilities) ? state.liabilities : [];
-    state.history = Array.isArray(state.history) ? state.history : [];
-    state.transactions = Array.isArray(state.transactions) ? state.transactions : [];
-    sessionStorage.setItem("PF_SEC_PASS", pass);
-    unlockApp();
-  }catch(e){
-    sessionStorage.removeItem("PF_SEC_PASS");
-    lockApp();
-    alert("Password inválida. A app mantém-se bloqueada.");
-    throw e;
-  }
-}
-
-function defaultState(){
-  return {
+  // --------------------
+  // State
+  // --------------------
+  const defaultState = () => ({
+    version: 12,
+    settings: {
+      currency: 'EUR',
+      taxRate: 28,
+      passcodeHash: null, // SHA-256 hex
+      locked: false,
+    },
     assets: [],
     liabilities: [],
-    history: [],
-    transactions: [],
-    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1 }
-  };
-}
+    snapshots: [], // { ym, assetsTotal, liabilitiesTotal, netWorth, passiveGrossAnnual, passiveNetAnnual }
+    cashflow: [], // [{ ym, income:[{id,who,cat,amt,note}], expenses:[{id,cat,amt,note}] }]
+    bankMoves: [] // [{id,date,desc,amount,cat,ym}]
+  });
 
-function loadState(){
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (raw){
-    try{
-      const s = JSON.parse(raw);
-      // harden defaults
-      s.assets = Array.isArray(s.assets) ? s.assets : [];
-      s.liabilities = Array.isArray(s.liabilities) ? s.liabilities : [];
-      s.history = Array.isArray(s.history) ? s.history : [];
-      s.settings = s.settings || { baseCurrency:"EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1 };
-      if (s.settings.autoLockMin==null) s.settings.autoLockMin = 5;
-      if (s.settings.hideValues==null) s.settings.hideValues = 0;
-      if (s.settings.haptics==null) s.settings.haptics = 1;
-      s.settings.txTemplates = Array.isArray(s.settings.txTemplates) ? s.settings.txTemplates : [];
-      s.transactions = Array.isArray(s.transactions) ? s.transactions : [];
-      return s;
-    }catch{}
+  let state = load();
+
+  function load(){
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const st = raw ? safeParse(raw, null) : null;
+    if (!st || typeof st !== 'object') return defaultState();
+    // minimal migrations
+    const base = defaultState();
+    const merged = {
+      ...base,
+      ...st,
+      settings: { ...base.settings, ...(st.settings||{}) },
+      assets: Array.isArray(st.assets)? st.assets : [],
+      liabilities: Array.isArray(st.liabilities)? st.liabilities : [],
+      snapshots: Array.isArray(st.snapshots)? st.snapshots : [],
+      cashflow: Array.isArray(st.cashflow)? st.cashflow : [],
+      bankMoves: Array.isArray(st.bankMoves)? st.bankMoves : [],
+    };
+    return merged;
   }
-  // seed with minimal examples (edit/delete as you wish)
-  return {
-    assets: [
-      { id: uid(), class: "Liquidez", name: "Conta à ordem", value: 12000, incomeType: "none", incomeValue: 0, notes:"" },
-      { id: uid(), class: "ETFs", name: "VWCE", value: 25000, incomeType: "div_yield", incomeValue: 1.8, notes:"yield %/ano (aprox.)" },
-      { id: uid(), class: "Imobiliário", name: "Casa (valor estimado)", value: 280000, incomeType: "rent", incomeValue: 0, notes:"se for arrendada, inserir renda mensal" },
-    ],
-    liabilities: [
-      { id: uid(), class: "Crédito", name: "Crédito habitação", value: 180000, notes:"" },
-    ],
-    history: [],
-    transactions: [],
-    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1 },
-  };
-}
 
-async function saveStateSecure(){
-  if (!isEncryptedEnabled()){
+  function save(){
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    return;
   }
-  const pass = sessionStorage.getItem("PF_SEC_PASS") || "";
-  if (!pass){
-    // locked - do not write
-    return;
+
+  // --------------------
+  // Error trap (visible)
+  // --------------------
+  function showError(err){
+    try{
+      console.error(err);
+      const card = $('#debugCard');
+      const txt = $('#debugText');
+      if (!card || !txt) return;
+      card.hidden = false;
+      txt.textContent = String(err?.stack || err?.message || err);
+      // force switch to settings to show
+      goView('Settings');
+    }catch(_){ /* ignore */ }
   }
-  const payload = await encryptJson(pass, state);
-  localStorage.setItem(STORAGE_KEY_ENC, JSON.stringify(payload));
-  // remove plaintext
-  localStorage.removeItem(STORAGE_KEY);
-}
 
-function saveState(){
-  // keep API but async-save in background
-  saveStateSecure();
-}
+  window.addEventListener('error', (e) => showError(e.error || e.message));
+  window.addEventListener('unhandledrejection', (e) => showError(e.reason || e));
 
+  // --------------------
+  // Crypto (hash)
+  // --------------------
+  async function sha256Hex(text){
+    const enc = new TextEncoder().encode(text);
+    const buf = await crypto.subtle.digest('SHA-256', enc);
+    const arr = Array.from(new Uint8Array(buf));
+    return arr.map(b=>b.toString(16).padStart(2,'0')).join('');
+  }
 
-function getClassColor(cls){
-  const found = DEFAULT_CLASSES.find(c => c.key === cls);
-  return found ? found.color : "#94a3b8";
-}
+  // --------------------
+  // Derived
+  // --------------------
+  function totals(){
+    const assetsTotal = state.assets.reduce((s,a)=>s + (Number(a.value)||0), 0);
+    const liabilitiesTotal = state.liabilities.reduce((s,a)=>s + (Number(a.value)||0), 0);
+    const netWorth = assetsTotal - liabilitiesTotal;
+    const passiveGrossAnnual = state.assets.reduce((s,a)=>s + calcPassiveAnnualGross(a), 0);
+    const tax = clamp((Number(state.settings.taxRate)||0)/100, 0, 0.9);
+    const passiveNetAnnual = passiveGrossAnnual * (1 - tax);
+    return { assetsTotal, liabilitiesTotal, netWorth, passiveGrossAnnual, passiveNetAnnual };
+  }
 
-function classesForSelect(kind){
-  // assets: financial classes; liabilities: keep simple
-  if (kind === "liability"){
-    return [
-      {key:"Crédito", color:"#fb7185"},
-      {key:"Cartão", color:"#fbbf24"},
-      {key:"Dívida", color:"#a78bfa"},
-      {key:"Outros", color:"#94a3b8"},
+  function calcPassiveAnnualGross(item){
+    const value = Number(item.value)||0;
+    const t = item.incomeType || 'none';
+    const iv = Number(item.incomeValue)||0;
+    if (!value || !iv) {
+      // rent can be without value
+      if (t === 'rent') return (Number(item.incomeValue)||0) * 12;
+      return 0;
+    }
+    if (t === 'div_yield') return value * (iv/100);
+    if (t === 'div_amount') return iv;
+    if (t === 'rate') return value * (iv/100);
+    if (t === 'rent') return iv * 12;
+    return 0;
+  }
+
+  function groupByClass(items){
+    const m = new Map();
+    for(const it of items){
+      const c = it.class || 'Outros';
+      const v = Number(it.value)||0;
+      m.set(c, (m.get(c)||0) + v);
+    }
+    return Array.from(m.entries()).map(([k,v])=>({k,v})).sort((a,b)=>b.v-a.v);
+  }
+
+  function sortedAssets(){
+    return [...state.assets].sort((a,b)=>(Number(b.value)||0)-(Number(a.value)||0));
+  }
+
+  // --------------------
+  // Views
+  // --------------------
+  const VIEW_IDS = {
+    Dashboard: 'viewDashboard',
+    Assets: 'viewAssets',
+    Import: 'viewImport',
+    Cashflow: 'viewCashflow',
+    Settings: 'viewSettings',
+    Lock: 'viewLock'
+  };
+
+  function goView(name){
+    const isLocked = !!state.settings.locked;
+    const target = isLocked && name !== 'Lock' ? 'Lock' : name;
+
+    for(const [k,id] of Object.entries(VIEW_IDS)){
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.classList.toggle('view--active', k === target);
+      el.style.display = (k === target) ? 'block' : 'none';
+    }
+
+    $$('.bottomnav .tab').forEach(btn=>{
+      const v = btn.dataset.view;
+      btn.classList.toggle('tab--active', v === target);
+    });
+
+    // render per view
+    if (target === 'Dashboard') renderDashboard();
+    if (target === 'Assets') renderAssets();
+    if (target === 'Cashflow') renderCashflow();
+    if (target === 'Settings') renderSettings();
+  }
+
+  // --------------------
+  // Charts (pure SVG)
+  // --------------------
+  function svgEl(name, attrs={}){
+    const el = document.createElementNS('http://www.w3.org/2000/svg', name);
+    for(const [k,v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+    return el;
+  }
+
+  function renderDonut(el, data, opts={}){
+    // data: [{label, value, color}]
+    el.innerHTML = '';
+    const w = opts.size || 220;
+    const h = opts.size || 220;
+    const r = (w/2) - 14;
+    const rIn = r - 18;
+
+    const total = data.reduce((s,d)=>s+d.value,0) || 1;
+    let a0 = -Math.PI/2;
+
+    const svg = svgEl('svg', { viewBox:`0 0 ${w} ${h}`, width:'100%', height:'auto' });
+
+    // base ring
+    const base = svgEl('circle', { cx:w/2, cy:h/2, r:r-9, fill:'none', stroke:'rgba(255,255,255,.10)', 'stroke-width':18 });
+    svg.appendChild(base);
+
+    for(const d of data){
+      const frac = d.value/total;
+      const a1 = a0 + frac*2*Math.PI;
+      const x0 = w/2 + r*Math.cos(a0);
+      const y0 = h/2 + r*Math.sin(a0);
+      const x1 = w/2 + r*Math.cos(a1);
+      const y1 = h/2 + r*Math.sin(a1);
+      const large = frac > 0.5 ? 1 : 0;
+      const path = svgEl('path', {
+        d: `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`,
+        fill:'none',
+        stroke: d.color,
+        'stroke-width': 18,
+        'stroke-linecap':'round'
+      });
+      svg.appendChild(path);
+      a0 = a1;
+    }
+
+    // inner cut
+    const hole = svgEl('circle', { cx:w/2, cy:h/2, r:rIn, fill:'rgba(11,18,32,.92)', stroke:'rgba(255,255,255,.06)' });
+    svg.appendChild(hole);
+
+    const t1 = svgEl('text', { x:w/2, y:h/2-4, 'text-anchor':'middle', 'font-size':'12', fill:'rgba(232,238,252,.65)', 'font-weight':'700' });
+    t1.textContent = opts.centerLabel || 'Ativos';
+    svg.appendChild(t1);
+
+    const t2 = svgEl('text', { x:w/2, y:h/2+18, 'text-anchor':'middle', 'font-size':'18', fill:'#e8eefc', 'font-weight':'900' });
+    t2.textContent = opts.centerValue || '';
+    svg.appendChild(t2);
+
+    el.appendChild(svg);
+  }
+
+  function renderLine(el, series, opts={}){
+    // series: [{xLabel, y}] ordered
+    el.innerHTML = '';
+    const w = opts.width || 680;
+    const h = opts.height || 220;
+    const pad = 26;
+
+    const ys = series.map(p=>p.y);
+    const minY = Math.min(...ys, 0);
+    const maxY = Math.max(...ys, 1);
+    const span = (maxY - minY) || 1;
+
+    const svg = svgEl('svg', { viewBox:`0 0 ${w} ${h}`, width:'100%', height:'auto' });
+
+    // grid lines
+    for(let i=0;i<5;i++){
+      const y = pad + i*(h-2*pad)/4;
+      svg.appendChild(svgEl('line', { x1:pad, y1:y, x2:w-pad, y2:y, stroke:'rgba(255,255,255,.06)', 'stroke-width':1 }));
+    }
+
+    const pts = series.map((p,i)=>{
+      const x = pad + (series.length===1?0.5:i/(series.length-1))*(w-2*pad);
+      const y = h - pad - ((p.y - minY)/span)*(h-2*pad);
+      return {x,y};
+    });
+
+    const d = pts.map((p,i)=>`${i?'L':'M'} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' ');
+    const path = svgEl('path', { d, fill:'none', stroke:'rgba(88,193,255,.92)', 'stroke-width':3, 'stroke-linecap':'round', 'stroke-linejoin':'round' });
+    svg.appendChild(path);
+
+    // points
+    pts.forEach(p=>{
+      svg.appendChild(svgEl('circle',{cx:p.x,cy:p.y,r:4,fill:'rgba(155,140,255,.92)',stroke:'rgba(0,0,0,.35)','stroke-width':1}));
+    });
+
+    // x labels (first + last)
+    if(series.length>=1){
+      const first = series[0].xLabel;
+      const last = series[series.length-1].xLabel;
+      const tx1 = svgEl('text',{x:pad,y:h-8,'text-anchor':'start','font-size':'12',fill:'rgba(232,238,252,.55)','font-weight':'700'});
+      tx1.textContent = first;
+      svg.appendChild(tx1);
+      const tx2 = svgEl('text',{x:w-pad,y:h-8,'text-anchor':'end','font-size':'12',fill:'rgba(232,238,252,.55)','font-weight':'700'});
+      tx2.textContent = last;
+      svg.appendChild(tx2);
+    }
+
+    // empty label
+    if(series.length===0){
+      const t = svgEl('text',{x:w/2,y:h/2,'text-anchor':'middle','font-size':'13',fill:'rgba(232,238,252,.55)','font-weight':'800'});
+      t.textContent = opts.empty || 'Sem histórico.';
+      svg.appendChild(t);
+    }
+
+    el.appendChild(svg);
+  }
+
+  // --------------------
+  // Render
+  // --------------------
+  let passiveMode = 'net';
+
+  function renderDashboard(){
+    const cur = state.settings.currency;
+    const t = totals();
+
+    $('#netWorth').textContent = fmtMoney(t.netWorth, cur);
+    $('#netWorthSub').textContent = `Ativos ${fmtMoney(t.assetsTotal,cur)} | Passivos ${fmtMoney(t.liabilitiesTotal,cur)}`;
+
+    const passiveShown = (passiveMode==='gross') ? t.passiveGrossAnnual : t.passiveNetAnnual;
+    $('#passiveAnnual').textContent = fmtMoney(passiveShown, cur);
+    $('#passiveMonthly').textContent = fmtMoney(passiveShown/12, cur);
+
+    // distribution donut
+    const grouped = groupByClass(state.assets).filter(x=>x.v>0);
+    const colors = palette(grouped.length);
+    const donutData = grouped.map((g,i)=>({label:g.k,value:g.v,color:colors[i]}));
+
+    renderDonut($('#donutWrap'), donutData, {
+      size: 240,
+      centerLabel: 'Ativos',
+      centerValue: fmtMoney(t.assetsTotal, cur)
+    });
+
+    // legend
+    const leg = $('#distLegend');
+    leg.innerHTML = '';
+    const totalA = t.assetsTotal || 1;
+    grouped.slice(0,6).forEach((g,i)=>{
+      const row = document.createElement('div');
+      row.className = 'legrow';
+      const left = document.createElement('div');
+      left.style.display='flex';
+      left.style.alignItems='center';
+      left.style.gap='8px';
+      const dot = document.createElement('div');
+      dot.className='dot';
+      dot.style.background = colors[i];
+      const name = document.createElement('div');
+      name.style.fontWeight='800';
+      name.style.fontSize='13px';
+      name.textContent = g.k;
+      left.appendChild(dot); left.appendChild(name);
+
+      const right = document.createElement('div');
+      right.style.color='rgba(232,238,252,.70)';
+      right.style.fontWeight='900';
+      right.style.fontSize='13px';
+      right.textContent = `${Math.round((g.v/totalA)*100)}%`;
+
+      row.appendChild(left); row.appendChild(right);
+      leg.appendChild(row);
+    });
+
+    // dist detail list
+    const det = $('#distDetailList');
+    det.innerHTML='';
+    grouped.forEach((g,i)=>{
+      det.appendChild(listRow(g.k, `${fmtMoney(g.v,cur)} · ${Math.round((g.v/totalA)*100)}%`, colors[i]));
+    });
+
+    // trends
+    const snaps = [...state.snapshots].sort((a,b)=>a.ym.localeCompare(b.ym));
+    renderLine($('#nwTrend'), snaps.map(s=>({xLabel:s.ym,y:Number(s.netWorth)||0})), { empty: 'Sem histórico. Clica em “Registar mês”.' });
+
+    const piKey = passiveMode==='gross' ? 'passiveGrossAnnual' : 'passiveNetAnnual';
+    renderLine($('#piTrend'), snaps.map(s=>({xLabel:s.ym,y:Number(s[piKey])||0})), { empty: 'Sem histórico. Clica em “Registar mês”.' });
+
+    // top 10
+    const top = sortedAssets();
+    const top10 = top.slice(0,10);
+    const topList = $('#topList');
+    topList.innerHTML='';
+    top10.forEach(a=> topList.appendChild(assetRow(a, cur)));
+
+    const all = $('#allAssetsList');
+    all.innerHTML='';
+    top.slice(10).forEach(a=> all.appendChild(assetRow(a, cur)));
+
+    // hide "ver tudo" if <=10
+    const btn = $('[data-action="toggle-top"]');
+    if (btn) btn.style.display = (top.length>10) ? 'inline-flex' : 'none';
+  }
+
+  function renderAssets(){
+    // filter options
+    const sel = $('#assetFilter');
+    const classes = allClasses();
+    sel.innerHTML = '<option value="">Todas as classes</option>' + classes.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+
+    const q = ($('#assetSearch').value||'').toLowerCase().trim();
+    const f = sel.value;
+
+    const filtered = state.assets
+      .filter(a => !f || (a.class===f))
+      .filter(a => !q || (String(a.name||'').toLowerCase().includes(q) || String(a.notes||'').toLowerCase().includes(q)) )
+      .sort((a,b)=>(Number(b.value)||0)-(Number(a.value)||0));
+
+    const favs = filtered.filter(a=>!!a.favorite);
+    const rest = filtered.filter(a=>!a.favorite);
+
+    const cur = state.settings.currency;
+
+    const favList = $('#favList');
+    favList.innerHTML='';
+    if (favs.length===0) favList.appendChild(emptyRow('Sem favoritos. Marca ★ num ativo.'));
+    favs.forEach(a=>favList.appendChild(assetRow(a, cur, true)));
+
+    const list = $('#assetList');
+    list.innerHTML='';
+    if (rest.length===0) list.appendChild(emptyRow('Sem ativos para mostrar.'));
+    rest.forEach(a=>list.appendChild(assetRow(a, cur, true)));
+
+    const liab = $('#liabList');
+    liab.innerHTML='';
+    const liabs = [...state.liabilities].sort((a,b)=>(Number(b.value)||0)-(Number(a.value)||0));
+    if (liabs.length===0) liab.appendChild(emptyRow('Sem passivos.'));
+    liabs.forEach(l=>liab.appendChild(liabRow(l, cur)));
+  }
+
+  function renderCashflow(){
+    ensureMonthExists(ym());
+
+    const picker = $('#monthPick');
+    const months = [...new Set(state.cashflow.map(m=>m.ym))].sort();
+    picker.innerHTML = months.map(m=>`<option value="${m}">${m}</option>`).join('');
+    if (!picker.value) picker.value = months[months.length-1];
+
+    const m = getMonth(picker.value);
+
+    // KPIs
+    const inc = m.income.reduce((s,x)=>s+(Number(x.amt)||0),0);
+    const exp = m.expenses.reduce((s,x)=>s+(Number(x.amt)||0),0);
+    const res = inc - exp;
+
+    const k = $('#cfKpis');
+    k.innerHTML='';
+    k.appendChild(kpi('Entradas', fmtMoney(inc, state.settings.currency)));
+    k.appendChild(kpi('Despesas', fmtMoney(exp, state.settings.currency)));
+    k.appendChild(kpi('Resultado', fmtMoney(res, state.settings.currency)));
+
+    // lists
+    const inL = $('#incomeList');
+    inL.innerHTML='';
+    if (m.income.length===0) inL.appendChild(emptyRow('Sem entradas neste mês.'));
+    m.income.forEach(x=>inL.appendChild(cfRow(x, 'income')));
+
+    const exL = $('#expenseList');
+    exL.innerHTML='';
+    if (m.expenses.length===0) exL.appendChild(emptyRow('Sem despesas neste mês.'));
+    m.expenses.forEach(x=>exL.appendChild(cfRow(x, 'expense')));
+
+    // annual trend (last 12)
+    const ordered = [...state.cashflow].sort((a,b)=>a.ym.localeCompare(b.ym));
+    const last12 = ordered.slice(-12);
+    const series = last12.map(mm=>{
+      const i = mm.income.reduce((s,x)=>s+(Number(x.amt)||0),0);
+      const e = mm.expenses.reduce((s,x)=>s+(Number(x.amt)||0),0);
+      return {xLabel:mm.ym, y:i-e};
+    });
+    renderLine($('#cfTrend'), series, { empty: 'Sem histórico de balanço.' });
+  }
+
+  function renderSettings(){
+    $('#baseCurrency').value = state.settings.currency || 'EUR';
+    $('#taxRate').value = Number(state.settings.taxRate ?? 28);
+
+    const st = $('#lockState');
+    if (state.settings.passcodeHash) {
+      st.textContent = state.settings.locked ? 'Bloqueado' : 'Desbloqueado';
+    } else {
+      st.textContent = 'Sem código';
+    }
+  }
+
+  // --------------------
+  // UI helpers
+  // --------------------
+  function palette(n){
+    // deterministic nice palette
+    const base = [
+      '#35d08d','#58c1ff','#9b8cff','#f6c25b','#ff6b6b','#a3b3c9','#6ee7b7','#60a5fa','#c4b5fd','#f59e0b','#fb7185','#93c5fd'
     ];
+    const out = [];
+    for(let i=0;i<n;i++) out.push(base[i % base.length]);
+    return out;
   }
-  return DEFAULT_CLASSES;
-}
 
-function incomeHintText(type){
-  switch(type){
-    case "div_yield": return "Yield anual em % (ex: 3.2). A app calcula valor*%/100.";
-    case "div_amount": return "Dividendos em € por ano (ex: 450).";
-    case "rate": return "Taxa anual em % (ex: 2.5). A app calcula valor*%/100.";
-    case "rent": return "Renda mensal em € (ex: 950). A app anualiza (×12).";
-    default: return "Sem rendimento passivo associado.";
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
-}
 
-function computeTotals(){
-  const assetsTotal = state.assets.reduce((a,x) => a + (Number(x.value)||0), 0);
-  const liabTotal = state.liabilities.reduce((a,x) => a + (Number(x.value)||0), 0);
-  const netWorth = assetsTotal - liabTotal;
-  const passiveGross = computePassiveAnnualGross();
-  const tax = Math.max(0, Math.min(100, Number(state.settings.taxRate)||0));
-  const passiveNet = passiveGross * (1 - tax/100);
-  return { assetsTotal, liabTotal, netWorth, passiveGross, passiveNet };
-}
-
-function estimateItemIncome(a){
-  if (!a) return 0;
-  const v = Number(a.value)||0;
-  const t = a.incomeType || 'none';
-  const iv = Number(a.incomeValue)||0;
-  if (t === 'div_yield' || t === 'rate') return v * (iv/100);
-  if (t === 'div_amount') return iv;
-  if (t === 'rent') return iv * 12;
-  return 0;
-}
-
-function computePassiveAnnualGross(){
-  let sum = 0;
-  for (const a of state.assets){
-    const v = Number(a.value) || 0;
-    const t = a.incomeType || "none";
-    const iv = Number(a.incomeValue) || 0;
-    if (t === "div_yield" || t === "rate"){
-      sum += v * (iv/100);
-    } else if (t === "div_amount"){
-      sum += iv;
-    } else if (t === "rent"){
-      sum += iv * 12;
-    }
-  }
-  return sum;
-}
-
-function allocationByClassFull(){
-  const map = new Map();
-  for (const a of state.assets){
-    const cls = a.class || "Outros";
-    const v = Number(a.value) || 0;
-    if (v <= 0) continue;
-    map.set(cls, (map.get(cls) || 0) + v);
-  }
-  return Array.from(map.entries()).sort((x,y)=>y[1]-x[1]).map(([cls,val])=>({
-    cls, val, color: getClassColor(cls)
-  }));
-}
-
-function allocationByClass(limit=6){
-  const arr = allocationByClassFull();
-  if (arr.length <= limit) return arr;
-  const head = arr.slice(0, limit);
-  const tail = arr.slice(limit);
-  const other = tail.reduce((a,x)=>a+x.val,0);
-  if (other > 0){
-    head.push({ cls:"Outros", val: other, color: getClassColor("Outros") });
-  }
-  return head;
-}
-
-
-function topAssets(n=6){
-  return deepClone(state.assets)
-    .sort((a,b) => (Number(b.value)||0) - (Number(a.value)||0))
-    .slice(0,n);
-}
-
-function setActiveView(name){
-  const views = {
-    Dashboard: "viewDashboard",
-    Assets: "viewAssets",
-    Import: "viewImport",
-    Cashflow: "viewCashflow",
-    Settings: "viewSettings"
-  };
-  Object.values(views).forEach(id => el(id).classList.remove("view--active"));
-  el(views[name]).classList.add("view--active");
-
-  document.querySelectorAll(".tab").forEach(t => t.classList.remove("tab--active"));
-  document.querySelector(`.tab[data-view="${name}"]`)?.classList.add("tab--active");
-
-  if (name === "Dashboard") renderDashboard();
-  if (name === "Assets") renderAssets();
-  if (name === "Settings") renderSettings();
-  if (name === "Cashflow") renderCashflow();
-}
-
-function openDashAllModal(){
-  const modal = document.getElementById("dashAllAssetsModal");
-  if (!modal) return;
-  modal.setAttribute("aria-hidden","false");
-  document.body.style.overflow = "hidden";
-  tryVibrate(8);
-  renderDashAllList();
-  document.getElementById("dashAllQ").oninput = renderDashAllList;
-}
-function closeDashAllModal(){
-  const modal = document.getElementById("dashAllAssetsModal");
-  if (!modal) return;
-  modal.setAttribute("aria-hidden","true");
-  document.body.style.overflow = "";
-}
-function renderDashAllList(){
-  const q = (document.getElementById("dashAllQ").value || "").trim().toLowerCase();
-  const box = document.getElementById("dashAllList");
-  if (!box) return;
-  const items = (state.assets||[])
-    .filter(a => (Number(a.value)||0) > 0)
-    .filter(a => (a.name||"").toLowerCase().includes(q) || normalizeAssetClass(a.class).toLowerCase().includes(q))
-    .slice()
-    .sort((a,b)=> (Number(b.value)||0)-(Number(a.value)||0));
-
-  box.innerHTML = "";
-  if (!items.length){
-    box.innerHTML = `<div class="note">Sem resultados.</div>`;
-    return;
-  }
-  for (const a of items){
-    const div = document.createElement("div");
-    div.className = "item";
-    div.innerHTML = `
+  function listRow(title, sub, color){
+    const el = document.createElement('div');
+    el.className='item';
+    el.innerHTML = `
       <div class="item__left">
-        <div class="item__name">${escapeHtml(a.name||"—")}</div>
-        <div class="item__meta">${escapeHtml(normalizeAssetClass(a.class)||"—")}</div>
-      </div>
-      <div class="item__right" style="display:flex; align-items:center; gap:10px">
-        <div style="text-align:right">
-          <div class="item__value">${fmtMoney(Number(a.value)||0)}</div>
-          <div class="badge">${pct(Number(a.value)||0, totals().assetsTotal)}</div>
-        </div>
-        <button class="star ${a.fav ? "star--on":""}" aria-label="Favorito" title="Favorito">★</button>
-      </div>
-    `;
-    div.querySelector(".star")?.addEventListener("click",(e)=>{ e.stopPropagation(); toggleFav(a.id); renderDashAllList(); });
-    div.addEventListener("click", ()=>{ closeDashAllModal(); openEdit("asset", a.id); });
-    box.appendChild(div);
-  }
-}
-
-function renderDashboard(){
-  const t = computeTotals();
-  el("netWorth").textContent = fmtMoney(t.netWorth);
-  el("netWorthSub").textContent = `Ativos ${fmtMoney(t.assetsTotal)}  |  Passivos ${fmtMoney(t.liabTotal)}`;
-  el("passiveAnnual").textContent = fmtMoney(t.passiveNet);
-  el("passiveMonthly").textContent = fmtMoney(t.passiveNet/12);
-
-  renderAllocationChart();
-  renderNetWorthChart();
-  renderPassiveChart();
-  try{ renderCoverage(String(new Date().getFullYear())); }catch{}
-  renderTopAssets();
-}
-
-function renderTopAssets(){
-  const elList = document.getElementById("topAssets");
-  const btnAll = document.getElementById("btnDashAll");
-  if (!elList) return;
-
-  const items = (state.assets||[]).filter(a => (Number(a.value)||0) > 0).slice()
-    .sort((a,b)=> (Number(b.value)||0)-(Number(a.value)||0));
-
-  const top = items.slice(0,10);
-  elList.innerHTML = "";
-  if (top.length === 0){
-    elList.innerHTML = `<div class="note">Sem ativos. Adiciona ou importa dados.</div>`;
-    if (btnAll) btnAll.style.display = "none";
-    return;
-  }
-
-  for (const a of top){
-    const div = document.createElement("div");
-    div.className = "item";
-    div.innerHTML = `
-      <div class="item__left">
-        <div class="item__name">${escapeHtml(a.name || "—")}</div>
-        <div class="item__meta">${escapeHtml(normalizeAssetClass(a.class) || "—")}</div>
-      </div>
-      <div class="item__right" style="display:flex; align-items:center; gap:10px">
-        <div style="text-align:right">
-          <div class="item__value">${fmtMoney(Number(a.value)||0)}</div>
-          <div class="badge">${pct(Number(a.value)||0, totals().assetsTotal)}</div>
-        </div>
-        <button class="star ${a.fav ? "star--on":""}" aria-label="Favorito" title="Favorito">★</button>
-      </div>
-    `;
-    div.querySelector(".star")?.addEventListener("click",(e)=>{ e.stopPropagation(); toggleFav(a.id); renderTopAssets(); });
-    div.addEventListener("click", ()=> openEdit("asset", a.id));
-    elList.appendChild(div);
-  }
-
-  if (btnAll){
-    btnAll.style.display = items.length > 10 ? "inline-flex" : "none";
-  }
-}
-
-
-function renderAllocationChart(){
-  const compact = allocationByClass(6);
-  const full = allocationByClassFull();
-  const totalFull = full.reduce((a,x)=>a+x.val,0) || 1;
-  const total = compact.reduce((a,x)=>a+x.val,0) || 1;
-
-  const bar = el("distBar");
-  bar.innerHTML = "";
-  for (const seg of compact){
-    const h = Math.max(2, Math.round((seg.val/total)*1000)/10);
-    const s = document.createElement("div");
-    s.className = "dist__seg";
-    s.style.height = `${h}%`;
-    s.style.background = seg.color;
-    bar.appendChild(s);
-  }
-
-  const legend = el("allocLegend");
-  legend.innerHTML = "";
-  for (const seg of compact){
-    const pct = (seg.val/totalFull)*100;
-    if (seg.cls !== "Outros" && pct < 1) continue;
-    const item = document.createElement("div");
-    item.className = "legend__item";
-    item.innerHTML = `<span class="legend__dot" style="background:${seg.color}"></span>
-      <span>${escapeHtml(seg.cls)}</span>
-      <span style="color:rgba(168,179,207,.85)">${pct.toFixed(0)}%</span>`;
-    legend.appendChild(item);
-  }
-
-  const ctx = el("chartAlloc");
-  const labels = compact.map(x => x.cls);
-  const data = compact.map(x => x.val);
-  const colors = compact.map(x => x.color);
-
-  if (chartAlloc) chartAlloc.destroy();
-  chartAlloc = new Chart(ctx, {
-    type: "doughnut",
-    data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0 }]},
-    options: {
-      responsive: true,
-      cutout: "72%",
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: { label: (c) => ` ${c.label}: ${fmtMoney(c.raw)} ` } }
-      }
-    }
-  });
-}
-
-
-function renderNetWorthChart(){
-  // If no history, Chart.js will show empty axes; we keep it but also guide user.
-
-  const ctx = el("chartNetWorth");
-  const points = (state.history || []).slice().sort((a,b)=> (a.ts||0)-(b.ts||0));
-
-  const labels = points.map(p => (p.date || "").slice(0,10));
-  const noteElId = "nwNote";
-  let noteEl = document.getElementById(noteElId);
-  if (!noteEl){
-    noteEl = document.createElement("div");
-    noteEl.id = noteElId;
-    noteEl.className = "note";
-    noteEl.style.marginTop = "10px";
-    ctx.parentElement.appendChild(noteEl);
-  }
-  noteEl.innerHTML = points.length === 0 ? `Sem histórico. <button class="btn btn--primary btn--mini" id="btnMakeFirstSnapshot">Criar ponto hoje</button> <span style="opacity:.8">ou</span> clica em ‘Registar mês’.` : "";
-  noteEl.style.display = points.length === 0 ? "block" : "none";
-  if (points.length === 0){
-    if (chartNW){ try{ chartNW.destroy(); }catch{} chartNW=null; }
-    setTimeout(()=>{
-      const b = document.getElementById("btnMakeFirstSnapshot");
-      if (b) b.onclick = ()=> document.getElementById("btnAddSnapshot")?.click();
-    }, 0);
-    return;
-  }
-
-  const data = points.map(p => Number(p.netWorth)||0);
-
-  if (chartNW) chartNW.destroy();
-  chartNW = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels,
-      datasets: [{
-        label: "Património líquido",
-        data,
-        tension: 0.25,
-        pointRadius: 3,
-        pointHoverRadius: 5,
-        borderWidth: 2,
-        fill: true
-      }]
-    },
-    options: {
-      responsive:true,
-      plugins:{
-        legend:{ display:false },
-        tooltip:{ callbacks:{ label: (c) => ` ${fmtMoney(c.raw)} ` } }
-      },
-      scales:{
-        x:{ grid:{ color:"rgba(255,255,255,.06)" }, ticks:{ color:"rgba(168,179,207,.9)" } },
-        y:{ grid:{ color:"rgba(255,255,255,.06)" }, ticks:{ color:"rgba(168,179,207,.9)", callback:(v)=> fmtMoney(v) } }
-      }
-    }
-  });
-}
-function renderPassiveChart(){
-  const ctx = document.getElementById("chartPassive");
-  const noteEl = document.getElementById("passiveNote");
-  if (!ctx || !noteEl) return;
-
-  const points = (state.history || []).slice().sort((a,b)=> (a.ts||0)-(b.ts||0));
-  const metric = document.getElementById("passiveMetric")?.value || "net";
-
-  const labels = points.map(p => (p.date || "").slice(0,10));
-  const data = points.map(p => {
-    if (metric === "gross") return Number(p.passiveGross ?? 0) || 0;
-    return Number(p.passiveNet ?? 0) || 0;
-  });
-
-  noteEl.textContent = points.length === 0 ? "Sem histórico. Clica em ‘Registar mês’ para acompanhar a evolução do rendimento passivo." : "";
-  noteEl.style.display = points.length === 0 ? "block" : "none";
-
-  if (chartPassive) chartPassive.destroy();
-  chartPassive = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels,
-      datasets: [{
-        label: "Rendimento passivo (anual)",
-        data,
-        tension: 0.25,
-        pointRadius: 3,
-        pointHoverRadius: 5,
-        borderWidth: 2,
-        fill: true
-      }]
-    },
-    options: {
-      responsive: true,
-      plugins:{
-        legend:{ display:false },
-        tooltip:{ callbacks:{ label: (c) => ` ${fmtMoney(c.raw)} / ano ` } }
-      },
-      scales:{
-        x:{ grid:{ color:"rgba(255,255,255,.06)" }, ticks:{ color:"rgba(168,179,207,.9)" } },
-        y:{ grid:{ color:"rgba(255,255,255,.06)" }, ticks:{ color:"rgba(168,179,207,.9)", callback:(v)=> fmtMoney(v) } }
-      }
-    }
-  });
-}
-
-
-function normalizeAssetClass(cls){
-  const c = (cls||"").trim();
-  const low = c.toLowerCase();
-  if (["cripto","criptoativos","criptoactivos","crypto","cryptos","criptomoedas","criptomoeda"].includes(low)) return "Cripto";
-  if (["ações","acao","acoes","stocks","equities"].includes(low)) return "Ações";
-  if (["etf","etfs"].includes(low)) return "ETFs";
-  if (["liquidez","cash","dinheiro"].includes(low)) return "Liquidez";
-  if (["imobiliario","imobiliário","real estate"].includes(low)) return "Imobiliário";
-  return c || "Outros";
-}
-
-
-function toggleFav(id){
-  const a = (state.assets||[]).find(x=>x.id===id);
-  if (!a) return;
-  a.fav = !a.fav;
-  saveState();
-  showToast(a.fav ? "Adicionado aos favoritos." : "Removido dos favoritos.");
-  renderAssets();
-}
-
-function renderAssetsTop10(){
-  const box = document.getElementById("assetsTop10");
-  if (!box) return;
-  const onlyFav = document.getElementById("onlyFav")?.checked;
-  let items = (state.assets||[]).slice().filter(a=> (Number(a.value)||0) > 0);
-  if (onlyFav) items = items.filter(a=>!!a.fav);
-  items.sort((a,b)=> (Number(b.value)||0)-(Number(a.value)||0));
-  const top = items.slice(0,10);
-
-  box.innerHTML = "";
-  if (top.length===0){
-    box.innerHTML = `<div class="note">Sem itens. Marca favoritos ⭐ ou adiciona valores.</div>`;
-    return;
-  }
-  for (const x of top){
-    const div = document.createElement("div");
-    div.className = "item";
-    div.innerHTML = `
-      <div class="item__left">
-        <div class="item__name">${escapeHtml(x.name||"—")}</div>
-        <div class="item__meta">${escapeHtml(normalizeAssetClass(x.class)||"—")}</div>
-      </div>
-      <div class="item__right" style="display:flex; align-items:center; gap:10px">
-        <div style="text-align:right">
-          <div class="item__value">${fmtMoney(Number(x.value)||0)}</div>
-          <div class="badge">${pct(Number(x.value)||0, totals().assetsTotal)}</div>
-        </div>
-        <button class="star ${x.fav ? "star--on":""}" aria-label="Favorito" title="Favorito">★</button>
-      </div>
-    `;
-    div.querySelector(".star").addEventListener("click", (e)=>{ e.stopPropagation(); toggleFav(x.id); });
-    div.addEventListener("click", ()=> openEdit("asset", x.id));
-    box.appendChild(div);
-  }
-}
-
-function renderAssets(){
-  renderAssetsTop10();
-  document.getElementById('onlyFav')?.addEventListener('change', renderAssetsTop10);
-  // fill class filter
-  const classes = Array.from(new Set(state.assets.map(a => normalizeAssetClass(a.class)).filter(Boolean))).sort();
-  const sel = el("fClass");
-  sel.innerHTML = `<option value="">Todas as classes</option>` + classes.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join("");
-
-  drawLists();
-  // handlers
-  el("qAssets").oninput = drawLists;
-  sel.onchange = drawLists;
-  const sortSel = document.getElementById('sortAssets');
-  if (sortSel){
-    sortSel.value = state.settings.sortAssets || 'value_desc';
-    sortSel.onchange = ()=>{ state.settings.sortAssets = sortSel.value; saveState(); drawLists(); };
-  }
-
-}
-
-function drawLists(){
-  const q = (el("qAssets").value || "").trim().toLowerCase();
-  const f = el("fClass").value || "";
-
-  const listA = el("assetsList");
-  listA.innerHTML = "";
-  const sortMode = (document.getElementById('sortAssets')?.value) || state.settings.sortAssets || 'value_desc';
-  const onlyFav = document.getElementById('onlyFav')?.checked;
-  const items = state.assets.filter(a => {
-    const hit = (a.name||"").toLowerCase().includes(q) || (a.class||"").toLowerCase().includes(q);
-    const ok = !f || a.class === f;
-    return hit && ok;
-  });
-  items.sort((a,b)=>{
-    const av = Number(a.value)||0, bv = Number(b.value)||0;
-    const an = (a.name||'').toLowerCase(), bn = (b.name||'').toLowerCase();
-    const ac = (a.class||'').toLowerCase(), bc = (b.class||'').toLowerCase();
-    const ai = estimateItemIncome(a), bi = estimateItemIncome(b);
-    switch(sortMode){
-      case 'value_asc': return av - bv;
-      case 'name_asc': return an.localeCompare(bn);
-      case 'class_asc': return ac.localeCompare(bc) || bn.localeCompare(an);
-      case 'income_desc': return bi - ai;
-      default: return bv - av;
-    }
-  });
-
-
-  if (items.length === 0){
-    listA.innerHTML = `<div class="note">Sem resultados.</div>`;
-  } else {
-    for (const a of items){
-      listA.appendChild(renderRow(a, "asset"));
-    }
-  }
-
-  const listL = el("liabsList");
-  listL.innerHTML = "";
-  const liabs = state.liabilities.slice().sort((a,b)=>(Number(b.value)||0)-(Number(a.value)||0));
-  if (liabs.length === 0){
-    listL.innerHTML = `<div class="note">Sem passivos.</div>`;
-  } else {
-    for (const l of liabs){
-      listL.appendChild(renderRow(l, "liability"));
-    }
-  }
-}
-
-function renderRow(item, kind){
-  const div = document.createElement("div");
-  div.className = "item";
-  const metaParts = [];
-  if (kind === "asset"){
-    metaParts.push(item.class || "—");
-    if (item.incomeType && item.incomeType !== "none"){
-      metaParts.push("rendimento on");
-    }
-  } else {
-    metaParts.push(item.class || "—");
-  }
-  if (item.notes) metaParts.push(item.notes);
-
-  div.innerHTML = `
-    <div class="item__left">
-      <div class="item__name">${escapeHtml(item.name || "—")}</div>
-      <div class="item__meta">${escapeHtml(metaParts.join(" • "))}</div>
-    </div>
-    <div class="item__right">
-      <div class="item__value">${fmtMoney(Number(item.value)||0)}</div>
-      <div class="badge">
-        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${getClassColor(item.class)}"></span>
-        ${escapeHtml(item.class || "Outros")}
-      </div>
-    </div>
-  `;
-  div.addEventListener("click", () => openEdit(item.id, kind));
-  return div;
-}
-
-function seedTemplates(){
-  if (!state.settings) state.settings = { baseCurrency:"EUR", taxRate:0, txTemplates: [] };
-  if (!Array.isArray(state.settings.txTemplates)) state.settings.txTemplates = [];
-  if (state.settings.txTemplates.length) return;
-  state.settings.txTemplates = [
-    { id:"tpl_sal_pedro", kind:"income", class:"Salário", name:"Salário Pedro", amount:null },
-    { id:"tpl_sal_maria", kind:"income", class:"Salário", name:"Salário (esposa)", amount:null },
-    { id:"tpl_renda", kind:"income", class:"Rendas", name:"Renda (imóvel)", amount:null },
-    { id:"tpl_hab", kind:"expense", class:"Habitação", name:"Habitação (prestação/renda)", amount:null },
-    { id:"tpl_escola", kind:"expense", class:"Educação", name:"Escola", amount:null },
-    { id:"tpl_alim", kind:"expense", class:"Alimentação", name:"Supermercado", amount:null }
-  ];
-}
-
-function txClasses(){
-  // pragmatic buckets
-  return [
-    "Habitação", "Alimentação", "Transportes", "Educação", "Saúde", "Serviços", "Lazer", "Impostos",
-    "Salário", "Rendas", "Juros/Dividendos", "Outros"
-  ];
-}
-
-function monthKey(dateStr){
-  if (!dateStr) return "";
-  return String(dateStr).slice(0,7); // YYYY-MM
-}
-
-function fmtMonthLabel(ym){
-  if (!ym) return "—";
-  const [y,m] = ym.split("-");
-  return `${m}/${y}`;
-}
-
-function computeCashflow(){
-  const tx = Array.isArray(state.transactions) ? state.transactions : [];
-  // map by month
-  const map = new Map();
-  for (const t of tx){
-    const ym = monthKey(t.date);
-    if (!ym) continue;
-    if (!map.has(ym)) map.set(ym, { ym, income:0, expense:0 });
-    const row = map.get(ym);
-    const amt = Number(t.amount)||0;
-    if (t.kind === "income") row.income += amt;
-    else row.expense += amt;
-  }
-  const arr = Array.from(map.values()).sort((a,b)=> a.ym.localeCompare(b.ym));
-  for (const r of arr) r.net = r.income - r.expense;
-  return arr;
-}
-
-function computeCashKPIs(filtered){
-  const income = filtered.filter(t=>t.kind==="income").reduce((a,x)=>a+(Number(x.amount)||0),0);
-  const expense = filtered.filter(t=>t.kind==="expense").reduce((a,x)=>a+(Number(x.amount)||0),0);
-  const net = income - expense;
-  return { income, expense, net };
-}
-
-function yearKey(dateStr){
-  if (!dateStr) return "";
-  return String(dateStr).slice(0,4); // YYYY
-}
-
-function getSelectedYear(){
-  const sel = document.getElementById("yearSelect");
-  if (!sel) return "";
-  return sel.value || "";
-}
-
-function txForYear(year){
-  const tx = Array.isArray(state.transactions) ? state.transactions : [];
-  if (!year) return tx;
-  return tx.filter(t => yearKey(t.date) === year);
-}
-
-function computeYearSummary(year){
-  const tx = txForYear(year);
-  const income = tx.filter(t=>t.kind==="income").reduce((a,x)=>a+(Number(x.amount)||0),0);
-  const expense = tx.filter(t=>t.kind==="expense").reduce((a,x)=>a+(Number(x.amount)||0),0);
-  const net = income - expense;
-  const savingsRate = income > 0 ? (net / income) : 0;
-  return { income, expense, net, savingsRate };
-}
-
-function expenseByClass(year){
-  const tx = txForYear(year).filter(t=>t.kind==="expense");
-  const map = new Map();
-  for (const t of tx){
-    const c = t.class || "Outros";
-    map.set(c, (map.get(c)||0) + (Number(t.amount)||0));
-  }
-  const arr = Array.from(map.entries()).map(([cls, amt])=>({cls, amt}));
-  arr.sort((a,b)=> b.amt - a.amt);
-  return arr;
-}
-
-function topExpenses(year, n=5){
-  const tx = txForYear(year).filter(t=>t.kind==="expense").slice();
-  tx.sort((a,b)=> (Number(b.amount)||0)-(Number(a.amount)||0));
-  return tx.slice(0,n);
-}
-
-function computeCoverage(year){
-  // Expenses: annualised from transactions of selected year (sum of expenses)
-  const exp = txForYear(year).filter(t=>t.kind==="expense").reduce((a,x)=>a+(Number(x.amount)||0),0);
-
-  // Passive: use latest snapshot in that year if available; else use current computed passive
-  const points = (state.history||[]).filter(p => yearKey(p.date) === year).sort((a,b)=> (a.ts||0)-(b.ts||0));
-  let passiveNet = 0, passiveGross = 0;
-  if (points.length){
-    const last = points[points.length-1];
-    passiveNet = Number(last.passiveNet ?? 0) || 0;
-    passiveGross = Number(last.passiveGross ?? 0) || 0;
-  } else {
-    // fallback: current computed passive (annual)
-    const p = computePassiveAnnualGross();
-    passiveGross = p.gross;
-    passiveNet = p.net;
-  }
-  const covNet = exp > 0 ? passiveNet / exp : 0;
-  const covGross = exp > 0 ? passiveGross / exp : 0;
-  return { exp, passiveNet, passiveGross, covNet, covGross };
-}
-
-function renderSettings(){
-  el("baseCurrency").value = state.settings.baseCurrency || "EUR";
-  el("taxRate").value = Number(state.settings.taxRate || 0);
-}
-
-function setupNav(){
-  document.querySelectorAll(".tab").forEach(btn => {
-    btn.addEventListener("click", () => setActiveView(btn.dataset.view));
-  });
-  el("linkGoAssets").addEventListener("click", (e)=>{ e.preventDefault(); setActiveView("Assets"); });
-}
-
-function setupButtons(){
-  // FAB + action sheet
-  const fab = document.getElementById('fabAdd');
-  if (fab) fab.addEventListener('click', openSheet);
-  const sheet = document.getElementById('actionSheet');
-  if (sheet) sheet.addEventListener('click', (e)=>{ if (e.target?.dataset?.sheetClose) closeSheet(); });
-  const qaA = document.getElementById('qaAddAsset');
-  const qaL = document.getElementById('qaAddLiab');
-  const qaS = document.getElementById('qaSnapshot');
-  const qaI = document.getElementById('qaImport');
-  if (qaA) qaA.addEventListener('click', ()=>{ closeSheet(); openCreate('asset'); });
-  if (qaL) qaL.addEventListener('click', ()=>{ closeSheet(); openCreate('liability'); });
-  if (qaS) qaS.addEventListener('click', ()=>{ closeSheet(); document.getElementById('btnAddSnapshot')?.click(); });
-  if (qaI) qaI.addEventListener('click', ()=>{ closeSheet(); setActiveView('Import'); });
-
-  // Dashboard quick chips
-  document.getElementById('dqAddAsset')?.addEventListener('click', ()=> openCreate('asset'));
-  document.getElementById('dqAddLiab')?.addEventListener('click', ()=> openCreate('liability'));
-  document.getElementById('dqSnapshot')?.addEventListener('click', ()=> document.getElementById('btnAddSnapshot')?.click());
-
-
-  el("btnAddAsset").addEventListener("click", () => { closeSheet(); openCreate("asset"); });
-  el("btnAddLiab").addEventListener("click", () => { closeSheet(); openCreate("liability"); });
-  el("btnAddQuick").addEventListener("click", () => { closeSheet(); openCreate("asset"); });
-
-  el("btnAddSnapshot").addEventListener("click", () => {
-    const t = computeTotals();
-    const now = new Date();
-    const date = now.toISOString().slice(0,10);
-    state.history.push({ ts: now.getTime(), date, netWorth: t.netWorth, assetsTotal: t.assetsTotal, liabTotal: t.liabTotal, passiveGross: t.passiveGross, passiveNet: t.passiveNet });
-    showToast('Snapshot registado.');
-    saveState();
-    renderDashboard();
-  });
-
-  el("btnClearHistory").addEventListener("click", () => {
-    if (!confirm("Limpar histórico de snapshots?")) return;
-    state.history = [];
-    saveState();
-    renderDashboard();
-  });
-
-  el("btnReset").addEventListener("click", () => {
-    if (!confirm("Isto apaga todos os dados locais. Continuar?")) return;
-    localStorage.removeItem(STORAGE_KEY);
-    location.reload();
-  });
-
-  // settings
-  el("baseCurrency").addEventListener("change", () => {
-    state.settings.baseCurrency = el("baseCurrency").value;
-    saveState();
-    renderDashboard();
-    renderAssets();
-  });
-  el("taxRate").addEventListener("input", () => {
-    state.settings.taxRate = Number(el("taxRate").value || 0);
-    saveState();
-    renderDashboard();
-  });
-
-  // dashboard modal
-  document.getElementById('btnDashAll')?.addEventListener('click', openDashAllModal);
-  document.getElementById('dashAllAssetsModal')?.addEventListener('click', (e)=>{ const t=e.target; if (t?.dataset?.dashClose) closeDashAllModal(); });
-
-  // security
-  document.getElementById('secEnable')?.addEventListener('click', enableEncryption);
-  document.getElementById('secDisable')?.addEventListener('click', disableEncryption);
-  document.getElementById('secLockNow')?.addEventListener('click', ()=>{ lockApp(); sessionStorage.removeItem('PF_SEC_PASS'); showToast('Bloqueado.'); updateSecurityUI(); });
-  document.getElementById('secExportEnc')?.addEventListener('click', exportEncryptedBackup);
-  document.getElementById('secImportEnc')?.addEventListener('click', ()=> document.getElementById('secImportFile')?.click());
-  document.getElementById('secImportFile')?.addEventListener('change', (e)=>{ const f=e.target.files?.[0]; if(f) importEncryptedBackupFile(f); e.target.value=''; });
-
-  // cashflow
-  document.getElementById('btnAddTx')?.addEventListener('click', openTxCreate);
-  document.getElementById('btnExportTx')?.addEventListener('click', exportTxCsv);
-
-  // export / import JSON
-  el("btnExport").addEventListener("click", exportJson);
-  el("btnImportJson").addEventListener("click", () => el("jsonInput").click());
-  el("jsonInput").addEventListener("change", importJson);
-
-  // import xlsx/csv
-  el("btnImport").addEventListener("click", importFile);
-  el("btnDownloadTemplate").addEventListener("click", downloadTemplate);
-}
-
-function setupModal(){
-  const modal = el("modal");
-  modal.addEventListener("click", (e)=>{
-    const t = e.target;
-    if (t && t.dataset && t.dataset.close) closeModal();
-  });
-
-  const incomeType = el("incomeType");
-  incomeType.addEventListener("change", ()=>{
-    el("incomeHint").textContent = incomeHintText(incomeType.value);
-  });
-
-  el("formItem").addEventListener("submit", (e)=>{
-    e.preventDefault();
-    const id = el("itemId").value || uid();
-    const kind = el("itemKind").value;
-    const obj = {
-      id,
-      class: el("itemClass").value,
-      name: el("itemName").value.trim(),
-      value: Number(el("itemValue").value || 0),
-      notes: el("itemNotes").value.trim()
-    };
-
-    if (kind === "asset"){
-      obj.incomeType = el("incomeType").value;
-      obj.incomeValue = Number(el("incomeValue").value || 0);
-    }
-
-    if (kind === "asset"){
-      upsert(state.assets, obj);
-    } else {
-      upsert(state.liabilities, obj);
-    }
-
-    saveState();
-    tryVibrate(14);
-    showToast('Guardado.');
-    closeModal();
-    renderDashboard();
-    renderAssets();
-  });
-
-  el("btnDeleteItem").addEventListener("click", ()=>{
-    const id = el("itemId").value;
-    const kind = el("itemKind").value;
-    if (!id) return;
-    if (!confirm("Eliminar este item?")) return;
-    if (kind === "asset"){
-      state.assets = state.assets.filter(x => x.id !== id);
-    } else {
-      state.liabilities = state.liabilities.filter(x => x.id !== id);
-    }
-    saveState();
-    tryVibrate(14);
-    showToast('Guardado.');
-    closeModal();
-    renderDashboard();
-    renderAssets();
-  });
-function setupTxModal(){
-  const modal = document.getElementById("txModal");
-  if (!modal) return;
-  modal.addEventListener("click", (e)=>{
-    const t = e.target;
-    if (t && t.dataset && t.dataset.txClose) closeTxModal();
-  });
-
-  document.getElementById("formTx").addEventListener("submit", (e)=>{
-    e.preventDefault();
-    const id = document.getElementById("txId").value || uid();
-    const obj = {
-      id,
-      kind: document.getElementById("txKind").value,
-      class: document.getElementById("txClass").value,
-      name: document.getElementById("txName").value.trim(),
-      amount: Number(document.getElementById("txAmount").value || 0),
-      date: document.getElementById("txDate").value,
-      notes: document.getElementById("txNotes").value.trim()
-    };
-    const arr = state.transactions || (state.transactions = []);
-    const idx = arr.findIndex(x => x.id === id);
-    if (idx >= 0) arr[idx] = obj;
-    else arr.unshift(obj);
-
-    saveState();
-    tryVibrate(14);
-    showToast("Guardado.");
-    closeTxModal();
-    renderCashflow();
-  });
-
-  document.getElementById("btnDeleteTx").addEventListener("click", ()=>{
-    const id = document.getElementById("txId").value;
-    if (!id) return;
-    if (!confirm("Eliminar este movimento?")) return;
-    state.transactions = (state.transactions||[]).filter(x => x.id !== id);
-    saveState();
-    tryVibrate(18);
-    showToast("Eliminado.");
-    closeTxModal();
-    renderCashflow();
-  });
-}
-
-}
-
-function openCreate(kind){
-  openModal({
-    title: kind === "asset" ? "Adicionar ativo" : "Adicionar passivo",
-    kind,
-    item: null
-  });
-}
-function openEdit(id, kind){
-  const item = (kind === "asset" ? state.assets : state.liabilities).find(x => x.id === id);
-  if (!item) return;
-  openModal({
-    title: kind === "asset" ? "Editar ativo" : "Editar passivo",
-    kind,
-    item
-  });
-}
-
-function openModal({title, kind, item}){
-  tryVibrate(8);
-
-  el("modalTitle").textContent = title;
-  el("itemKind").value = kind;
-
-  // classes
-  const clsSel = el("itemClass");
-  const classes = classesForSelect(kind);
-  clsSel.innerHTML = classes.map(c => `<option value="${escapeAttr(c.key)}">${escapeHtml(c.key)}</option>`).join("");
-
-  // reset
-  el("itemId").value = item?.id || "";
-  el("itemClass").value = item?.class || classes[0].key;
-  el("itemName").value = item?.name || "";
-  el("itemValue").value = item?.value ?? "";
-  el("itemNotes").value = item?.notes || "";
-
-  const incomeType = el("incomeType");
-  const incomeValue = el("incomeValue");
-
-  if (kind === "asset"){
-    incomeType.disabled = false;
-    incomeValue.disabled = false;
-    incomeType.value = item?.incomeType || "none";
-    incomeValue.value = item?.incomeValue ?? "";
-    el("incomeHint").textContent = incomeHintText(incomeType.value);
-  } else {
-    // liabilities: hide/disable income
-    incomeType.value = "none";
-    incomeValue.value = "";
-    incomeType.disabled = true;
-    incomeValue.disabled = true;
-    el("incomeHint").textContent = "Passivos não têm rendimento passivo.";
-  }
-
-  el("btnDeleteItem").style.display = item ? "inline-flex" : "none";
-
-  el("modal").setAttribute("aria-hidden", "false");
-  setTimeout(()=>{ try{ el("itemName").focus(); }catch{} }, 50);
-
-  document.body.style.overflow = "hidden";
-}
-
-function closeModal(){
-  el("modal").setAttribute("aria-hidden", "true");
-  document.body.style.overflow = "";
-}
-
-function upsert(arr, obj){
-  const idx = arr.findIndex(x => x.id === obj.id);
-  if (idx >= 0) arr[idx] = obj;
-  else arr.unshift(obj);
-}
-
-// ===== Import / Export =====
-
-function downloadTemplate(){
-  const rows = [
-    ["kind","class","name","value","income_type","income_value","notes"],
-    ["asset","ETFs","VWCE",25000,"div_yield",1.8,"yield %/ano"],
-    ["asset","Depósitos a prazo","DP Banco X",15000,"rate",2.2,"taxa %/ano"],
-    ["asset","Imobiliário","Apartamento arrendado",200000,"rent",950,"renda €/mês"],
-    ["liability","Crédito","Crédito habitação",180000,"","", "valor em dívida"],
-  ];
-  const csv = rows.map(r => r.map(cell => {
-    const s = String(cell ?? "");
-    return /[",\n]/.test(s) ? `"${s.replaceAll('"','""')}"` : s;
-  }).join(",")).join("\n");
-
-  downloadBlob(new Blob([csv], {type:"text/csv;charset=utf-8"}), "template_patrimonio.csv");
-}
-
-async function importFile(){
-  const file = el("fileInput").files?.[0];
-  if (!file){
-    note("importNote", "Escolhe um ficheiro primeiro.");
-    return;
-  }
-  try{
-    const data = await file.arrayBuffer();
-    const wb = XLSX.read(data, { type:"array" });
-    const sheet = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false });
-    const parsed = parseRows(rows);
-    if (parsed.assets.length === 0 && parsed.liabilities.length === 0){
-      note("importNote", "Nada importado. Confere cabeçalhos/colunas.");
-      return;
-    }
-    state.assets = mergeByIdOrName(state.assets, parsed.assets, "asset");
-    state.liabilities = mergeByIdOrName(state.liabilities, parsed.liabilities, "liability");
-    saveState();
-    note("importNote", `Importado: ${parsed.assets.length} ativos, ${parsed.liabilities.length} passivos.`);
-    showToast('Importação concluída.');
-    renderDashboard();
-    renderAssets();
-    setActiveView("Dashboard");
-  }catch(err){
-    console.error(err);
-    note("importNote", "Falha ao importar. Confere se é CSV/XLSX válido.");
-  }
-}
-
-function parseRows(rows){
-  // Accept either:
-  // 1) Template: kind,class,name,value,income_type,income_value,notes
-  // 2) Minimal: class,name,value (assume assets)
-  const cleaned = rows.filter(r => Array.isArray(r) && r.some(x => String(x||"").trim() !== ""));
-  if (cleaned.length === 0) return {assets:[], liabilities:[]};
-
-  const header = cleaned[0].map(x => String(x||"").trim().toLowerCase());
-  const hasKind = header.includes("kind");
-  const hasClass = header.includes("class") || header.includes("classe");
-  const hasName = header.includes("name") || header.includes("nome");
-  const hasValue = header.includes("value") || header.includes("valor");
-
-  const idx = (name) => header.indexOf(name);
-
-  const assets = [];
-  const liabilities = [];
-
-  for (let i=1; i<cleaned.length; i++){
-    const r = cleaned[i];
-    if (!r || r.length === 0) continue;
-
-    if (hasKind && hasClass && hasName && hasValue){
-      const kind = String(r[idx("kind")]||"asset").trim().toLowerCase();
-      const cls = String(r[idx("class")]||"Outros").trim() || "Outros";
-      const name = String(r[idx("name")]||"").trim() || "—";
-      const value = Number(r[idx("value")]||0) || 0;
-
-      const incomeType = String(r[idx("income_type")]||"none").trim() || "none";
-      const incomeValue = Number(r[idx("income_value")]||0) || 0;
-      const notes = String(r[idx("notes")]||"").trim();
-
-      if (kind === "liability"){
-        liabilities.push({ id: uid(), class: cls, name, value, notes });
-      } else {
-        assets.push({ id: uid(), class: cls, name, value, incomeType: incomeType || "none", incomeValue, notes });
-      }
-    } else if (hasClass && hasName && hasValue){
-      const cls = String(r[header.indexOf("class")]||"Outros").trim() || "Outros";
-      const name = String(r[header.indexOf("name")]||"").trim() || "—";
-      const value = Number(r[header.indexOf("value")]||0) || 0;
-      assets.push({ id: uid(), class: cls, name, value, incomeType:"none", incomeValue:0, notes:"" });
-    } else {
-      // fallback: expect columns [class, name, value]
-      const cls = String(r[0]||"Outros").trim() || "Outros";
-      const name = String(r[1]||"—").trim() || "—";
-      const value = Number(r[2]||0) || 0;
-      assets.push({ id: uid(), class: cls, name, value, incomeType:"none", incomeValue:0, notes:"" });
-    }
-  }
-  return { assets, liabilities };
-}
-
-function mergeByIdOrName(existing, incoming, kind){
-  // Simple merge: if same (class+name) exists, overwrite value/income; else add.
-  const out = existing.slice();
-  for (const it of incoming){
-    const key = `${(it.class||"").toLowerCase()}|${(it.name||"").toLowerCase()}`;
-    const idx = out.findIndex(x => `${(x.class||"").toLowerCase()}|${(x.name||"").toLowerCase()}` === key);
-    if (idx >= 0){
-      out[idx] = { ...out[idx], ...it, id: out[idx].id };
-      if (kind === "asset"){
-        out[idx].incomeType = it.incomeType || out[idx].incomeType || "none";
-        out[idx].incomeValue = Number(it.incomeValue || 0);
-      }
-    } else {
-      out.unshift(it);
-    }
-  }
-  return out;
-}
-
-function exportJson(){
-  const payload = {
-    exported_at: new Date().toISOString(),
-    version: 1,
-    state
-  };
-  downloadBlob(new Blob([JSON.stringify(payload, null, 2)], {type:"application/json"}), "patrimonio_familiar_backup.json");
-  showToast('Backup exportado.');
-}
-
-async function importJson(){
-  const f = el("jsonInput").files?.[0];
-  if (!f) return;
-  try{
-    const txt = await f.text();
-    const obj = JSON.parse(txt);
-    const s = obj.state || obj;
-    if (!s || !Array.isArray(s.assets) || !Array.isArray(s.liabilities)){
-      alert("JSON inválido (não encontrei assets/liabilities).");
-      return;
-    }
-    state.assets = s.assets;
-    state.liabilities = s.liabilities;
-    state.history = Array.isArray(s.history) ? s.history : [];
-    state.settings = s.settings || state.settings || { baseCurrency:"EUR", taxRate: 0 };
-    saveState();
-    renderDashboard();
-    renderAssets();
-    setActiveView("Dashboard");
-  } catch(err){
-    console.error(err);
-    alert("Falha ao importar JSON.");
-  } finally {
-    el("jsonInput").value = "";
-  }
-}
-
-function downloadBlob(blob, filename){
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 250);
-}
-
-function note(id, msg){
-  el(id).textContent = msg;
-}
-
-function escapeHtml(s){
-  return String(s ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
-}
-function escapeAttr(s){
-  return escapeHtml(s).replaceAll('"',"&quot;");
-}
-
-// ===== Service worker =====
-function setupSW(){
-  // Desativado para evitar caches presas no iOS/GitHub Pages.
-}
-
-function renderTemplates(){
-  const box = document.getElementById("txTemplates");
-  if (!box) return;
-  const tpls = (state.settings?.txTemplates) || [];
-  box.innerHTML = "";
-  for (const t of tpls){
-    const b = document.createElement("button");
-    b.className = "tpl";
-    const sub = t.kind === "income" ? "Entrada" : "Saída";
-    b.innerHTML = `<span>${escapeHtml(t.name)}</span> <span class="tpl__sub">${escapeHtml(sub)}</span>`;
-    b.addEventListener("click", ()=> applyTemplate(t));
-    box.appendChild(b);
-  }
-}
-
-function applyTemplate(t){
-  openTxModal({ title: "Adicionar movimento", item: null });
-  document.getElementById("txKind").value = t.kind;
-  document.getElementById("txClass").value = t.class;
-  document.getElementById("txName").value = t.name;
-  if (t.amount != null) document.getElementById("txAmount").value = t.amount;
-  // default date = today; user can change month/day
-  tryVibrate(8);
-}
-
-function renderCashflow(){
-  // fill month filter options from existing data
-  const months = Array.from(new Set((state.transactions||[]).map(t=>monthKey(t.date)).filter(Boolean))).sort().reverse();
-  const monthSel = document.getElementById("txMonth");
-  if (monthSel){
-    const current = monthSel.value || "";
-    monthSel.innerHTML = `<option value="">Todos</option>` + months.map(m=>`<option value="${escapeAttr(m)}">${escapeHtml(fmtMonthLabel(m))}</option>`).join("");
-    // keep selection if possible
-    if (months.includes(current)) monthSel.value = current;
-  }
-
-  // fill tx class select in modal
-  const clsSel = document.getElementById("txClass");
-  if (clsSel){
-    clsSel.innerHTML = txClasses().map(c=>`<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join("");
-  }
-
-  // handlers
-  document.getElementById("qTx").oninput = drawCashflow;
-  document.getElementById("txMonth").onchange = drawCashflow;
-  document.getElementById("txType").onchange = drawCashflow;
-}
-
-function renderAnnualAndBreakdown(){
-  // Year selector options from transactions + history
-  const years = new Set();
-  for (const t of (state.transactions||[])) years.add(yearKey(t.date));
-  for (const p of (state.history||[])) years.add(yearKey(p.date));
-  years.delete("");
-  const arr = Array.from(years).sort().reverse();
-
-  const sel = document.getElementById("yearSelect");
-  if (sel){
-    const prev = sel.value || "";
-    sel.innerHTML = arr.length ? arr.map(y=>`<option value="${escapeAttr(y)}">${escapeHtml(y)}</option>`).join("") : `<option value="">—</option>`;
-    // default to current year if present
-    const currentY = String(new Date().getFullYear());
-    if (!prev && arr.includes(currentY)) sel.value = currentY;
-    else if (prev && arr.includes(prev)) sel.value = prev;
-    else if (arr.length) sel.value = arr[0];
-    sel.onchange = ()=> { drawCashflow(); };
-  }
-
-  const year = getSelectedYear();
-  renderAnnualSummary(year);
-  renderExpenseClassChart(year);
-  renderTopExpenses(year);
-  renderCoverage(year);
-}
-
-function renderAnnualSummary(year){
-  const box = document.getElementById("annualSummary");
-  if (!box) return;
-  const s = computeYearSummary(year);
-  const pct = (s.savingsRate*100);
-  box.innerHTML = `
-    <div class="kpi"><div class="kpi__label">Entradas (ano)</div><div class="kpi__value">${fmtMoney(s.income)}</div></div>
-    <div class="kpi"><div class="kpi__label">Saídas (ano)</div><div class="kpi__value">${fmtMoney(s.expense)}</div></div>
-    <div class="kpi"><div class="kpi__label">Saldo (ano)</div><div class="kpi__value">${fmtMoney(s.net)}</div></div>
-    <div class="kpi"><div class="kpi__label">Taxa de poupança</div><div class="kpi__value">${isFinite(pct) ? pct.toFixed(1) : "0.0"}%</div></div>
-  `;
-}
-
-function renderExpenseClassChart(year){
-  const ctx = document.getElementById("chartExpenseClass");
-  const note = document.getElementById("expNote");
-  if (!ctx || !note) return;
-
-  const data = expenseByClass(year);
-  if (data.length === 0){
-    note.textContent = "Sem despesas registadas para este ano.";
-    note.style.display = "block";
-  } else {
-    note.style.display = "none";
-  }
-
-  const labels = data.map(x=>x.cls);
-  const values = data.map(x=>x.amt);
-
-  if (chartExpenseClass) chartExpenseClass.destroy();
-  chartExpenseClass = new Chart(ctx, {
-    type: "doughnut",
-    data: {
-      labels,
-      datasets: [{
-        data: values,
-        borderWidth: 0
-      }]
-    },
-    options: {
-      responsive: true,
-      plugins:{
-        legend:{ position: "bottom", labels:{ color:"rgba(168,179,207,.92)", boxWidth: 10 } },
-        tooltip:{ callbacks:{ label: (c)=> ` ${c.label}: ${fmtMoney(c.raw)} ` } }
-      }
-    }
-  });
-}
-
-function renderTopExpenses(year){
-  const list = document.getElementById("topExpenses");
-  if (!list) return;
-  const top = topExpenses(year, 5);
-
-  list.innerHTML = "";
-  if (top.length === 0){
-    list.innerHTML = `<div class="note">Sem despesas no ano selecionado.</div>`;
-    return;
-  }
-
-  for (const x of top){
-    const div = document.createElement("div");
-    div.className = "item";
-    div.innerHTML = `
-      <div class="item__left">
-        <div class="item__name">${escapeHtml(x.name || "—")}</div>
-        <div class="item__meta">${escapeHtml(x.class || "—")} • ${escapeHtml(x.date || "")}</div>
+        <div class="item__title">${escapeHtml(title)}</div>
+        <div class="item__sub">${escapeHtml(sub)}</div>
       </div>
       <div class="item__right">
-        <div class="item__value">− ${fmtMoney(Number(x.amount)||0)}</div>
-        <div class="badge badge--out">Saída</div>
+        <span class="badge"><span class="dot" style="background:${color||'rgba(255,255,255,.4)'}"></span></span>
       </div>
     `;
-    div.addEventListener("click", ()=> openTxEdit(x.id));
-    list.appendChild(div);
+    return el;
   }
-}
 
-function renderCoverage(year){
-  const box = document.getElementById("coverageBox");
-  const mini = document.getElementById("dashCoverage");
-  if (!box && !mini) return;
+  function emptyRow(text){
+    const el = document.createElement('div');
+    el.className='item';
+    el.innerHTML = `<div class="item__left"><div class="item__sub">${escapeHtml(text)}</div></div>`;
+    return el;
+  }
 
-  const c = computeCoverage(year);
-  const pctNet = Math.max(0, Math.min(1, c.covNet));
-  const pctGross = Math.max(0, Math.min(1, c.covGross));
-
-  const pctText = (p)=> `${(p*100).toFixed(1)}%`;
-  const bar = (p)=> `<div class="coverage__bar"><div class="coverage__fill" style="width:${(p*100).toFixed(1)}%"></div></div>`;
-
-  const expTxt = fmtMoney(c.exp);
-  const netTxt = fmtMoney(c.passiveNet);
-  const grossTxt = fmtMoney(c.passiveGross);
-
-  const inner = `
-    <div class="coverage__row">
-      <div>
-        <div class="coverage__title">Cobertura anual (ano ${escapeHtml(year || "—")})</div>
-        <div class="coverage__meta">Despesas: ${expTxt} • Passivo líquido: ${netTxt} • Passivo bruto: ${grossTxt}</div>
+  function assetRow(a, cur, editable=false){
+    const el = document.createElement('div');
+    el.className='item';
+    el.dataset.id = a.id;
+    el.dataset.kind = 'asset';
+    const tag = a.class || 'Outros';
+    const passive = calcPassiveAnnualGross(a);
+    const ptxt = passive>0 ? ` · passivo ${fmtMoney(passive*(1-clamp((Number(state.settings.taxRate)||0)/100,0,0.9)),cur)}/ano (líq.)` : '';
+    el.innerHTML = `
+      <div class="item__left">
+        <div class="item__title">${escapeHtml(a.name||'Sem nome')} ${a.favorite?'★':''}</div>
+        <div class="item__sub">${escapeHtml(tag)}${ptxt}</div>
       </div>
-      <div class="coverage__pct">${pctText(pctNet)}</div>
-    </div>
-    ${bar(pctNet)}
-    <div class="coverage__meta" style="margin-top:8px">Cobertura líquida. (Bruto: ${pctText(pctGross)})</div>
-  `;
+      <div class="item__right">
+        <div class="item__val">${fmtMoney(a.value,cur)}</div>
+        ${editable?`<div class="item__tag"><button class="btn btn--text" data-action="edit" data-id="${a.id}" data-kind="asset">Editar</button></div>`:''}
+      </div>
+    `;
+    return el;
+  }
 
-  if (box) box.innerHTML = inner;
+  function liabRow(l, cur){
+    const el = document.createElement('div');
+    el.className='item';
+    el.dataset.id = l.id;
+    el.dataset.kind = 'liability';
+    el.innerHTML = `
+      <div class="item__left">
+        <div class="item__title">${escapeHtml(l.name||'Passivo')}</div>
+        <div class="item__sub">${escapeHtml(l.class||'Passivo')}</div>
+      </div>
+      <div class="item__right">
+        <div class="item__val">${fmtMoney(l.value,cur)}</div>
+        <div class="item__tag"><button class="btn btn--text" data-action="edit" data-id="${l.id}" data-kind="liability">Editar</button></div>
+      </div>
+    `;
+    return el;
+  }
 
-  // mini uses current year selection or latest year, more compact
-  if (mini){
-    const y = year || String(new Date().getFullYear());
-    mini.innerHTML = `
-      <div class="coverage__row">
-        <div>
-          <div class="coverage__title">Cobertura passivo</div>
-          <div class="coverage__meta">Ano ${escapeHtml(y)} • ${pctText(pctNet)} líquido</div>
+  function kpi(label, value){
+    const el = document.createElement('div');
+    el.className='kpi';
+    el.innerHTML = `<div class="kpi__lab">${escapeHtml(label)}</div><div class="kpi__val">${escapeHtml(value)}</div>`;
+    return el;
+  }
+
+  function cfRow(x, kind){
+    const el = document.createElement('div');
+    el.className='item';
+    const title = (kind==='income') ? (x.who?`${x.who} — ${x.cat||'Entrada'}`:(x.cat||'Entrada')) : (x.cat||'Despesa');
+    el.innerHTML = `
+      <div class="item__left">
+        <div class="item__title">${escapeHtml(title)}</div>
+        <div class="item__sub">${escapeHtml(x.note||'')}</div>
+      </div>
+      <div class="item__right">
+        <div class="item__val">${fmtMoney(x.amt, state.settings.currency)}</div>
+        <div class="item__tag"><button class="btn btn--text" data-action="edit-cf" data-kind="${kind}" data-id="${x.id}">Editar</button></div>
+      </div>
+    `;
+    return el;
+  }
+
+  // --------------------
+  // Months
+  // --------------------
+  function ensureMonthExists(ymStr){
+    if (!state.cashflow.some(m=>m.ym===ymStr)){
+      state.cashflow.push({ ym: ymStr, income: [], expenses: [] });
+      save();
+    }
+  }
+
+  function getMonth(ymStr){
+    ensureMonthExists(ymStr);
+    return state.cashflow.find(m=>m.ym===ymStr);
+  }
+
+  // --------------------
+  // Classes
+  // --------------------
+  function allClasses(){
+    const set = new Set(DEFAULT_CLASSES);
+    for(const a of state.assets) if (a.class) set.add(a.class);
+    for(const l of state.liabilities) if (l.class) set.add(l.class);
+    return Array.from(set);
+  }
+
+  // --------------------
+  // Modal
+  // --------------------
+  function openModal(title, html){
+    $('#modalTitle').textContent = title;
+    $('#modalBody').innerHTML = html;
+    $('#modal').setAttribute('aria-hidden','false');
+  }
+  function closeModal(){
+    $('#modal').setAttribute('aria-hidden','true');
+    $('#modalBody').innerHTML = '';
+  }
+
+  function assetForm(kind, item){
+    const classes = allClasses();
+    const isAsset = kind==='asset';
+    const name = item?.name || '';
+    const cls = item?.class || (isAsset ? 'ETFs' : 'Passivo');
+    const value = item?.value ?? '';
+    const incomeType = item?.incomeType || 'none';
+    const incomeValue = item?.incomeValue ?? '';
+    const favorite = !!item?.favorite;
+    const notes = item?.notes || '';
+
+    const incomeBlock = isAsset ? `
+      <div class="row row--wrap">
+        <div class="field">
+          <div class="label">Rendimento passivo</div>
+          <select class="select" id="f_incomeType">
+            <option value="none">Sem rendimento</option>
+            <option value="div_yield">Dividendos (%/ano)</option>
+            <option value="div_amount">Dividendos (€ / ano)</option>
+            <option value="rate">Taxa (%/ano)</option>
+            <option value="rent">Renda (€/mês)</option>
+          </select>
         </div>
-        <div class="coverage__pct">${pctText(pctNet)}</div>
+        <div class="field">
+          <div class="label">Valor do rendimento</div>
+          <input class="input" id="f_incomeValue" type="number" step="0.01" value="${escapeHtml(incomeValue)}" placeholder="ex: 3.2">
+          <div class="hint">Consoante o tipo escolhido.</div>
+        </div>
       </div>
-      ${bar(pctNet)}
+      <div class="row">
+        <label class="hint" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="f_fav" ${favorite?'checked':''}> Favorito</label>
+      </div>
+    ` : '';
+
+    return `
+      <form id="editForm" class="stack">
+        <input type="hidden" id="f_id" value="${escapeHtml(item?.id||'')}">
+        <input type="hidden" id="f_kind" value="${escapeHtml(kind)}">
+
+        <div class="row row--wrap">
+          <div class="field">
+            <div class="label">Classe</div>
+            <select class="select" id="f_class">
+              ${classes.map(c=>`<option value="${escapeHtml(c)}" ${c===cls?'selected':''}>${escapeHtml(c)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <div class="label">Nome</div>
+            <input class="input" id="f_name" value="${escapeHtml(name)}" placeholder="ex: VWCE, Casa, BTC, Depósito X" required>
+          </div>
+        </div>
+
+        <div class="row row--wrap">
+          <div class="field">
+            <div class="label">Valor (${escapeHtml(state.settings.currency)})</div>
+            <input class="input" id="f_value" type="number" step="0.01" value="${escapeHtml(value)}" placeholder="ex: 12500" required>
+            <div class="hint">Passivos: valor positivo = dívida (subtrai ao património).</div>
+          </div>
+        </div>
+
+        ${incomeBlock}
+
+        <div class="row row--wrap">
+          <div class="field">
+            <div class="label">Notas</div>
+            <input class="input" id="f_notes" value="${escapeHtml(notes)}" placeholder="opcional">
+          </div>
+        </div>
+
+        <div class="row">
+          <button class="btn btn--primary" type="submit">Guardar</button>
+          ${item?.id?`<button class="btn btn--danger" type="button" data-action="delete-item" data-kind="${kind}" data-id="${item.id}">Eliminar</button>`:''}
+        </div>
+      </form>
     `;
   }
-}
 
-function drawCashflow(){
-  const q = (document.getElementById("qTx").value || "").trim().toLowerCase();
-  const m = document.getElementById("txMonth").value || "";
-  const ttype = document.getElementById("txType").value || "";
+  function cfForm(kind, item, ymStr){
+    const isIncome = kind==='income';
+    const who = item?.who || (isIncome?'Pedro':'');
+    const cat = item?.cat || (isIncome?'Salário':'Renda/Crédito');
+    const amt = item?.amt ?? '';
+    const note = item?.note || '';
 
-  const list = document.getElementById("txList");
-  const filtered = (state.transactions||[]).filter(t=>{
-    const hit = (t.name||"").toLowerCase().includes(q) || (t.class||"").toLowerCase().includes(q);
-    const okM = !m || monthKey(t.date) === m;
-    const okT = !ttype || t.kind === ttype;
-    return hit && okM && okT;
-  }).sort((a,b)=> (b.date||"").localeCompare(a.date||""));
+    const whoBlock = isIncome ? `
+      <div class="field">
+        <div class="label">Origem</div>
+        <select class="select" id="cf_who">
+          <option value="Pedro" ${who==='Pedro'?'selected':''}>Pedro</option>
+          <option value="Esposa" ${who==='Esposa'?'selected':''}>Esposa</option>
+          <option value="Outros" ${who==='Outros'?'selected':''}>Outros</option>
+        </select>
+      </div>
+    ` : '';
 
-  // KPIs
-  const k = computeCashKPIs(filtered);
-  const box = document.getElementById("cashSummary");
-  if (box){
-    box.innerHTML = `
-      <div class="kpi"><div class="kpi__label">Entradas</div><div class="kpi__value">${fmtMoney(k.income)}</div></div>
-      <div class="kpi"><div class="kpi__label">Saídas</div><div class="kpi__value">${fmtMoney(k.expense)}</div></div>
-      <div class="kpi"><div class="kpi__label">Saldo</div><div class="kpi__value">${fmtMoney(k.net)}</div></div>
+    return `
+      <form id="cfForm" class="stack">
+        <input type="hidden" id="cf_kind" value="${escapeHtml(kind)}">
+        <input type="hidden" id="cf_id" value="${escapeHtml(item?.id||'')}">
+        <input type="hidden" id="cf_ym" value="${escapeHtml(ymStr)}">
+
+        <div class="row row--wrap">
+          ${whoBlock}
+          <div class="field">
+            <div class="label">Categoria</div>
+            <input class="input" id="cf_cat" value="${escapeHtml(cat)}" placeholder="ex: Salário, Renda, Alimentação" required>
+          </div>
+        </div>
+
+        <div class="row row--wrap">
+          <div class="field">
+            <div class="label">Montante (${escapeHtml(state.settings.currency)})</div>
+            <input class="input" id="cf_amt" type="number" step="0.01" value="${escapeHtml(amt)}" required>
+          </div>
+          <div class="field">
+            <div class="label">Nota</div>
+            <input class="input" id="cf_note" value="${escapeHtml(note)}" placeholder="opcional">
+          </div>
+        </div>
+
+        <div class="row">
+          <button class="btn btn--primary" type="submit">Guardar</button>
+          ${item?.id?`<button class="btn btn--danger" type="button" data-action="delete-cf" data-kind="${kind}" data-id="${item.id}">Eliminar</button>`:''}
+        </div>
+      </form>
     `;
   }
 
-  // list render
-  if (list){
-    list.innerHTML = "";
-    if (filtered.length === 0){
-      list.innerHTML = `<div class="note">Sem movimentos. Adiciona entradas/saídas para teres balanço mensal/anual.</div>`;
-    } else {
-      for (const x of filtered){
-        const badgeClass = x.kind === "income" ? "badge--in" : "badge--out";
-        const sign = x.kind === "income" ? "+" : "−";
-        const div = document.createElement("div");
-        div.className = "item";
-        div.innerHTML = `
-          <div class="item__left">
-            <div class="item__name">${escapeHtml(x.name || "—")}</div>
-            <div class="item__meta">${escapeHtml(x.class || "—")} • ${escapeHtml(x.date || "")}${x.notes ? " • "+escapeHtml(x.notes) : ""}</div>
-          </div>
-          <div class="item__right">
-            <div class="item__value">${sign} ${fmtMoney(Number(x.amount)||0)}</div>
-            <div class="badge ${badgeClass}">${x.kind === "income" ? "Entrada" : "Saída"}</div>
-          </div>
-        `;
-        div.addEventListener("click", ()=> openTxEdit(x.id));
-        list.appendChild(div);
+  // --------------------
+  // Actions
+  // --------------------
+  async function handleAction(action, target){
+    const cur = state.settings.currency;
+
+    if (action === 'add-asset'){
+      openModal('Adicionar ativo', assetForm('asset', null));
+      return;
+    }
+    if (action === 'add-liability'){
+      openModal('Adicionar passivo', assetForm('liability', null));
+      return;
+    }
+    if (action === 'snapshot'){
+      const t = totals();
+      const m = ym();
+      const i = state.snapshots.findIndex(s=>s.ym===m);
+      const snap = {
+        ym: m,
+        assetsTotal: t.assetsTotal,
+        liabilitiesTotal: t.liabilitiesTotal,
+        netWorth: t.netWorth,
+        passiveGrossAnnual: t.passiveGrossAnnual,
+        passiveNetAnnual: t.passiveNetAnnual,
+        ts: nowISO()
+      };
+      if (i>=0) state.snapshots[i] = snap; else state.snapshots.push(snap);
+      save();
+      renderDashboard();
+      return;
+    }
+    if (action === 'toggle-dist'){
+      const box = $('#distDetail');
+      box.hidden = !box.hidden;
+      return;
+    }
+    if (action === 'toggle-top'){
+      const box = $('#topAll');
+      const btn = $('[data-action="toggle-top"]');
+      box.hidden = !box.hidden;
+      if (btn) btn.textContent = box.hidden ? 'Ver tudo' : 'Esconder';
+      return;
+    }
+    if (action === 'clear-snapshots'){
+      state.snapshots = [];
+      save();
+      renderDashboard();
+      return;
+    }
+    if (action === 'edit'){
+      const id = target.dataset.id;
+      const kind = target.dataset.kind;
+      const item = (kind==='asset') ? state.assets.find(x=>x.id===id) : state.liabilities.find(x=>x.id===id);
+      openModal(kind==='asset'?'Editar ativo':'Editar passivo', assetForm(kind, item||null));
+      return;
+    }
+    if (action === 'delete-item'){
+      const id = target.dataset.id;
+      const kind = target.dataset.kind;
+      if (kind==='asset') state.assets = state.assets.filter(x=>x.id!==id);
+      if (kind==='liability') state.liabilities = state.liabilities.filter(x=>x.id!==id);
+      save();
+      closeModal();
+      renderDashboard();
+      renderAssets();
+      return;
+    }
+    if (action === 'close-modal'){
+      closeModal();
+      return;
+    }
+    if (action === 'export-json'){
+      const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
+      downloadBlob(blob, `patrimonio-familiar-backup_${ym()}.json`);
+      return;
+    }
+    if (action === 'import-json'){
+      const f = $('#fileJSON').files?.[0];
+      if (!f) return alert('Escolhe um ficheiro JSON primeiro.');
+      const text = await f.text();
+      const parsed = safeParse(text, null);
+      if (!parsed) return alert('JSON inválido.');
+      state = {
+        ...defaultState(),
+        ...parsed,
+        settings: { ...defaultState().settings, ...(parsed.settings||{}) },
+        assets: Array.isArray(parsed.assets)?parsed.assets:[],
+        liabilities: Array.isArray(parsed.liabilities)?parsed.liabilities:[],
+        snapshots: Array.isArray(parsed.snapshots)?parsed.snapshots:[],
+        cashflow: Array.isArray(parsed.cashflow)?parsed.cashflow:[],
+        bankMoves: Array.isArray(parsed.bankMoves)?parsed.bankMoves:[],
+      };
+      save();
+      goView('Dashboard');
+      alert('Importado.');
+      return;
+    }
+    if (action === 'wipe'){
+      if (!confirm('Apagar todos os dados locais?')) return;
+      localStorage.removeItem(STORAGE_KEY);
+      state = defaultState();
+      save();
+      goView('Dashboard');
+      return;
+    }
+
+    if (action === 'add-month'){
+      const d = new Date();
+      d.setMonth(d.getMonth()+1);
+      const m = ym(d);
+      ensureMonthExists(m);
+      save();
+      renderCashflow();
+      return;
+    }
+
+    if (action === 'add-income' || action === 'add-expense'){
+      const ymStr = $('#monthPick').value;
+      const kind = (action === 'add-income') ? 'income' : 'expense';
+      openModal(kind==='income'?'Adicionar entrada':'Adicionar despesa', cfForm(kind, null, ymStr));
+      return;
+    }
+
+    if (action === 'edit-cf'){
+      const kind = target.dataset.kind;
+      const id = target.dataset.id;
+      const ymStr = $('#monthPick').value;
+      const m = getMonth(ymStr);
+      const arr = (kind==='income') ? m.income : m.expenses;
+      const item = arr.find(x=>x.id===id);
+      openModal('Editar', cfForm(kind, item||null, ymStr));
+      return;
+    }
+
+    if (action === 'delete-cf'){
+      const kind = target.dataset.kind;
+      const id = target.dataset.id;
+      const ymStr = $('#monthPick').value;
+      const m = getMonth(ymStr);
+      if (kind==='income') m.income = m.income.filter(x=>x.id!==id);
+      else m.expenses = m.expenses.filter(x=>x.id!==id);
+      save();
+      closeModal();
+      renderCashflow();
+      return;
+    }
+
+    if (action === 'set-passcode'){
+      const code = ($('#passcode').value||'').trim();
+      if (!code) return alert('Introduce um código.');
+      state.settings.passcodeHash = await sha256Hex(code);
+      state.settings.locked = false;
+      $('#passcode').value='';
+      save();
+      renderSettings();
+      alert('Código guardado.');
+      return;
+    }
+    if (action === 'remove-passcode'){
+      if (!confirm('Remover código?')) return;
+      state.settings.passcodeHash = null;
+      state.settings.locked = false;
+      save();
+      renderSettings();
+      goView('Settings');
+      return;
+    }
+    if (action === 'lock-now'){
+      if (!state.settings.passcodeHash) return alert('Define um código primeiro.');
+      state.settings.locked = true;
+      save();
+      goView('Lock');
+      return;
+    }
+    if (action === 'unlock'){
+      const code = ($('#unlockCode').value||'').trim();
+      if (!code) return;
+      const h = await sha256Hex(code);
+      if (h === state.settings.passcodeHash){
+        state.settings.locked = false;
+        $('#unlockCode').value='';
+        $('#unlockHint').textContent='';
+        save();
+        goView('Dashboard');
+      } else {
+        $('#unlockHint').textContent='Código incorrecto.';
+      }
+      return;
+    }
+  }
+
+  function downloadBlob(blob, filename){
+    const a = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  }
+
+  // --------------------
+  // CSV import
+  // --------------------
+  function parseCSV(text){
+    // simple CSV parser (comma/semicolon)
+    const lines = text.replace(/\r/g,'').split('\n').filter(l=>l.trim().length>0);
+    if (lines.length===0) return [];
+    const sep = (lines[0].includes(';') && !lines[0].includes(',')) ? ';' : ',';
+    const rows = lines.map(l=>splitCSVLine(l, sep));
+    const header = rows[0].map(h=>h.trim());
+    const out = [];
+    for(let i=1;i<rows.length;i++){
+      const r = rows[i];
+      const obj = {};
+      header.forEach((h,idx)=> obj[h] = (r[idx]??'').trim());
+      out.push(obj);
+    }
+    return out;
+  }
+
+  function splitCSVLine(line, sep){
+    const res = [];
+    let cur = '';
+    let inQ = false;
+    for(let i=0;i<line.length;i++){
+      const ch = line[i];
+      if (ch==='"'){
+        if (inQ && line[i+1]==='"'){ cur+='"'; i++; }
+        else inQ = !inQ;
+        continue;
+      }
+      if (!inQ && ch===sep){ res.push(cur); cur=''; continue; }
+      cur += ch;
+    }
+    res.push(cur);
+    return res;
+  }
+
+  async function importAssetsCSV(file){
+    const txt = await file.text();
+    const rows = parseCSV(txt);
+    if (rows.length===0) return alert('CSV vazio.');
+
+    const mapped = rows.map(r=>({
+      id: uid(),
+      class: r.class || r.Classe || r.classe || 'Outros',
+      name: r.name || r.Nome || r.nome || 'Sem nome',
+      value: Number(String(r.value||r.Valor||r.valor||'0').replace(',','.')) || 0,
+      incomeType: r.incomeType || r.rendimentoTipo || 'none',
+      incomeValue: Number(String(r.incomeValue||r.rendimentoValor||'0').replace(',','.')) || 0,
+      favorite: String(r.favorite||'').toLowerCase()==='true' || String(r.favorito||'').toLowerCase()==='true',
+      notes: r.notes || r.Notas || r.notas || ''
+    }));
+
+    state.assets = mapped;
+    save();
+    goView('Dashboard');
+    alert(`Importados ${mapped.length} ativos.`);
+  }
+
+  async function importBankCSV(file){
+    const txt = await file.text();
+    const rows = parseCSV(txt);
+    if (rows.length===0) return alert('CSV vazio.');
+
+    // detect columns
+    const cols = Object.keys(rows[0]||{});
+    const pick = (cands) => cols.find(c => cands.some(k => c.toLowerCase().includes(k)));
+    const cDate = pick(['data','date']);
+    const cDesc = pick(['descr','desc','mov','detal','memo']);
+    const cAmt  = pick(['mont','amount','valor','value','importe']);
+
+    if (!cAmt) return alert('Não consegui detectar a coluna do montante.');
+
+    const moves = rows.map(r=>{
+      const rawAmt = String(r[cAmt]||'0').replace(/\s/g,'').replace('.','').replace(',','.');
+      const amount = Number(rawAmt) || 0;
+      const dateStr = (cDate ? String(r[cDate]||'') : '').trim();
+      const desc = (cDesc ? String(r[cDesc]||'') : '').trim();
+      const yms = guessYM(dateStr) || ym();
+      return { id: uid(), date: dateStr, desc, amount, cat:'', ym: yms };
+    });
+
+    state.bankMoves.push(...moves);
+    // auto-create expenses from negative amounts in that month (uncategorized)
+    for(const mv of moves){
+      ensureMonthExists(mv.ym);
+      const m = getMonth(mv.ym);
+      if (mv.amount < 0){
+        m.expenses.push({ id: uid(), cat: mv.cat || 'Banco (importado)', amt: Math.abs(mv.amount), note: mv.desc||mv.date||'' });
+      } else if (mv.amount > 0){
+        m.income.push({ id: uid(), who:'Outros', cat: mv.cat || 'Banco (importado)', amt: mv.amount, note: mv.desc||mv.date||'' });
       }
     }
+
+    save();
+    goView('Cashflow');
+    alert(`Importados ${moves.length} movimentos.`);
   }
 
-  renderCashflowChart();
-}
+  function guessYM(dateStr){
+    // tries dd/mm/yyyy or yyyy-mm-dd
+    const s = String(dateStr||'').trim();
+    let m;
+    if ((m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/))) return `${m[1]}-${String(m[2]).padStart(2,'0')}`;
+    if ((m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})/))) {
+      const y = (m[3].length===2) ? `20${m[3]}` : m[3];
+      return `${y}-${String(m[2]).padStart(2,'0')}`;
+    }
+    return null;
+  }
 
-function renderCashflowChart(){
-  const ctx = document.getElementById("chartCashflow");
-  if (!ctx) return;
+  // --------------------
+  // Event wiring
+  // --------------------
+  function bind(){
+    // bottom nav
+    $$('.bottomnav .tab').forEach(btn=>{
+      btn.addEventListener('click', () => goView(btn.dataset.view));
+    });
 
-  const data = computeCashflow();
-  const labels = data.map(r=> fmtMonthLabel(r.ym));
-  const net = data.map(r=> r.net);
+    // top add
+    $('#btnAdd').addEventListener('click', () => openModal('Adicionar ativo', assetForm('asset', null)));
 
-  if (chartCashflow) chartCashflow.destroy();
-  chartCashflow = new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [{
-        label: "Saldo mensal",
-        data: net,
-        borderWidth: 0
-      }]
-    },
-    options: {
-      responsive: true,
-      plugins:{
-        legend:{ display:false },
-        tooltip:{ callbacks:{ label: (c)=> ` ${fmtMoney(c.raw)} ` } }
-      },
-      scales:{
-        x:{ grid:{ color:"rgba(255,255,255,.06)" }, ticks:{ color:"rgba(168,179,207,.9)" } },
-        y:{ grid:{ color:"rgba(255,255,255,.06)" }, ticks:{ color:"rgba(168,179,207,.9)", callback:(v)=> fmtMoney(v) } }
+    // delegation
+    document.addEventListener('click', async (e)=>{
+      const el = e.target.closest('[data-action]');
+      if (!el) return;
+      const action = el.dataset.action;
+      e.preventDefault();
+      try { await handleAction(action, el); }
+      catch(err){ showError(err); }
+    });
+
+    // modal submit handlers
+    document.addEventListener('submit', async (e)=>{
+      const form = e.target;
+      if (form.id === 'editForm'){
+        e.preventDefault();
+        try {
+          const kind = $('#f_kind').value;
+          const id = ($('#f_id').value||'').trim() || uid();
+          const obj = {
+            id,
+            class: $('#f_class').value,
+            name: $('#f_name').value.trim(),
+            value: Number($('#f_value').value)||0,
+            notes: $('#f_notes').value.trim(),
+          };
+          if (kind==='asset'){
+            obj.incomeType = $('#f_incomeType') ? $('#f_incomeType').value : 'none';
+            obj.incomeValue = $('#f_incomeValue') ? (Number($('#f_incomeValue').value)||0) : 0;
+            obj.favorite = $('#f_fav') ? !!$('#f_fav').checked : false;
+            const i = state.assets.findIndex(x=>x.id===id);
+            if (i>=0) state.assets[i] = { ...state.assets[i], ...obj };
+            else state.assets.push(obj);
+          } else {
+            const i = state.liabilities.findIndex(x=>x.id===id);
+            if (i>=0) state.liabilities[i] = { ...state.liabilities[i], ...obj };
+            else state.liabilities.push(obj);
+          }
+          save();
+          closeModal();
+          renderDashboard();
+          renderAssets();
+        } catch(err){ showError(err); }
       }
-    }
-  });
-}
 
-function openTxCreate(){
-  openTxModal({ title: "Adicionar movimento", item: null });
-}
-function openTxEdit(id){
-  const item = (state.transactions||[]).find(t=>t.id===id);
-  if (!item) return;
-  openTxModal({ title: "Editar movimento", item });
-}
+      if (form.id === 'cfForm'){
+        e.preventDefault();
+        try {
+          const kind = $('#cf_kind').value;
+          const id = ($('#cf_id').value||'').trim() || uid();
+          const ymStr = $('#cf_ym').value;
+          const m = getMonth(ymStr);
+          const entry = {
+            id,
+            cat: $('#cf_cat').value.trim(),
+            amt: Number($('#cf_amt').value)||0,
+            note: $('#cf_note').value.trim(),
+          };
+          if (kind==='income') entry.who = $('#cf_who').value;
 
-function openTxModal({title, item}){
-  document.getElementById("txTitle").textContent = title;
-  const modal = document.getElementById("txModal");
-  modal.setAttribute("aria-hidden","false");
-  document.body.style.overflow = "hidden";
-  tryVibrate(8);
+          const arr = (kind==='income') ? m.income : m.expenses;
+          const i = arr.findIndex(x=>x.id===id);
+          if (i>=0) arr[i] = { ...arr[i], ...entry };
+          else arr.push(entry);
 
-  // fill classes
-  const clsSel = document.getElementById("txClass");
-  clsSel.innerHTML = txClasses().map(c=>`<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join("");
+          save();
+          closeModal();
+          renderCashflow();
+        } catch(err){ showError(err); }
+      }
+    });
 
-  document.getElementById("txId").value = item?.id || "";
-  document.getElementById("txKind").value = item?.kind || "expense";
-  document.getElementById("txClass").value = item?.class || "Outros";
-  document.getElementById("txName").value = item?.name || "";
-  document.getElementById("txAmount").value = item?.amount ?? "";
-  document.getElementById("txDate").value = item?.date || new Date().toISOString().slice(0,10);
-  document.getElementById("txNotes").value = item?.notes || "";
+    // search
+    $('#assetSearch').addEventListener('input', () => renderAssets());
+    $('#assetFilter').addEventListener('change', () => renderAssets());
 
-  document.getElementById("btnDeleteTx").style.display = item ? "inline-flex" : "none";
-  setTimeout(()=>{ try{ document.getElementById("txName").focus(); }catch{} }, 50);
-}
+    // month pick
+    $('#monthPick').addEventListener('change', () => renderCashflow());
 
-function closeTxModal(){
-  const modal = document.getElementById("txModal");
-  modal.setAttribute("aria-hidden","true");
-  document.body.style.overflow = "";
-}
+    // settings
+    $('#baseCurrency').addEventListener('change', () => {
+      state.settings.currency = $('#baseCurrency').value;
+      save();
+      renderDashboard();
+      renderAssets();
+      renderCashflow();
+    });
+    $('#taxRate').addEventListener('change', () => {
+      state.settings.taxRate = Number($('#taxRate').value)||0;
+      save();
+      renderDashboard();
+    });
 
-function exportTxCsv(){
-  const rows = [["kind","class","name","amount","date","notes"]];
-  for (const t of (state.transactions||[])){
-    rows.push([t.kind, t.class, t.name, t.amount, t.date, t.notes || ""]);
+    // passive segment
+    $$('.seg__btn').forEach(b=>{
+      b.addEventListener('click', () => {
+        $$('.seg__btn').forEach(x=>x.classList.remove('seg__btn--active'));
+        b.classList.add('seg__btn--active');
+        passiveMode = b.dataset.seg === 'gross' ? 'gross' : 'net';
+        renderDashboard();
+      });
+    });
+
+    // file inputs
+    $('#fileAssetsCSV').addEventListener('change', async ()=>{
+      const f = $('#fileAssetsCSV').files?.[0];
+      if (f) { try { await importAssetsCSV(f); } catch(err){ showError(err); } }
+    });
+    $('#fileBankCSV').addEventListener('change', async ()=>{
+      const f = $('#fileBankCSV').files?.[0];
+      if (f) { try { await importBankCSV(f); } catch(err){ showError(err); } }
+    });
+
+    // close modal on overlay escape
+    document.addEventListener('keydown', (e)=>{
+      if (e.key==='Escape') closeModal();
+    });
   }
-  const csv = rows.map(r => r.map(cell => {
-    const s = String(cell ?? "");
-    return /[",\n]/.test(s) ? `"${s.replaceAll('"','""')}"` : s;
-  }).join(",")).join("\n");
-  downloadBlob(new Blob([csv], {type:"text/csv;charset=utf-8"}), "cashflow_movimentos.csv");
-  showToast("CSV exportado.");
-}
 
-function openAllocModal(){
-  const modal = document.getElementById("allocModal");
-  if (!modal) return;
-  const list = document.getElementById("allocDetailList");
-  const full = allocationByClassFull();
-  const total = full.reduce((a,x)=>a+x.val,0) || 1;
-  list.innerHTML = "";
-  if (!full.length){
-    list.innerHTML = `<div class="note">Sem ativos com valor.</div>`;
-  } else {
-    for (const seg of full){
-      const pct = (seg.val/total)*100;
-      const div = document.createElement("div");
-      div.className = "item";
-      div.innerHTML = `
-        <div class="item__left">
-          <div class="item__name">${escapeHtml(seg.cls)}</div>
-          <div class="item__meta">${pct.toFixed(1)}%</div>
-        </div>
-        <div class="item__right">
-          <div class="item__value">${fmtMoney(seg.val)}</div>
-          <div class="badge"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${seg.color}"></span>${escapeHtml(seg.cls)}</div>
-        </div>
-      `;
-      list.appendChild(div);
-    }
+  // --------------------
+  // Init
+  // --------------------
+  function init(){
+    // make views hidden initially (CSS display none), then show dashboard
+    Object.values(VIEW_IDS).forEach(id=>{
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
+
+    // lock handling
+    if (state.settings.locked) goView('Lock');
+    else goView('Dashboard');
+
+    bind();
   }
-  modal.setAttribute("aria-hidden","false");
-  document.body.style.overflow="hidden";
-}
-function closeAllocModal(){
-  const modal = document.getElementById("allocModal");
-  if (!modal) return;
-  modal.setAttribute("aria-hidden","true");
-  document.body.style.overflow="";
-}
 
+  // Run after DOM
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
 
-async function exportEncryptedBackup(){
-  let pass = sessionStorage.getItem("PF_SEC_PASS") || "";
-  if (!pass){
-    pass = prompt("Password para encriptar o backup:");
-    if (!pass) return;
-  }
-  const payload = await encryptJson(pass, state);
-  const blob = new Blob([JSON.stringify(payload)], {type:"application/octet-stream"});
-  downloadBlob(blob, "patrimonio_familiar_backup.pfenc");
-  showToast("Backup encriptado exportado.");
-}
-
-async function importEncryptedBackupFile(file){
-  const txt = await file.text();
-  let payload;
-  try{ payload = JSON.parse(txt); }catch{ alert("Ficheiro inválido."); return; }
-  const pass = prompt("Password para desencriptar o backup:");
-  if (!pass) return;
-  try{
-    const obj = await decryptJson(pass, payload);
-    state = obj;
-    // normalize
-    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1 };
-        if (state.settings.autoLockMin==null) state.settings.autoLockMin = 5;
-        if (state.settings.hideValues==null) state.settings.hideValues = 0;
-        if (state.settings.haptics==null) state.settings.haptics = 1;
-    state.settings.txTemplates = Array.isArray(state.settings.txTemplates) ? state.settings.txTemplates : [];
-    state.assets = Array.isArray(state.assets) ? state.assets : [];
-    state.liabilities = Array.isArray(state.liabilities) ? state.liabilities : [];
-    state.history = Array.isArray(state.history) ? state.history : [];
-    state.transactions = Array.isArray(state.transactions) ? state.transactions : [];
-    sessionStorage.setItem("PF_SEC_PASS", pass);
-    unlockApp();
-    // store encrypted if enabled
-    if (isEncryptedEnabled()){
-      await saveStateSecure();
-    } else {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    }
-    renderAll();
-    showToast("Backup encriptado importado.");
-  }catch(e){
-    alert("Password incorreta ou ficheiro corrompido.");
-  }
-}
-
-async function enableEncryption(){
-  const pass = (document.getElementById("secPass").value || "").trim();
-  if (pass.length < 8){
-    alert("Password demasiado curta. Usa 12+ caracteres.");
-    return;
-  }
-  // Encrypt current plaintext state and store
-  sessionStorage.setItem("PF_SEC_PASS", pass);
-  const payload = await encryptJson(pass, state);
-  localStorage.setItem(STORAGE_KEY_ENC, JSON.stringify(payload));
-  localStorage.removeItem(STORAGE_KEY);
-  setSecMeta({ enabled:true, locked:false, ts: Date.now() });
-  showToast("Encriptação ativada.");
-  updateSecurityUI();
-}
-
-async function disableEncryption(){
-  if (!confirm("Desativar encriptação? Os dados voltarão a ficar em claro no dispositivo.")) return;
-  const pass = sessionStorage.getItem("PF_SEC_PASS") || prompt("Password atual:");
-  if (!pass) return;
-  const payloadStr = localStorage.getItem(STORAGE_KEY_ENC);
-  if (!payloadStr){ alert("Sem dados encriptados."); return; }
-  try{
-    const obj = await decryptJson(pass, JSON.parse(payloadStr));
-    state = obj;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    localStorage.removeItem(STORAGE_KEY_ENC);
-    setSecMeta({ enabled:false, locked:false, ts: Date.now() });
-    sessionStorage.removeItem("PF_SEC_PASS");
-    showToast("Encriptação desativada.");
-    updateSecurityUI();
-    renderAll();
-  }catch(e){
-    alert("Password incorreta.");
-  }
-}
-
-function updateSecurityUI(){
-  const elStatus = document.getElementById("secStatus");
-  if (!elStatus) return;
-  const enabled = isEncryptedEnabled();
-  const m = secMeta();
-  const locked = !!m.locked;
-  elStatus.innerHTML = `Estado: <b>${enabled ? (locked ? "Encriptado (bloqueado)" : "Encriptado (ativo)") : "Sem encriptação"}</b>.`;
-}
-
-let autoLockTimer = null;
-function scheduleAutoLock(){
-  if (!isEncryptedEnabled()) return; // only meaningful when encrypted
-  const mins = Number(state?.settings?.autoLockMin || 0);
-  if (!mins || mins <= 0) return;
-  if (autoLockTimer) clearTimeout(autoLockTimer);
-  autoLockTimer = setTimeout(()=>{
-    lockApp();
-    sessionStorage.removeItem("PF_SEC_PASS");
-    try{ updateSecurityUI(); }catch{}
-    alert("Sessão bloqueada por inatividade.");
-    location.reload();
-  }, mins * 60 * 1000);
-}
-function bindActivityAutoLock(){
-  const bump = ()=> scheduleAutoLock();
-  ["click","keydown","touchstart","scroll"].forEach(ev=> window.addEventListener(ev, bump, {passive:true}));
-  document.addEventListener("visibilitychange", ()=>{
-    if (document.hidden) scheduleAutoLock();
-  });
-}
-
-// ===== Init =====
-async function renderAll(){
-  renderDashboard();
-  renderAssets();
-  renderImport();
-  renderCashflow();
-  renderSettings();
-}
-
-function init(){
-  document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape'){ closeModal(); closeTxModal(); closeAllocModal(); closeSheet(); } });
-
-  setupNav();
-  setupButtons();
-  setupModal();
-  setupTxModal();
-  setupSW();
-  setActiveView("Dashboard");
-}
-
-document.addEventListener("DOMContentLoaded", init);
+})();
