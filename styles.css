@@ -281,3 +281,5 @@ textarea.input{resize:vertical}
   .navlbl{display:none}
   .bottomnav{grid-template-columns: repeat(5, 1fr)}
 }
+
+.modal__body{padding:12px 14px 16px}

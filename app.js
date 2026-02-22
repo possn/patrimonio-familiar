@@ -117,6 +117,7 @@ let state = structuredClone(DEFAULT_STATE);
 let currentView = "dashboard";
 let showingLiabs = false;
 let summaryExpanded = false;
+let distExpanded = false;
 let txExpanded = false;
 
 let distChart = null;
@@ -521,6 +522,7 @@ function openItemModal(kind){
   $("mYieldType").disabled = (kind === "liab");
   $("mYieldValue").disabled = (kind === "liab");
   $("btnSaveItem").dataset.kind = kind;
+  const del=$("btnDeleteItem"); if (del) del.style.display = "none";
   openModal("modalItem");
 }
 
@@ -552,6 +554,7 @@ function editItem(id){
     $("mYieldValue").value = "";
   }
   $("btnSaveItem").dataset.kind = kind;
+  const del=$("btnDeleteItem"); if (del) del.style.display = "none";
   openModal("modalItem");
 }
 
@@ -1200,6 +1203,24 @@ function wire(){
     renderSummary();
   });
 
+// distribuição detalhe
+const btnDistDetail = $("btnDistDetail");
+if (btnDistDetail){
+  btnDistDetail.addEventListener("click", ()=>{
+    distExpanded = false;
+    renderDistDetail();
+    openModal("modalDist");
+  });
+}
+const btnDistToggle = $("btnDistToggle");
+if (btnDistToggle){
+  btnDistToggle.addEventListener("click", ()=>{
+    distExpanded = !distExpanded;
+    renderDistDetail();
+  });
+}
+
+
   // seg
   $("segAssets").addEventListener("click", ()=>setModeLiabs(false));
   $("segLiabs").addEventListener("click", ()=>setModeLiabs(true));
@@ -1212,6 +1233,12 @@ function wire(){
 
   // modal item save
   $("btnSaveItem").addEventListener("click", saveItemFromModal);
+  $("btnDeleteItem").addEventListener("click", ()=>{
+    if (!editingItemId) return;
+    if (!confirm("Apagar este registo? Esta ação não pode ser desfeita.")) return;
+    deleteItem(editingItemId);
+    closeModal("modalItem");
+  });
 
   // cashflow
   $("btnAddTx").addEventListener("click", openTxModal);
@@ -1277,3 +1304,78 @@ document.addEventListener("DOMContentLoaded", async () => {
   wire();
   renderAll();
 });
+
+
+function deleteItem(id){
+  if (!id) return;
+  if (showingLiabs){
+    state.liabilities = state.liabilities.filter(x=>x.id!==id);
+  } else {
+    state.assets = state.assets.filter(x=>x.id!==id);
+  }
+  editingItemId = null;
+  saveState();
+  renderDashboard();
+  renderItems();
+  renderCashflow();
+}
+
+function renderDistDetail(){
+  const list = document.getElementById("distDetailList");
+  const btn = document.getElementById("btnDistToggle");
+  if (!list) return;
+
+  const totals = new Map();
+  let grand = 0;
+  for (const a of state.assets){
+    const v = parseNum(a.value);
+    if (!v) continue;
+    const cls = a.class || "Outros";
+    totals.set(cls, (totals.get(cls)||0) + v);
+    grand += v;
+  }
+
+  const rows = Array.from(totals.entries())
+    .map(([cls,val])=>({cls,val}))
+    .sort((x,y)=>y.val-x.val);
+
+  const show = distExpanded ? rows : rows.slice(0, 10);
+  list.innerHTML = "";
+
+  if (rows.length === 0){
+    const empty = document.createElement("div");
+    empty.className = "item";
+    empty.innerHTML = `<div class="item__l"><div class="item__t">Sem ativos</div><div class="item__s">Importa ou adiciona ativos para ver distribuição.</div></div><div class="item__v">—</div>`;
+    list.appendChild(empty);
+  } else {
+    for (const r of show){
+      const pct = grand > 0 ? (r.val / grand * 100) : 0;
+      const row = document.createElement("div");
+      row.className = "item";
+      row.innerHTML = `<div class="item__l">
+        <div class="item__t">${escapeHtml(r.cls)}</div>
+        <div class="item__s">${pct.toFixed(1)}%</div>
+      </div>
+      <div class="item__v">${fmtEUR(r.val)}</div>`;
+      row.addEventListener("click", ()=>{
+        // go to assets view and filter
+        setModeLiabs(false);
+        setView("assets");
+        const sel = document.getElementById("qClass");
+        if (sel){ sel.value = r.cls; }
+        renderItems();
+        closeModal("modalDist");
+      });
+      list.appendChild(row);
+    }
+  }
+
+  if (btn){
+    if (rows.length > 10){
+      btn.style.display = "";
+      btn.textContent = distExpanded ? "Ver menos" : "Ver o resto";
+    } else {
+      btn.style.display = "none";
+    }
+  }
+}

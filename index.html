@@ -8,10 +8,10 @@
 
   <link rel="icon" href="assets/icon-192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="assets/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=5">
+  <link rel="stylesheet" href="styles.css?v=6">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script defer src="app.js?v=5"></script>
+  <script defer src="app.js?v=6"></script>
 </head>
 <body>
   <header class="topbar">
@@ -279,6 +279,7 @@
 
         <div class="row row--wrap" style="margin-top:12px">
           <button class="btn btn--primary" id="btnSaveItem">Guardar</button>
+          <button class="btn btn--danger" id="btnDeleteItem" style="display:none">Apagar</button>
           <button class="btn" data-close="modalItem">Cancelar</button>
         </div>
       </div>
@@ -324,6 +325,25 @@
       </div>
     </div>
   </div>
+
+
+<!-- MODAL: Distribuição detalhe -->
+<div class="modal" id="modalDist" aria-hidden="true">
+  <div class="modal__bg" data-close="modalDist"></div>
+  <div class="modal__panel">
+    <div class="modal__head">
+      <div class="modal__title">Distribuição (Ativos)</div>
+      <button class="modal__close" data-close="modalDist">Fechar</button>
+    </div>
+    <div class="modal__body">
+      <div class="note" style="margin-top:0">Mostra a distribuição por classe. Toca numa classe para filtrar a lista de ativos.</div>
+      <div id="distDetailList" class="list" style="margin-top:12px"></div>
+      <div class="row row--center" style="margin-top:10px">
+        <button class="btn" id="btnDistToggle" style="display:none">Ver o resto</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 </body>
 </html>
