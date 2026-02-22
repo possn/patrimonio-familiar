@@ -1,5 +1,5 @@
 // Simple offline cache (app shell)
-const CACHE = "pf-cache-v9_1";
+const CACHE = "pf-cache-v9_2";
 const APP_SHELL = [
   "./",
   "./index.html",

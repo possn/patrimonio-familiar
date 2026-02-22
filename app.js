@@ -732,13 +732,7 @@ function renderPassiveChart(){
 }
 
 
-function normalizeAssetClass
-
-function applyDashMode(){
-  const mode = state?.settings?.dashMode || "full";
-  document.body.classList.toggle("dash-daily", mode === "daily");
-}
-(cls){
+function normalizeAssetClass(cls){
   const c = (cls||"").trim();
   const low = c.toLowerCase();
   if (["cripto","criptoativos","criptoactivos","crypto","cryptos","criptomoedas","criptomoeda"].includes(low)) return "Cripto";
@@ -747,6 +741,12 @@ function applyDashMode(){
   if (["liquidez","cash","dinheiro"].includes(low)) return "Liquidez";
   if (["imobiliario","imobiliário","real estate"].includes(low)) return "Imobiliário";
   return c || "Outros";
+}
+
+
+function applyDashMode(){
+  const mode = state?.settings?.dashMode || "full";
+  document.body.classList.toggle("dash-daily", mode === "daily");
 }
 
 
