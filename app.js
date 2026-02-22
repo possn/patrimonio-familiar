@@ -3,6 +3,34 @@
 
 const STORAGE_KEY = "PF_STATE_V1";
 
+function showToast(msg, ms=2200){
+  const t = document.getElementById('toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.add('toast--show');
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(()=> t.classList.remove('toast--show'), ms);
+}
+
+function openSheet(){
+  const s = document.getElementById('actionSheet');
+  if (!s) return;
+  s.setAttribute('aria-hidden','false');
+  document.body.style.overflow = 'hidden';
+  tryVibrate(6);
+}
+function closeSheet(){
+  const s = document.getElementById('actionSheet');
+  if (!s) return;
+  s.setAttribute('aria-hidden','true');
+  document.body.style.overflow = '';
+}
+
+function tryVibrate(ms=12){
+  try{ if (navigator.vibrate) navigator.vibrate(ms); } catch {}
+}
+
+
 const DEFAULT_CLASSES = [
   { key: "Liquidez", color: "#a78bfa" },
   { key: "Ações", color: "#22d3ee" },
@@ -21,6 +49,9 @@ const state = loadState();
 
 let chartAlloc = null;
 let chartNW = null;
+let chartPassive = null;
+let chartCashflow = null;
+let chartExpenseClass = null;
 
 const el = (id) => document.getElementById(id);
 const fmtMoney = (n) => {
@@ -48,6 +79,7 @@ function loadState(){
       s.liabilities = Array.isArray(s.liabilities) ? s.liabilities : [];
       s.history = Array.isArray(s.history) ? s.history : [];
       s.settings = s.settings || { baseCurrency:"EUR", taxRate: 0 };
+      s.transactions = Array.isArray(s.transactions) ? s.transactions : [];
       return s;
     }catch{}
   }
@@ -62,6 +94,7 @@ function loadState(){
       { id: uid(), class: "Crédito", name: "Crédito habitação", value: 180000, notes:"" },
     ],
     history: [],
+    transactions: [],
     settings: { baseCurrency: "EUR", taxRate: 0 },
   };
 }
@@ -108,6 +141,17 @@ function computeTotals(){
   return { assetsTotal, liabTotal, netWorth, passiveGross, passiveNet };
 }
 
+function estimateItemIncome(a){
+  if (!a) return 0;
+  const v = Number(a.value)||0;
+  const t = a.incomeType || 'none';
+  const iv = Number(a.incomeValue)||0;
+  if (t === 'div_yield' || t === 'rate') return v * (iv/100);
+  if (t === 'div_amount') return iv;
+  if (t === 'rent') return iv * 12;
+  return 0;
+}
+
 function computePassiveAnnualGross(){
   let sum = 0;
   for (const a of state.assets){
@@ -149,6 +193,7 @@ function setActiveView(name){
     Dashboard: "viewDashboard",
     Assets: "viewAssets",
     Import: "viewImport",
+    Cashflow: "viewCashflow",
     Settings: "viewSettings"
   };
   Object.values(views).forEach(id => el(id).classList.remove("view--active"));
@@ -160,6 +205,7 @@ function setActiveView(name){
   if (name === "Dashboard") renderDashboard();
   if (name === "Assets") renderAssets();
   if (name === "Settings") renderSettings();
+  if (name === "Cashflow") renderCashflow();
 }
 
 function renderDashboard(){
@@ -171,6 +217,8 @@ function renderDashboard(){
 
   renderAllocationChart();
   renderNetWorthChart();
+  renderPassiveChart();
+  try{ renderCoverage(String(new Date().getFullYear())); }catch{}
   renderTopAssets();
 }
 
@@ -254,10 +302,24 @@ function renderAllocationChart(){
 }
 
 function renderNetWorthChart(){
+  // If no history, Chart.js will show empty axes; we keep it but also guide user.
+
   const ctx = el("chartNetWorth");
   const points = (state.history || []).slice().sort((a,b)=> (a.ts||0)-(b.ts||0));
 
   const labels = points.map(p => (p.date || "").slice(0,10));
+  const noteElId = "nwNote";
+  let noteEl = document.getElementById(noteElId);
+  if (!noteEl){
+    noteEl = document.createElement("div");
+    noteEl.id = noteElId;
+    noteEl.className = "note";
+    noteEl.style.marginTop = "10px";
+    ctx.parentElement.appendChild(noteEl);
+  }
+  noteEl.textContent = points.length === 0 ? "Sem histórico. Clica em ‘Registar mês’ para criar um ponto." : "";
+  noteEl.style.display = points.length === 0 ? "block" : "none";
+
   const data = points.map(p => Number(p.netWorth)||0);
 
   if (chartNW) chartNW.destroy();
@@ -288,6 +350,52 @@ function renderNetWorthChart(){
     }
   });
 }
+function renderPassiveChart(){
+  const ctx = document.getElementById("chartPassive");
+  const noteEl = document.getElementById("passiveNote");
+  if (!ctx || !noteEl) return;
+
+  const points = (state.history || []).slice().sort((a,b)=> (a.ts||0)-(b.ts||0));
+  const metric = document.getElementById("passiveMetric")?.value || "net";
+
+  const labels = points.map(p => (p.date || "").slice(0,10));
+  const data = points.map(p => {
+    if (metric === "gross") return Number(p.passiveGross ?? 0) || 0;
+    return Number(p.passiveNet ?? 0) || 0;
+  });
+
+  noteEl.textContent = points.length === 0 ? "Sem histórico. Clica em ‘Registar mês’ para acompanhar a evolução do rendimento passivo." : "";
+  noteEl.style.display = points.length === 0 ? "block" : "none";
+
+  if (chartPassive) chartPassive.destroy();
+  chartPassive = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Rendimento passivo (anual)",
+        data,
+        tension: 0.25,
+        pointRadius: 3,
+        pointHoverRadius: 5,
+        borderWidth: 2,
+        fill: true
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins:{
+        legend:{ display:false },
+        tooltip:{ callbacks:{ label: (c) => ` ${fmtMoney(c.raw)} / ano ` } }
+      },
+      scales:{
+        x:{ grid:{ color:"rgba(255,255,255,.06)" }, ticks:{ color:"rgba(168,179,207,.9)" } },
+        y:{ grid:{ color:"rgba(255,255,255,.06)" }, ticks:{ color:"rgba(168,179,207,.9)", callback:(v)=> fmtMoney(v) } }
+      }
+    }
+  });
+}
+
 
 function renderAssets(){
   // fill class filter
@@ -299,6 +407,12 @@ function renderAssets(){
   // handlers
   el("qAssets").oninput = drawLists;
   sel.onchange = drawLists;
+  const sortSel = document.getElementById('sortAssets');
+  if (sortSel){
+    sortSel.value = state.settings.sortAssets || 'value_desc';
+    sortSel.onchange = ()=>{ state.settings.sortAssets = sortSel.value; saveState(); drawLists(); };
+  }
+
 }
 
 function drawLists(){
@@ -307,11 +421,26 @@ function drawLists(){
 
   const listA = el("assetsList");
   listA.innerHTML = "";
+  const sortMode = (document.getElementById('sortAssets')?.value) || state.settings.sortAssets || 'value_desc';
   const items = state.assets.filter(a => {
     const hit = (a.name||"").toLowerCase().includes(q) || (a.class||"").toLowerCase().includes(q);
     const ok = !f || a.class === f;
     return hit && ok;
-  }).sort((a,b) => (Number(b.value)||0)-(Number(a.value)||0));
+  });
+  items.sort((a,b)=>{
+    const av = Number(a.value)||0, bv = Number(b.value)||0;
+    const an = (a.name||'').toLowerCase(), bn = (b.name||'').toLowerCase();
+    const ac = (a.class||'').toLowerCase(), bc = (b.class||'').toLowerCase();
+    const ai = estimateItemIncome(a), bi = estimateItemIncome(b);
+    switch(sortMode){
+      case 'value_asc': return av - bv;
+      case 'name_asc': return an.localeCompare(bn);
+      case 'class_asc': return ac.localeCompare(bc) || bn.localeCompare(an);
+      case 'income_desc': return bi - ai;
+      default: return bv - av;
+    }
+  });
+
 
   if (items.length === 0){
     listA.innerHTML = `<div class="note">Sem resultados.</div>`;
@@ -364,6 +493,116 @@ function renderRow(item, kind){
   return div;
 }
 
+function txClasses(){
+  // pragmatic buckets
+  return [
+    "Habitação", "Alimentação", "Transportes", "Educação", "Saúde", "Serviços", "Lazer", "Impostos",
+    "Salário", "Rendas", "Juros/Dividendos", "Outros"
+  ];
+}
+
+function monthKey(dateStr){
+  if (!dateStr) return "";
+  return String(dateStr).slice(0,7); // YYYY-MM
+}
+
+function fmtMonthLabel(ym){
+  if (!ym) return "—";
+  const [y,m] = ym.split("-");
+  return `${m}/${y}`;
+}
+
+function computeCashflow(){
+  const tx = Array.isArray(state.transactions) ? state.transactions : [];
+  // map by month
+  const map = new Map();
+  for (const t of tx){
+    const ym = monthKey(t.date);
+    if (!ym) continue;
+    if (!map.has(ym)) map.set(ym, { ym, income:0, expense:0 });
+    const row = map.get(ym);
+    const amt = Number(t.amount)||0;
+    if (t.kind === "income") row.income += amt;
+    else row.expense += amt;
+  }
+  const arr = Array.from(map.values()).sort((a,b)=> a.ym.localeCompare(b.ym));
+  for (const r of arr) r.net = r.income - r.expense;
+  return arr;
+}
+
+function computeCashKPIs(filtered){
+  const income = filtered.filter(t=>t.kind==="income").reduce((a,x)=>a+(Number(x.amount)||0),0);
+  const expense = filtered.filter(t=>t.kind==="expense").reduce((a,x)=>a+(Number(x.amount)||0),0);
+  const net = income - expense;
+  return { income, expense, net };
+}
+
+function yearKey(dateStr){
+  if (!dateStr) return "";
+  return String(dateStr).slice(0,4); // YYYY
+}
+
+function getSelectedYear(){
+  const sel = document.getElementById("yearSelect");
+  if (!sel) return "";
+  return sel.value || "";
+}
+
+function txForYear(year){
+  const tx = Array.isArray(state.transactions) ? state.transactions : [];
+  if (!year) return tx;
+  return tx.filter(t => yearKey(t.date) === year);
+}
+
+function computeYearSummary(year){
+  const tx = txForYear(year);
+  const income = tx.filter(t=>t.kind==="income").reduce((a,x)=>a+(Number(x.amount)||0),0);
+  const expense = tx.filter(t=>t.kind==="expense").reduce((a,x)=>a+(Number(x.amount)||0),0);
+  const net = income - expense;
+  const savingsRate = income > 0 ? (net / income) : 0;
+  return { income, expense, net, savingsRate };
+}
+
+function expenseByClass(year){
+  const tx = txForYear(year).filter(t=>t.kind==="expense");
+  const map = new Map();
+  for (const t of tx){
+    const c = t.class || "Outros";
+    map.set(c, (map.get(c)||0) + (Number(t.amount)||0));
+  }
+  const arr = Array.from(map.entries()).map(([cls, amt])=>({cls, amt}));
+  arr.sort((a,b)=> b.amt - a.amt);
+  return arr;
+}
+
+function topExpenses(year, n=5){
+  const tx = txForYear(year).filter(t=>t.kind==="expense").slice();
+  tx.sort((a,b)=> (Number(b.amount)||0)-(Number(a.amount)||0));
+  return tx.slice(0,n);
+}
+
+function computeCoverage(year){
+  // Expenses: annualised from transactions of selected year (sum of expenses)
+  const exp = txForYear(year).filter(t=>t.kind==="expense").reduce((a,x)=>a+(Number(x.amount)||0),0);
+
+  // Passive: use latest snapshot in that year if available; else use current computed passive
+  const points = (state.history||[]).filter(p => yearKey(p.date) === year).sort((a,b)=> (a.ts||0)-(b.ts||0));
+  let passiveNet = 0, passiveGross = 0;
+  if (points.length){
+    const last = points[points.length-1];
+    passiveNet = Number(last.passiveNet ?? 0) || 0;
+    passiveGross = Number(last.passiveGross ?? 0) || 0;
+  } else {
+    // fallback: current computed passive (annual)
+    const p = computePassiveAnnualGross();
+    passiveGross = p.gross;
+    passiveNet = p.net;
+  }
+  const covNet = exp > 0 ? passiveNet / exp : 0;
+  const covGross = exp > 0 ? passiveGross / exp : 0;
+  return { exp, passiveNet, passiveGross, covNet, covGross };
+}
+
 function renderSettings(){
   el("baseCurrency").value = state.settings.baseCurrency || "EUR";
   el("taxRate").value = Number(state.settings.taxRate || 0);
@@ -377,15 +616,36 @@ function setupNav(){
 }
 
 function setupButtons(){
-  el("btnAddAsset").addEventListener("click", () => openCreate("asset"));
-  el("btnAddLiab").addEventListener("click", () => openCreate("liability"));
-  el("btnAddQuick").addEventListener("click", () => openCreate("asset"));
+  // FAB + action sheet
+  const fab = document.getElementById('fabAdd');
+  if (fab) fab.addEventListener('click', openSheet);
+  const sheet = document.getElementById('actionSheet');
+  if (sheet) sheet.addEventListener('click', (e)=>{ if (e.target?.dataset?.sheetClose) closeSheet(); });
+  const qaA = document.getElementById('qaAddAsset');
+  const qaL = document.getElementById('qaAddLiab');
+  const qaS = document.getElementById('qaSnapshot');
+  const qaI = document.getElementById('qaImport');
+  if (qaA) qaA.addEventListener('click', ()=>{ closeSheet(); openCreate('asset'); });
+  if (qaL) qaL.addEventListener('click', ()=>{ closeSheet(); openCreate('liability'); });
+  if (qaS) qaS.addEventListener('click', ()=>{ closeSheet(); document.getElementById('btnAddSnapshot')?.click(); });
+  if (qaI) qaI.addEventListener('click', ()=>{ closeSheet(); setActiveView('Import'); });
+
+  // Dashboard quick chips
+  document.getElementById('dqAddAsset')?.addEventListener('click', ()=> openCreate('asset'));
+  document.getElementById('dqAddLiab')?.addEventListener('click', ()=> openCreate('liability'));
+  document.getElementById('dqSnapshot')?.addEventListener('click', ()=> document.getElementById('btnAddSnapshot')?.click());
+
+
+  el("btnAddAsset").addEventListener("click", () => { closeSheet(); openCreate("asset"); });
+  el("btnAddLiab").addEventListener("click", () => { closeSheet(); openCreate("liability"); });
+  el("btnAddQuick").addEventListener("click", () => { closeSheet(); openCreate("asset"); });
 
   el("btnAddSnapshot").addEventListener("click", () => {
     const t = computeTotals();
     const now = new Date();
     const date = now.toISOString().slice(0,10);
-    state.history.push({ ts: now.getTime(), date, netWorth: t.netWorth });
+    state.history.push({ ts: now.getTime(), date, netWorth: t.netWorth, assetsTotal: t.assetsTotal, liabTotal: t.liabTotal, passiveGross: t.passiveGross, passiveNet: t.passiveNet });
+    showToast('Snapshot registado.');
     saveState();
     renderDashboard();
   });
@@ -415,6 +675,10 @@ function setupButtons(){
     saveState();
     renderDashboard();
   });
+
+  // cashflow
+  document.getElementById('btnAddTx')?.addEventListener('click', openTxCreate);
+  document.getElementById('btnExportTx')?.addEventListener('click', exportTxCsv);
 
   // export / import JSON
   el("btnExport").addEventListener("click", exportJson);
@@ -462,6 +726,8 @@ function setupModal(){
     }
 
     saveState();
+    tryVibrate(14);
+    showToast('Guardado.');
     closeModal();
     renderDashboard();
     renderAssets();
@@ -478,10 +744,57 @@ function setupModal(){
       state.liabilities = state.liabilities.filter(x => x.id !== id);
     }
     saveState();
+    tryVibrate(14);
+    showToast('Guardado.');
     closeModal();
     renderDashboard();
     renderAssets();
   });
+function setupTxModal(){
+  const modal = document.getElementById("txModal");
+  if (!modal) return;
+  modal.addEventListener("click", (e)=>{
+    const t = e.target;
+    if (t && t.dataset && t.dataset.txClose) closeTxModal();
+  });
+
+  document.getElementById("formTx").addEventListener("submit", (e)=>{
+    e.preventDefault();
+    const id = document.getElementById("txId").value || uid();
+    const obj = {
+      id,
+      kind: document.getElementById("txKind").value,
+      class: document.getElementById("txClass").value,
+      name: document.getElementById("txName").value.trim(),
+      amount: Number(document.getElementById("txAmount").value || 0),
+      date: document.getElementById("txDate").value,
+      notes: document.getElementById("txNotes").value.trim()
+    };
+    const arr = state.transactions || (state.transactions = []);
+    const idx = arr.findIndex(x => x.id === id);
+    if (idx >= 0) arr[idx] = obj;
+    else arr.unshift(obj);
+
+    saveState();
+    tryVibrate(14);
+    showToast("Guardado.");
+    closeTxModal();
+    renderCashflow();
+  });
+
+  document.getElementById("btnDeleteTx").addEventListener("click", ()=>{
+    const id = document.getElementById("txId").value;
+    if (!id) return;
+    if (!confirm("Eliminar este movimento?")) return;
+    state.transactions = (state.transactions||[]).filter(x => x.id !== id);
+    saveState();
+    tryVibrate(18);
+    showToast("Eliminado.");
+    closeTxModal();
+    renderCashflow();
+  });
+}
+
 }
 
 function openCreate(kind){
@@ -502,6 +815,8 @@ function openEdit(id, kind){
 }
 
 function openModal({title, kind, item}){
+  tryVibrate(8);
+
   el("modalTitle").textContent = title;
   el("itemKind").value = kind;
 
@@ -538,6 +853,8 @@ function openModal({title, kind, item}){
   el("btnDeleteItem").style.display = item ? "inline-flex" : "none";
 
   el("modal").setAttribute("aria-hidden", "false");
+  setTimeout(()=>{ try{ el("itemName").focus(); }catch{} }, 50);
+
   document.body.style.overflow = "hidden";
 }
 
@@ -590,6 +907,7 @@ async function importFile(){
     state.liabilities = mergeByIdOrName(state.liabilities, parsed.liabilities, "liability");
     saveState();
     note("importNote", `Importado: ${parsed.assets.length} ativos, ${parsed.liabilities.length} passivos.`);
+    showToast('Importação concluída.');
     renderDashboard();
     renderAssets();
     setActiveView("Dashboard");
@@ -678,6 +996,7 @@ function exportJson(){
     state
   };
   downloadBlob(new Blob([JSON.stringify(payload, null, 2)], {type:"application/json"}), "patrimonio_familiar_backup.json");
+  showToast('Backup exportado.');
 }
 
 async function importJson(){
@@ -736,11 +1055,326 @@ function setupSW(){
   }
 }
 
+function renderCashflow(){
+  // fill month filter options from existing data
+  const months = Array.from(new Set((state.transactions||[]).map(t=>monthKey(t.date)).filter(Boolean))).sort().reverse();
+  const monthSel = document.getElementById("txMonth");
+  if (monthSel){
+    const current = monthSel.value || "";
+    monthSel.innerHTML = `<option value="">Todos</option>` + months.map(m=>`<option value="${escapeAttr(m)}">${escapeHtml(fmtMonthLabel(m))}</option>`).join("");
+    // keep selection if possible
+    if (months.includes(current)) monthSel.value = current;
+  }
+
+  // fill tx class select in modal
+  const clsSel = document.getElementById("txClass");
+  if (clsSel){
+    clsSel.innerHTML = txClasses().map(c=>`<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join("");
+  }
+
+  // handlers
+  document.getElementById("qTx").oninput = drawCashflow;
+  document.getElementById("txMonth").onchange = drawCashflow;
+  document.getElementById("txType").onchange = drawCashflow;
+}
+
+function renderAnnualAndBreakdown(){
+  // Year selector options from transactions + history
+  const years = new Set();
+  for (const t of (state.transactions||[])) years.add(yearKey(t.date));
+  for (const p of (state.history||[])) years.add(yearKey(p.date));
+  years.delete("");
+  const arr = Array.from(years).sort().reverse();
+
+  const sel = document.getElementById("yearSelect");
+  if (sel){
+    const prev = sel.value || "";
+    sel.innerHTML = arr.length ? arr.map(y=>`<option value="${escapeAttr(y)}">${escapeHtml(y)}</option>`).join("") : `<option value="">—</option>`;
+    // default to current year if present
+    const currentY = String(new Date().getFullYear());
+    if (!prev && arr.includes(currentY)) sel.value = currentY;
+    else if (prev && arr.includes(prev)) sel.value = prev;
+    else if (arr.length) sel.value = arr[0];
+    sel.onchange = ()=> { drawCashflow(); };
+  }
+
+  const year = getSelectedYear();
+  renderAnnualSummary(year);
+  renderExpenseClassChart(year);
+  renderTopExpenses(year);
+  renderCoverage(year);
+}
+
+function renderAnnualSummary(year){
+  const box = document.getElementById("annualSummary");
+  if (!box) return;
+  const s = computeYearSummary(year);
+  const pct = (s.savingsRate*100);
+  box.innerHTML = `
+    <div class="kpi"><div class="kpi__label">Entradas (ano)</div><div class="kpi__value">${fmtMoney(s.income)}</div></div>
+    <div class="kpi"><div class="kpi__label">Saídas (ano)</div><div class="kpi__value">${fmtMoney(s.expense)}</div></div>
+    <div class="kpi"><div class="kpi__label">Saldo (ano)</div><div class="kpi__value">${fmtMoney(s.net)}</div></div>
+    <div class="kpi"><div class="kpi__label">Taxa de poupança</div><div class="kpi__value">${isFinite(pct) ? pct.toFixed(1) : "0.0"}%</div></div>
+  `;
+}
+
+function renderExpenseClassChart(year){
+  const ctx = document.getElementById("chartExpenseClass");
+  const note = document.getElementById("expNote");
+  if (!ctx || !note) return;
+
+  const data = expenseByClass(year);
+  if (data.length === 0){
+    note.textContent = "Sem despesas registadas para este ano.";
+    note.style.display = "block";
+  } else {
+    note.style.display = "none";
+  }
+
+  const labels = data.map(x=>x.cls);
+  const values = data.map(x=>x.amt);
+
+  if (chartExpenseClass) chartExpenseClass.destroy();
+  chartExpenseClass = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderWidth: 0
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins:{
+        legend:{ position: "bottom", labels:{ color:"rgba(168,179,207,.92)", boxWidth: 10 } },
+        tooltip:{ callbacks:{ label: (c)=> ` ${c.label}: ${fmtMoney(c.raw)} ` } }
+      }
+    }
+  });
+}
+
+function renderTopExpenses(year){
+  const list = document.getElementById("topExpenses");
+  if (!list) return;
+  const top = topExpenses(year, 5);
+
+  list.innerHTML = "";
+  if (top.length === 0){
+    list.innerHTML = `<div class="note">Sem despesas no ano selecionado.</div>`;
+    return;
+  }
+
+  for (const x of top){
+    const div = document.createElement("div");
+    div.className = "item";
+    div.innerHTML = `
+      <div class="item__left">
+        <div class="item__name">${escapeHtml(x.name || "—")}</div>
+        <div class="item__meta">${escapeHtml(x.class || "—")} • ${escapeHtml(x.date || "")}</div>
+      </div>
+      <div class="item__right">
+        <div class="item__value">− ${fmtMoney(Number(x.amount)||0)}</div>
+        <div class="badge badge--out">Saída</div>
+      </div>
+    `;
+    div.addEventListener("click", ()=> openTxEdit(x.id));
+    list.appendChild(div);
+  }
+}
+
+function renderCoverage(year){
+  const box = document.getElementById("coverageBox");
+  const mini = document.getElementById("dashCoverage");
+  if (!box && !mini) return;
+
+  const c = computeCoverage(year);
+  const pctNet = Math.max(0, Math.min(1, c.covNet));
+  const pctGross = Math.max(0, Math.min(1, c.covGross));
+
+  const pctText = (p)=> `${(p*100).toFixed(1)}%`;
+  const bar = (p)=> `<div class="coverage__bar"><div class="coverage__fill" style="width:${(p*100).toFixed(1)}%"></div></div>`;
+
+  const expTxt = fmtMoney(c.exp);
+  const netTxt = fmtMoney(c.passiveNet);
+  const grossTxt = fmtMoney(c.passiveGross);
+
+  const inner = `
+    <div class="coverage__row">
+      <div>
+        <div class="coverage__title">Cobertura anual (ano ${escapeHtml(year || "—")})</div>
+        <div class="coverage__meta">Despesas: ${expTxt} • Passivo líquido: ${netTxt} • Passivo bruto: ${grossTxt}</div>
+      </div>
+      <div class="coverage__pct">${pctText(pctNet)}</div>
+    </div>
+    ${bar(pctNet)}
+    <div class="coverage__meta" style="margin-top:8px">Cobertura líquida. (Bruto: ${pctText(pctGross)})</div>
+  `;
+
+  if (box) box.innerHTML = inner;
+
+  // mini uses current year selection or latest year, more compact
+  if (mini){
+    const y = year || String(new Date().getFullYear());
+    mini.innerHTML = `
+      <div class="coverage__row">
+        <div>
+          <div class="coverage__title">Cobertura passivo</div>
+          <div class="coverage__meta">Ano ${escapeHtml(y)} • ${pctText(pctNet)} líquido</div>
+        </div>
+        <div class="coverage__pct">${pctText(pctNet)}</div>
+      </div>
+      ${bar(pctNet)}
+    `;
+  }
+}
+
+function drawCashflow(){
+  const q = (document.getElementById("qTx").value || "").trim().toLowerCase();
+  const m = document.getElementById("txMonth").value || "";
+  const ttype = document.getElementById("txType").value || "";
+
+  const list = document.getElementById("txList");
+  const filtered = (state.transactions||[]).filter(t=>{
+    const hit = (t.name||"").toLowerCase().includes(q) || (t.class||"").toLowerCase().includes(q);
+    const okM = !m || monthKey(t.date) === m;
+    const okT = !ttype || t.kind === ttype;
+    return hit && okM && okT;
+  }).sort((a,b)=> (b.date||"").localeCompare(a.date||""));
+
+  // KPIs
+  const k = computeCashKPIs(filtered);
+  const box = document.getElementById("cashSummary");
+  if (box){
+    box.innerHTML = `
+      <div class="kpi"><div class="kpi__label">Entradas</div><div class="kpi__value">${fmtMoney(k.income)}</div></div>
+      <div class="kpi"><div class="kpi__label">Saídas</div><div class="kpi__value">${fmtMoney(k.expense)}</div></div>
+      <div class="kpi"><div class="kpi__label">Saldo</div><div class="kpi__value">${fmtMoney(k.net)}</div></div>
+    `;
+  }
+
+  // list render
+  if (list){
+    list.innerHTML = "";
+    if (filtered.length === 0){
+      list.innerHTML = `<div class="note">Sem movimentos. Adiciona entradas/saídas para teres balanço mensal/anual.</div>`;
+    } else {
+      for (const x of filtered){
+        const badgeClass = x.kind === "income" ? "badge--in" : "badge--out";
+        const sign = x.kind === "income" ? "+" : "−";
+        const div = document.createElement("div");
+        div.className = "item";
+        div.innerHTML = `
+          <div class="item__left">
+            <div class="item__name">${escapeHtml(x.name || "—")}</div>
+            <div class="item__meta">${escapeHtml(x.class || "—")} • ${escapeHtml(x.date || "")}${x.notes ? " • "+escapeHtml(x.notes) : ""}</div>
+          </div>
+          <div class="item__right">
+            <div class="item__value">${sign} ${fmtMoney(Number(x.amount)||0)}</div>
+            <div class="badge ${badgeClass}">${x.kind === "income" ? "Entrada" : "Saída"}</div>
+          </div>
+        `;
+        div.addEventListener("click", ()=> openTxEdit(x.id));
+        list.appendChild(div);
+      }
+    }
+  }
+
+  renderCashflowChart();
+}
+
+function renderCashflowChart(){
+  const ctx = document.getElementById("chartCashflow");
+  if (!ctx) return;
+
+  const data = computeCashflow();
+  const labels = data.map(r=> fmtMonthLabel(r.ym));
+  const net = data.map(r=> r.net);
+
+  if (chartCashflow) chartCashflow.destroy();
+  chartCashflow = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        label: "Saldo mensal",
+        data: net,
+        borderWidth: 0
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins:{
+        legend:{ display:false },
+        tooltip:{ callbacks:{ label: (c)=> ` ${fmtMoney(c.raw)} ` } }
+      },
+      scales:{
+        x:{ grid:{ color:"rgba(255,255,255,.06)" }, ticks:{ color:"rgba(168,179,207,.9)" } },
+        y:{ grid:{ color:"rgba(255,255,255,.06)" }, ticks:{ color:"rgba(168,179,207,.9)", callback:(v)=> fmtMoney(v) } }
+      }
+    }
+  });
+}
+
+function openTxCreate(){
+  openTxModal({ title: "Adicionar movimento", item: null });
+}
+function openTxEdit(id){
+  const item = (state.transactions||[]).find(t=>t.id===id);
+  if (!item) return;
+  openTxModal({ title: "Editar movimento", item });
+}
+
+function openTxModal({title, item}){
+  document.getElementById("txTitle").textContent = title;
+  const modal = document.getElementById("txModal");
+  modal.setAttribute("aria-hidden","false");
+  document.body.style.overflow = "hidden";
+  tryVibrate(8);
+
+  // fill classes
+  const clsSel = document.getElementById("txClass");
+  clsSel.innerHTML = txClasses().map(c=>`<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join("");
+
+  document.getElementById("txId").value = item?.id || "";
+  document.getElementById("txKind").value = item?.kind || "expense";
+  document.getElementById("txClass").value = item?.class || "Outros";
+  document.getElementById("txName").value = item?.name || "";
+  document.getElementById("txAmount").value = item?.amount ?? "";
+  document.getElementById("txDate").value = item?.date || new Date().toISOString().slice(0,10);
+  document.getElementById("txNotes").value = item?.notes || "";
+
+  document.getElementById("btnDeleteTx").style.display = item ? "inline-flex" : "none";
+  setTimeout(()=>{ try{ document.getElementById("txName").focus(); }catch{} }, 50);
+}
+
+function closeTxModal(){
+  const modal = document.getElementById("txModal");
+  modal.setAttribute("aria-hidden","true");
+  document.body.style.overflow = "";
+}
+
+function exportTxCsv(){
+  const rows = [["kind","class","name","amount","date","notes"]];
+  for (const t of (state.transactions||[])){
+    rows.push([t.kind, t.class, t.name, t.amount, t.date, t.notes || ""]);
+  }
+  const csv = rows.map(r => r.map(cell => {
+    const s = String(cell ?? "");
+    return /[",\n]/.test(s) ? `"${s.replaceAll('"','""')}"` : s;
+  }).join(",")).join("\n");
+  downloadBlob(new Blob([csv], {type:"text/csv;charset=utf-8"}), "cashflow_movimentos.csv");
+  showToast("CSV exportado.");
+}
+
 // ===== Init =====
 function init(){
+  document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape'){ closeModal(); closeTxModal(); closeSheet(); } });
+
   setupNav();
   setupButtons();
   setupModal();
+  setupTxModal();
   setupSW();
   setActiveView("Dashboard");
 }

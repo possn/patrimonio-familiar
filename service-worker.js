@@ -1,39 +1,12 @@
 // Simple offline cache (app shell)
-const CACHE = "pf-cache-v2";
+const CACHE = "pf-cache-v6";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./manifest.webmanifest",
-  "./service-worker.js",
-  "./assets/icon-192.png",
-  "./assets/icon-512.png",
-  "./assets/favicon-32.png",
-  "./assets/favicon-32-dark.png",
-  "./assets/apple-touch-icon.png",
-  "./assets/apple-touch-icon-dark.png",
-  "./assets/logo-master-1024.png",
-  "./assets/splash-iphone-se-light.png",
-  "./assets/splash-iphone-se-dark.png",
-  "./assets/splash-iphone-8-light.png",
-  "./assets/splash-iphone-8-dark.png",
-  "./assets/splash-iphone-x-xs-light.png",
-  "./assets/splash-iphone-x-xs-dark.png",
-  "./assets/splash-iphone-xr-11-light.png",
-  "./assets/splash-iphone-xr-11-dark.png",
-  "./assets/splash-iphone-11-pro-max-light.png",
-  "./assets/splash-iphone-11-pro-max-dark.png",
-  "./assets/splash-iphone-12-13-14-light.png",
-  "./assets/splash-iphone-12-13-14-dark.png",
-  "./assets/splash-iphone-12-13-14-pro-max-light.png",
-  "./assets/splash-iphone-12-13-14-pro-max-dark.png",
-  "./assets/splash-ipad-light.png",
-  "./assets/splash-ipad-dark.png",
-  "./assets/splash-ipad-pro-11-light.png",
-  "./assets/splash-ipad-pro-11-dark.png",
-  "./assets/splash-ipad-pro-12.9-light.png",
-  "./assets/splash-ipad-pro-12.9-dark.png"
+  "./service-worker.js"
 ];
 
 self.addEventListener("install", (event) => {

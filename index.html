@@ -68,7 +68,7 @@
       </div>
     </div>
     <div class="topbar__actions">
-      <button id="btnAddQuick" class="btn btn--primary" title="Adicionar ativo">＋</button>
+      <button id="btnAddQuick" class="btn btn--primary" title="Adicionar ativo" aria-label="Adicionar ativo">＋</button>
     </div>
   </header>
 
@@ -93,8 +93,12 @@
                 <div class="pill__value" id="passiveMonthly">—</div>
               </div>
             </div>
-          </div>
-        </div>
+  <div class="dashquick" id="dashQuick">
+    <button class="chipbtn" id="dqAddAsset">＋ Ativo</button>
+    <button class="chipbtn" id="dqAddLiab">− Passivo</button>
+    <button class="chipbtn" id="dqSnapshot">⟲ Registar mês</button>
+  </div>
+</div>
 
         <div class="card">
           <div class="card__head">
@@ -111,8 +115,12 @@
               <canvas id="chartAlloc" height="180"></canvas>
               <div class="legend" id="allocLegend"></div>
             </div>
-          </div>
-        </div>
+  <div class="dashquick" id="dashQuick">
+    <button class="chipbtn" id="dqAddAsset">＋ Ativo</button>
+    <button class="chipbtn" id="dqAddLiab">− Passivo</button>
+    <button class="chipbtn" id="dqSnapshot">⟲ Registar mês</button>
+  </div>
+</div>
 
         <div class="card">
           <div class="card__head">
@@ -123,6 +131,25 @@
             <button class="btn btn--text" id="btnClearHistory">Limpar</button>
           </div>
           <canvas id="chartNetWorth" height="200"></canvas>
+          <div class="note note--tight" id="nwNote" style="margin-top:10px; display:none"></div>
+<div class="card">
+  <div class="card__head">
+    <div>
+      <div class="title">Evolução do rendimento passivo</div>
+      <div class="muted">Histórico (snapshots)</div>
+    </div>
+    <div class="row" style="gap:8px">
+      <select id="passiveMetric" class="select" style="width:auto">
+        <option value="net">Líquido</option>
+        <option value="gross">Bruto</option>
+      </select>
+    </div>
+  </div>
+  <canvas id="chartPassive" height="200"></canvas>
+          <div class="coverage coverage--mini" id="dashCoverage" style="margin-top:10px"></div>
+  <div class="note note--tight" id="passiveNote" style="margin-top:10px; display:none"></div>
+</div>
+
         </div>
 
         <div class="card">
@@ -151,11 +178,18 @@
           </div>
 
           <div class="filters">
-            <input id="qAssets" class="input" placeholder="Pesquisar (nome ou classe)"/>
-            <select id="fClass" class="select">
-              <option value="">Todas as classes</option>
-            </select>
-          </div>
+  <input id="qAssets" class="input" placeholder="Pesquisar (nome ou classe)"/>
+  <select id="fClass" class="select">
+    <option value="">Todas as classes</option>
+  </select>
+  <select id="sortAssets" class="select" aria-label="Ordenar">
+    <option value="value_desc">Valor ↓</option>
+    <option value="value_asc">Valor ↑</option>
+    <option value="name_asc">Nome A→Z</option>
+    <option value="class_asc">Classe A→Z</option>
+    <option value="income_desc">Rendimento ↓</option>
+  </select>
+</div>
 
           <div class="list" id="assetsList"></div>
         </div>
@@ -191,8 +225,12 @@
               <button class="btn" id="btnDownloadTemplate">Template CSV</button>
             </div>
             <div class="note" id="importNote"></div>
-          </div>
-        </div>
+  <div class="dashquick" id="dashQuick">
+    <button class="chipbtn" id="dqAddAsset">＋ Ativo</button>
+    <button class="chipbtn" id="dqAddLiab">− Passivo</button>
+    <button class="chipbtn" id="dqSnapshot">⟲ Registar mês</button>
+  </div>
+</div>
 
         <div class="card">
           <div class="card__head">
@@ -228,7 +266,168 @@
       </div>
     </section>
 
-    <!-- SETTINGS -->
+    <!-- CASHFLOW -->
+<section class="view" id="viewCashflow" aria-label="Cashflow">
+  <div class="grid">
+    <div class="card">
+      <div class="card__head">
+        <div>
+          <div class="title">Entradas & Saídas</div>
+          <div class="muted">Registo simples (mensal/anual) por classe</div>
+        </div>
+        <div class="row" style="gap:8px">
+          <button class="btn btn--primary" id="btnAddTx">Adicionar</button>
+        </div>
+      </div>
+
+      <div class="filters">
+        <input id="qTx" class="input" placeholder="Pesquisar (descrição/classe)"/>
+        <select id="txMonth" class="select" aria-label="Mês">
+          <option value="">Todos</option>
+        </select>
+        <select id="txType" class="select" aria-label="Tipo">
+          <option value="">Entradas + Saídas</option>
+          <option value="income">Entradas</option>
+          <option value="expense">Saídas</option>
+        </select>
+      </div>
+
+      <div class="cashsum" id="cashSummary"></div>
+<div class="card card--inner">
+  <div class="card__head">
+    <div>
+      <div class="title">Resumo anual</div>
+      <div class="muted">Entradas, saídas, saldo e taxa de poupança</div>
+    </div>
+    <div class="row" style="gap:8px">
+      <select id="yearSelect" class="select" style="width:auto" aria-label="Ano"></select>
+    </div>
+  </div>
+  <div id="annualSummary" class="annual"></div>
+</div>
+
+<div class="grid grid--2" style="margin-top:10px">
+  <div class="card card--inner">
+    <div class="card__head">
+      <div>
+        <div class="title">Despesas por classe</div>
+        <div class="muted">Distribuição (ano selecionado)</div>
+      </div>
+    </div>
+    <canvas id="chartExpenseClass" height="220"></canvas>
+    <div class="note note--tight" id="expNote" style="margin-top:10px; display:none"></div>
+  </div>
+
+  <div class="card card--inner">
+    <div class="card__head">
+      <div>
+        <div class="title">Top 5 despesas</div>
+        <div class="muted">Maiores saídas (ano selecionado)</div>
+      </div>
+    </div>
+    <div class="list" id="topExpenses"></div>
+  </div>
+</div>
+
+<div class="card card--inner" style="margin-top:10px">
+  <div class="card__head">
+    <div>
+      <div class="title">Cobertura: rendimento passivo vs despesas</div>
+      <div class="muted">Quanto do teu custo é coberto pelo passivo</div>
+    </div>
+  </div>
+  <div class="coverage" id="coverageBox"></div>
+</div>
+
+
+      <div class="card card--inner">
+        <div class="card__head">
+          <div>
+            <div class="title">Balanço mensal</div>
+            <div class="muted">Entradas − Saídas</div>
+          </div>
+        </div>
+        <canvas id="chartCashflow" height="220"></canvas>
+      </div>
+
+      <div class="card card--inner">
+        <div class="card__head">
+          <div>
+            <div class="title">Movimentos</div>
+            <div class="muted">Lista filtrável</div>
+          </div>
+          <button class="btn btn--text" id="btnExportTx">Exportar CSV</button>
+        </div>
+        <div class="list" id="txList"></div>
+      </div>
+
+      <div class="note">
+        Dica: regista aqui as despesas principais (habitação, escola, alimentação, transportes) e as entradas (salários, rendas, juros). Isto permite um balanço mensal/anual rápido sem complicar.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TX MODAL -->
+<div class="modal" id="txModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="modal__overlay" data-tx-close="1"></div>
+  <div class="modal__panel">
+    <div class="modal__head">
+      <div class="modal__title" id="txTitle">Adicionar movimento</div>
+      <button class="btn btn--text" data-tx-close="1">Fechar</button>
+    </div>
+    <div class="modal__body">
+      <form id="formTx" class="form">
+        <input type="hidden" id="txId">
+
+        <div class="row row--wrap">
+          <div class="field">
+            <div class="label">Tipo</div>
+            <select id="txKind" class="select" required>
+              <option value="income">Entrada</option>
+              <option value="expense">Saída</option>
+            </select>
+          </div>
+          <div class="field">
+            <div class="label">Classe</div>
+            <select id="txClass" class="select" required></select>
+          </div>
+        </div>
+
+        <div class="row row--wrap">
+          <div class="field">
+            <div class="label">Descrição</div>
+            <input id="txName" class="input" required placeholder="ex: Renda, Salário, Escola, Supermercado">
+          </div>
+          <div class="field">
+            <div class="label">Valor</div>
+            <input id="txAmount" class="input" type="number" step="0.01" required placeholder="ex: 950">
+            <div class="hint">Valor positivo. O tipo define se é entrada ou saída.</div>
+          </div>
+        </div>
+
+        <div class="row row--wrap">
+          <div class="field">
+            <div class="label">Data</div>
+            <input id="txDate" class="input" type="date" required>
+          </div>
+          <div class="field">
+            <div class="label">Notas</div>
+            <input id="txNotes" class="input" placeholder="opcional">
+          </div>
+        </div>
+
+        <div class="row">
+          <button class="btn btn--primary" type="submit">Guardar</button>
+          <button class="btn btn--danger" type="button" id="btnDeleteTx" style="display:none">Eliminar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS -->
+
     <section class="view" id="viewSettings" aria-label="Definições">
       <div class="grid">
         <div class="card">
@@ -264,8 +463,12 @@
               <button class="btn" id="btnReset">Reset total (apaga dados)</button>
             </div>
             <div class="note">Esta app é “offline-first”: os dados ficam em <code>localStorage</code>.</div>
-          </div>
-        </div>
+  <div class="dashquick" id="dashQuick">
+    <button class="chipbtn" id="dqAddAsset">＋ Ativo</button>
+    <button class="chipbtn" id="dqAddLiab">− Passivo</button>
+    <button class="chipbtn" id="dqSnapshot">⟲ Registar mês</button>
+  </div>
+</div>
 
         <div class="card">
           <div class="card__head">
@@ -294,7 +497,10 @@
     <button class="tab" data-view="Import" aria-label="Importar">
       <span class="tab__icon">⇅</span><span class="tab__text">Importar</span>
     </button>
-    <button class="tab" data-view="Settings" aria-label="Definições">
+    <button class="tab" data-view="Cashflow" aria-label="Balanço">
+  <span class="tab__icon">€</span><span class="tab__text">Balanço</span>
+</button>
+<button class="tab" data-view="Settings" aria-label="Definições">
       <span class="tab__icon">⚙</span><span class="tab__text">Definições</span>
     </button>
   </nav>
@@ -363,5 +569,38 @@
       </div>
     </div>
   </div>
+<!-- Floating Action Button -->
+<button id="fabAdd" class="fab" aria-label="Adicionar" title="Adicionar">＋</button>
+
+<!-- Quick Action Sheet -->
+<div class="sheet" id="actionSheet" aria-hidden="true">
+  <div class="sheet__overlay" data-sheet-close="1"></div>
+  <div class="sheet__panel" role="dialog" aria-modal="true" aria-label="Ações rápidas">
+    <div class="sheet__handle"></div>
+    <div class="sheet__title">Ações rápidas</div>
+    <div class="sheet__grid">
+      <button class="sheetbtn" id="qaAddAsset">
+        <div class="sheetbtn__icon">＋</div>
+        <div class="sheetbtn__txt">Ativo</div>
+      </button>
+      <button class="sheetbtn" id="qaAddLiab">
+        <div class="sheetbtn__icon">−</div>
+        <div class="sheetbtn__txt">Passivo</div>
+      </button>
+      <button class="sheetbtn" id="qaSnapshot">
+        <div class="sheetbtn__icon">⟲</div>
+        <div class="sheetbtn__txt">Registar mês</div>
+      </button>
+      <button class="sheetbtn" id="qaImport">
+        <div class="sheetbtn__icon">⇅</div>
+        <div class="sheetbtn__txt">Importar</div>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast" aria-live="polite" aria-atomic="true"></div>
+
 </body>
 </html>
