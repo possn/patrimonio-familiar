@@ -604,30 +604,110 @@ function fileToRows(file){
   });
 }
 
+
 function csvToObjects(text){
-  // robust CSV parsing for simple exports (comma/semicolon)
-  const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
-  if (!lines.length) return [];
-  const delim = (lines[0].includes(";") && !lines[0].includes(",")) ? ";" : ",";
-  const header = splitCSVLine(lines[0], delim).map(h=>h.trim());
-  const out = [];
-  for (let i=1;i<lines.length;i++){
-    const cols = splitCSVLine(lines[i], delim);
-    if (!cols.length) continue;
-    const obj = {};
-    for (let j=0;j<header.length;j++){
-      obj[header[j]] = (cols[j]!==undefined) ? cols[j] : "";
+  // Robust CSV/TSV parser with delimiter + header detection and multi-section support (e.g., "Combined" exports).
+  const raw = String(text||"").replace(/^\uFEFF/,""); // strip BOM
+  const lines = raw.split(/\r?\n/);
+
+  const delims = [",",";","\t","|"];
+  const headerHints = [
+    "tipo","type","class","classe","nome","name","ticker","symbol","isin",
+    "shares","qty","quantity","units","valor","value","market","market_value",
+    "current","price","yield","dividend","amount","cash","data","date","categoria","category"
+  ];
+
+  function splitLine(line, delim){ return splitCSVLine(line, delim); }
+
+  function scoreHeader(line, delim){
+    const cols = splitLine(line, delim).map(c=>String(c||"").trim().toLowerCase());
+    if (cols.length < 3) return -1;
+    let hits = 0;
+    for (const c of cols){
+      for (const h of headerHints){
+        if (c === h || c.includes(h)) { hits++; break; }
+      }
     }
-    out.push(obj);
+    return hits;
+  }
+
+  function bestDelimForLine(line){
+    let best = {d:",", score:-1, cols:0};
+    for (const d of delims){
+      const cols = splitLine(line, d);
+      const sc = scoreHeader(line, d);
+      if (sc > best.score || (sc === best.score && cols.length > best.cols)){
+        best = {d, score: sc, cols: cols.length};
+      }
+    }
+    return best;
+  }
+
+  // Identify header lines (supports multiple sections)
+  const headers = [];
+  for (let i=0;i<lines.length;i++){
+    const line = lines[i];
+    if (!line || !line.trim()) continue;
+    const b = bestDelimForLine(line);
+    if (b.score >= 2){
+      headers.push({idx:i, delim:b.d, header: splitLine(line, b.d).map(h=>String(h||"").trim())});
+    }
+  }
+
+  // Fallback: first non-empty line
+  if (!headers.length){
+    let first = -1;
+    for (let i=0;i<lines.length;i++){ if (lines[i] && lines[i].trim()){ first=i; break; } }
+    if (first === -1) return [];
+    const b = bestDelimForLine(lines[first]);
+    headers.push({idx:first, delim:b.d, header: splitLine(lines[first], b.d).map(h=>String(h||"").trim())});
+  }
+
+  const out = [];
+  for (let h=0; h<headers.length; h++){
+    const hinfo = headers[h];
+    const nextHeaderIdx = (h+1<headers.length) ? headers[h+1].idx : lines.length;
+    const header = hinfo.header;
+    const delim = hinfo.delim;
+
+    for (let i=hinfo.idx+1; i<nextHeaderIdx; i++){
+      const line = lines[i];
+      if (!line || !line.trim()) continue;
+
+      const cols = splitLine(line, delim);
+      if (!cols.length) continue;
+
+      // Skip section titles (single column)
+      if (cols.length === 1 && header.length > 2) continue;
+
+      // If line looks like a new header, stop this section
+      if (scoreHeader(line, delim) >= 2) break;
+
+      const obj = {};
+      for (let j=0;j<header.length;j++){
+        obj[header[j]] = (cols[j]!==undefined) ? cols[j] : "";
+      }
+
+      let any=false;
+      for (const k in obj){ if (String(obj[k]||"").trim()!==""){ any=true; break; } }
+      if (!any) continue;
+
+      out.push(obj);
+    }
   }
   return out;
 }
 
 function splitCSVLine(line, delim){
+  // supports quotes + escaped quotes
   const out=[]; let cur=""; let q=false;
   for (let i=0;i<line.length;i++){
     const ch=line[i];
-    if (ch === '"'){ q = !q; continue; }
+    if (ch === '"'){
+      if (q && line[i+1] === '"'){ cur += '"'; i++; continue; }
+      q = !q; 
+      continue;
+    }
     if (!q && ch===delim){ out.push(cur); cur=""; continue; }
     cur += ch;
   }
@@ -636,138 +716,238 @@ function splitCSVLine(line, delim){
 }
 
 function normKey(k){
-  return String(k||"").trim().toLowerCase().replace(/\s+/g,"_");
+  return String(k||"")
+    .trim()
+    .toLowerCase()
+    .replace(/[\u00A0]/g," ")
+    .replace(/[^\p{L}\p{N}]+/gu,"_")
+    .replace(/^_+|_+$/g,"");
 }
 
-function detectSchema(rows){
-  if (!rows.length) return "empty";
-  const keys = Object.keys(rows[0]||{}).map(normKey);
-  if (keys.includes("tipo")) return "template";
-  if (keys.includes("type") && keys.includes("class") && keys.includes("name")) return "template";
-  // holdings
-  const hasSymbol = keys.some(k=>["ticker","symbol","isin"].includes(k));
-  const hasQty = keys.some(k=>["shares","qty","quantity","units"].includes(k));
-  const hasValue = keys.some(k=>["valor","value","market_value","current_value","currentvalue","total_value","position_value"].includes(k) || k.includes("value"));
-  if (hasSymbol && (hasValue || hasQty)) return "holdings";
+function normalizeRow(obj){
+  const out = {};
+  for (const k in (obj||{})){
+    out[normKey(k)] = String(obj[k] ?? "").trim();
+  }
+  return out;
+}
+
+function parseNumberSmart(x){
+  if (x===null || x===undefined) return NaN;
+  let s = String(x).trim();
+  if (!s) return NaN;
+  s = s.replace(/[%€$£]/g,"").replace(/\s/g,"");
+  let neg=false;
+  if (s.startsWith("(") && s.endsWith(")")){ neg=true; s=s.slice(1,-1); }
+  const hasComma = s.includes(",");
+  const hasDot = s.includes(".");
+  if (hasComma && hasDot){
+    const lastComma = s.lastIndexOf(",");
+    const lastDot = s.lastIndexOf(".");
+    if (lastComma > lastDot){
+      s = s.replace(/\./g,"").replace(",",".");
+    } else {
+      s = s.replace(/,/g,"");
+    }
+  } else if (hasComma && !hasDot){
+    s = s.replace(",",".");
+  } else {
+    s = s.replace(/,/g,"");
+  }
+  const n = Number(s);
+  if (Number.isFinite(n)) return neg ? -n : n;
+  return NaN;
+}
+
+function classifyRow(r){
+  const tipo = (r.tipo || r.type || "").toLowerCase();
+  if (["ativo","asset","assets"].includes(tipo)) return "ativo";
+  if (["passivo","liability","debt","liabilities"].includes(tipo)) return "passivo";
+  if (["movimento","transaction","movement","cashflow","cash_flow","tx","dividend"].includes(tipo)) return "movimento";
+
+  const hasDate = !!(r.data || r.date || r.payment_date || r.trade_date);
+  const amount = parseNumberSmart(r.montante || r.amount || r.valor || r.value || r.cash || r.total || r.net || r.saldo);
+  const qty = parseNumberSmart(r.qty || r.quantity || r.shares || r.units || r.unidades);
+  const mv  = parseNumberSmart(r.market_value || r.current_value || r.position_value || r.total_value || r.value || r.valor);
+
+  // DivTracker/transactions-like CSV (Ticker, Quantity, Cost Per Share, Currency, Date, Commission...)
+  // This file is not a holdings snapshot; we derive positions by aggregating trades.
+  const hasTicker = !!(r.ticker || r.symbol);
+  const cps = parseNumberSmart(r.cost_per_share || r.costpershare || r.price || r.preco || r.unit_price);
+  if (hasTicker && Number.isFinite(qty) && Number.isFinite(cps) && hasDate) return "trade";
+
+  if (hasDate && Number.isFinite(amount) && Math.abs(amount) > 0) return "movimento";
+
+  const cls = (r.classe || r.class || r.category || "").toLowerCase();
+  const name = (r.nome || r.name || r.instrument || r.security || r.asset || r.description || "").toLowerCase();
+  if (cls.includes("passiv") || cls.includes("dívid") || cls.includes("divid") || name.includes("loan") || name.includes("mortgage") || name.includes("cart")) {
+    if (Number.isFinite(mv) || Number.isFinite(amount)) return "passivo";
+  }
+
+  const hasId = !!(r.ticker || r.symbol || r.isin || r.nome || r.name || r.instrument || r.security);
+  if (hasId && Number.isFinite(mv) && mv>0) return "ativo";
+  if (hasId && Number.isFinite(qty) && Number.isFinite(parseNumberSmart(r.price || r.preco || r.unit_price))) return "ativo";
+  if (hasId && Number.isFinite(amount) && !hasDate && amount>0) return "ativo";
+  if (Number.isFinite(mv) && mv>0) return "ativo";
+
   return "unknown";
 }
 
-function pick(obj, candidates){
-  for (const c of candidates){
-    const v = obj[c];
-    if (v!==undefined && v!==null && String(v).trim()!=="") return v;
-  }
-  return "";
-}
-
 function importRows(rows){
-  const schema = detectSchema(rows);
-  let addedA=0, addedL=0, addedT=0;
+  let addedA=0, addedL=0, addedT=0, unknown=0;
+  let sampleUnknown=null;
 
-  if (schema === "empty"){
-    alert("Ficheiro vazio.");
-    return;
-  }
+  // Trade-style import aggregator (DivTracker_Combined, etc.)
+  // We derive positions (assets) from trades; we do NOT push thousands of rows to "Movimentos".
+  const posMap = new Map(); // key=ticker|ccy -> {ticker, ccy, qty, cost, comm}
 
-  if (schema === "template"){
-    for (const r0 of rows){
-      const r = {};
-      for (const k of Object.keys(r0)) r[normKey(k)] = r0[k];
-      const tipo = String(r.tipo || r.type || "").toLowerCase().trim();
-      if (tipo === "ativo" || tipo === "asset"){
-        state.assets.push({
-          id: uid(),
-          class: String(r.classe||r.class||"Outros").trim() || "Outros",
-          name: String(r.nome||r.name||"").trim(),
-          value: parseNum(r.valor||r.value),
-          yieldType: String(r.yield_tipo||r.yieldtype||"none").trim() || "none",
-          yieldValue: parseNum(r.yield_valor||r.yieldvalue),
-          notes: String(r.notas||r.notes||"").trim()
-        });
-        if (state.assets[state.assets.length-1].name) addedA++; else state.assets.pop();
-      }else if (tipo === "passivo" || tipo === "liability"){
-        state.liabilities.push({
-          id: uid(),
-          class: String(r.classe||r.class||"Outros").trim() || "Outros",
-          name: String(r.nome||r.name||"").trim(),
-          value: parseNum(r.valor||r.value),
-          notes: String(r.notas||r.notes||"").trim()
-        });
-        if (state.liabilities[state.liabilities.length-1].name) addedL++; else state.liabilities.pop();
-      }else if (tipo === "movimento" || tipo === "transaction" || tipo === "tx"){
-        const amount = parseNum(r.valor||r.value||r.amount);
-        if (!(amount>0)) continue;
-        const type = String(r.tx_tipo||r.kind||r.inout||r.mov_tipo||"").toLowerCase().includes("out") ? "out" : (String(r.tx_tipo||r.kind||"").toLowerCase().includes("sa") ? "out" : "in");
-        const date = String(r.data||r.date||"").trim() || new Date().toISOString().slice(0,10);
-        state.transactions.push({
-          id: uid(),
-          type,
-          category: String(r.nome||r.categoria||r.category||"Outros").trim() || "Outros",
-          amount,
-          date: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : new Date().toISOString().slice(0,10),
-          recurring: "none"
-        });
-        addedT++;
+  for (const raw of rows){
+    const r = normalizeRow(raw);
+    const kind = classifyRow(r);
+
+    if (kind === "trade"){
+      const ticker = String(r.ticker || r.symbol || "").trim();
+      const qty = parseNumberSmart(r.quantity || r.qty || r.shares || r.units || r.unidades);
+      const cps = parseNumberSmart(r.cost_per_share || r.costpershare || r.price || r.preco || r.unit_price);
+      const ccy = String(r.currency || r.ccy || r.moeda || "").trim().toUpperCase();
+      const comm = parseNumberSmart(r.commission || r.fee || r.commission_amount);
+      if(!ticker || !Number.isFinite(qty) || !Number.isFinite(cps)) {
+        unknown++; if(!sampleUnknown) sampleUnknown = r; 
+        continue;
       }
+
+      const key = `${ticker}|${ccy||""}`;
+      const prev = posMap.get(key) || { ticker, ccy, qty:0, cost:0, comm:0 };
+      if(qty >= 0){
+        prev.qty += qty;
+        prev.cost += qty * cps;
+        if(Number.isFinite(comm) && comm>0) prev.comm += comm;
+      } else {
+        const sellQty = Math.abs(qty);
+        const avg = prev.qty>0 ? (prev.cost/prev.qty) : cps;
+        prev.qty = Math.max(0, prev.qty - sellQty);
+        prev.cost = Math.max(0, prev.cost - sellQty*avg);
+      }
+      posMap.set(key, prev);
+      continue;
     }
-  }else{
-    // holdings-ish import (e.g., DivTracker). We'll create assets only.
-    for (const r0 of rows){
-      const r = {};
-      for (const k of Object.keys(r0)) r[normKey(k)] = r0[k];
 
-      const symbol = String(pick(r, ["ticker","symbol","isin"])).trim();
-      const name = String(pick(r, ["name","company","asset","instrument","security"])).trim() || symbol;
-      const qty = parseNum(pick(r, ["shares","qty","quantity","units"]));
-      const mv  = parseNum(pick(r, ["market_value","current_value","currentvalue","total_value","position_value","valor","value","current_value_(eur)","marketvalue"]));
-      const price = parseNum(pick(r, ["price","last_price","current_price"]));
-      const value = mv>0 ? mv : (qty>0 && price>0 ? qty*price : parseNum(pick(r, ["total","amount"])));
+    if (kind === "movimento"){
+      const amtRaw = r.montante || r.amount || r.valor || r.value || r.cash || r.total || r.net || r.saldo;
+      const amt = parseNumberSmart(amtRaw);
+      if (!Number.isFinite(amt) || Math.abs(amt) < 1e-9) continue;
 
-      if (!symbol && !name) continue;
-      if (!(value>0)) continue;
+      const when = (r.data || r.date || r.payment_date || r.trade_date || "").trim();
+      const cat  = (r.categoria || r.category || r.classe || r.class || "Outros").trim() || "Outros";
+      const desc = (r.descricao || r.description || r.nome || r.name || r.memo || "").trim();
 
-      // detect class
-      let cls = "Ações/ETFs";
-      const symU = symbol.toUpperCase();
-      if (symU.endsWith(".CC") || ["BTC","ETH","SOL","ADA","XRP","DOT","BNB"].includes(symU)) cls = "Cripto";
-      if (["XAU","GOLD"].includes(symU)) cls = "Ouro";
-      if (["XAG","SILVER"].includes(symU)) cls = "Prata";
-
-      // yield if available
-      const yPct = parseNum(pick(r, ["yield","div_yield","dividend_yield","yield_%","yield_percent","yieldpercent"]));
-      const yEurYear = parseNum(pick(r, ["dividend","dividends","dividends_year","annual_dividend","income"]));
-      let yieldType = "none";
-      let yieldValue = 0;
-      if (yPct>0 && yPct<60){ yieldType="yield_pct"; yieldValue=yPct; }
-      else if (yEurYear>0){ yieldType="yield_eur_year"; yieldValue=yEurYear; }
-
-      state.assets.push({
+      state.transactions.push({
         id: uid(),
-        class: cls,
-        name: symbol ? symbol : name,
-        value,
-        yieldType,
-        yieldValue,
-        notes: symbol && name && name!==symbol ? name : ""
+        date: normalizeDate(when) || isoToday(),
+        kind: amt>=0 ? "Entrada" : "Saída",
+        category: cat,
+        description: desc,
+        amount: Math.abs(amt)
       });
-      addedA++;
+      addedT++;
+      continue;
     }
+
+    if (kind === "ativo" || kind === "passivo"){
+      const name = (r.nome || r.name || r.instrument || r.security || r.asset || r.description || r.ticker || r.symbol || "Item").trim();
+      const className = (r.classe || r.class || r.category || (kind==="passivo" ? "Dívida" : "Outros")).trim() || (kind==="passivo" ? "Dívida" : "Outros");
+      const value = parseNumberSmart(r.valor || r.value || r.market_value || r.current_value || r.total_value || r.position_value || r.amount || r.total);
+      if (!Number.isFinite(value) || Math.abs(value) < 1e-9) continue;
+
+      const yieldType = (r.yield_tipo || r.yield_type || r.income_type || "").trim();
+      const yieldVal = (r.yield_valor || r.yield_value || r.yield || r.dividend_yield || r.div_yield || "").trim();
+      const yv = parseNumberSmart(yieldVal);
+
+      const item = {
+        id: uid(),
+        class: normalizeClassName(className),
+        name: name,
+        value: Math.abs(value),
+        yieldType: normalizeYieldType(yieldType),
+        yieldValue: Number.isFinite(yv) ? yv : 0,
+        notes: "",
+        favorite: false
+      };
+
+      if (kind === "passivo"){
+        state.liabilities.push(item);
+        addedL++;
+      } else {
+        state.assets.push(item);
+        addedA++;
+      }
+      continue;
+    }
+
+    unknown++;
+    if (!sampleUnknown) sampleUnknown = r;
   }
 
-  // de-duplicate basic: by (class+name), keep last
-  const seen = new Map();
-  for (const a of state.assets){
-    const key = (a.class||"") + "||" + (a.name||"");
-    seen.set(key, a);
+  // Convert aggregated positions (trades) into Assets.
+  // NOTE: DivTracker_Combined is a trade ledger (buy/sell). We create ONE asset per ticker
+  // valued at cost basis (offline). This is still useful for portfolio structure and manual editing.
+  for (const p of posMap.values()){
+    if (!(p.qty > 0) || !(p.cost > 0)) continue;
+    const avg = p.cost / p.qty;
+    const estValue = p.cost + (p.comm || 0);
+
+    const upper = String(p.ticker).toUpperCase();
+    const sym = upper.replace(/\.CC$/, "");
+    const isCrypto = upper.endsWith(".CC") || ["BTC","ETH","SOL","ADA","XRP","DOT","BNB"].includes(sym);
+    const cls = isCrypto ? "Cripto" : "Ações/ETFs";
+
+    const notes = `Importado (DivTracker trades). Qty=${fmt(p.qty)} · PM=${fmtMoney(avg, p.ccy||"EUR")} · Moeda=${p.ccy||"EUR"}`;
+
+    // Merge if already exists (same name+class)
+    const existingIx = state.assets.findIndex(a => (a.name||"").toUpperCase() === upper && (a.class||"") === cls);
+    const item = {
+      id: existingIx>=0 ? state.assets[existingIx].id : uid(),
+      class: cls,
+      name: p.ticker,
+      value: estValue,
+      yieldType: "",
+      yieldValue: 0,
+      notes,
+      favorite: existingIx>=0 ? !!state.assets[existingIx].favorite : false
+    };
+    if (existingIx>=0) state.assets[existingIx] = item; else state.assets.push(item);
+    addedA++;
   }
-  state.assets = Array.from(seen.values());
 
   saveState();
-  $("importHint").textContent = `Importado com sucesso: ${addedA} ativos, ${addedL} passivos, ${addedT} movimentos.`;
   renderDashboard();
   renderItems();
   renderCashflow();
+  renderBalance();
+
+  // UI feedback
+  const hint = document.getElementById("importHint");
+  if (hint){
+    if (addedA+addedL+addedT > 0){
+      hint.textContent = `Importado: ${addedA} ativos, ${addedL} passivos, ${addedT} movimentos.`;
+    } else {
+      hint.textContent = `Importei ${rows.length} linhas mas não reconheci nenhum registo. (Ver detalhes no alerta.)`;
+    }
+  }
+
+  if (addedA+addedL+addedT === 0){
+    const cols = rows.length ? Object.keys(rows[0]||{}) : [];
+    alert("Importação concluída, mas 0 registos reconhecidos.\n\n" +
+      "Isto costuma acontecer quando as colunas do CSV são diferentes do esperado.\n\n" +
+      "Diagnóstico:\n" +
+      `• linhas lidas: ${rows.length}\n` +
+      `• colunas (primeira linha): ${cols.slice(0,20).join(", ")}${cols.length>20?"…":""}\n\n` +
+      "Sugestão: exporta um 'CSV holdings/positions' com colunas tipo ticker/symbol/nome + value/market value, ou usa o botão 'Template CSV'.");
+  } else {
+    alert(`Importado com sucesso: ${addedA} ativos, ${addedL} passivos, ${addedT} movimentos. (linhas: ${rows.length})`);
+  }
 }
+
 
 function downloadTemplate(){
   const rows = [
