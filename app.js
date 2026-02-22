@@ -173,11 +173,7 @@ async function bootState(){
     const obj = await decryptJson(pass, payload);
     state = obj;
     // normalize
-    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1, dashMode: "full" };
-        if (state.settings.autoLockMin==null) state.settings.autoLockMin = 5;
-        if (state.settings.hideValues==null) state.settings.hideValues = 0;
-        if (state.settings.haptics==null) state.settings.haptics = 1;
-        if (!state.settings.dashMode) state.settings.dashMode = "full";
+    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [] };
     state.settings.txTemplates = Array.isArray(state.settings.txTemplates) ? state.settings.txTemplates : [];
     state.assets = Array.isArray(state.assets) ? state.assets : [];
     state.liabilities = Array.isArray(state.liabilities) ? state.liabilities : [];
@@ -199,7 +195,7 @@ function defaultState(){
     liabilities: [],
     history: [],
     transactions: [],
-    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1, dashMode: "full" }
+    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [] }
   };
 }
 
@@ -212,11 +208,7 @@ function loadState(){
       s.assets = Array.isArray(s.assets) ? s.assets : [];
       s.liabilities = Array.isArray(s.liabilities) ? s.liabilities : [];
       s.history = Array.isArray(s.history) ? s.history : [];
-      s.settings = s.settings || { baseCurrency:"EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1, dashMode: "full" };
-      if (s.settings.autoLockMin==null) s.settings.autoLockMin = 5;
-      if (s.settings.hideValues==null) s.settings.hideValues = 0;
-      if (s.settings.haptics==null) s.settings.haptics = 1;
-      if (!s.settings.dashMode) s.settings.dashMode = "full";
+      s.settings = s.settings || { baseCurrency:"EUR", taxRate: 0, txTemplates: [] };
       s.settings.txTemplates = Array.isArray(s.settings.txTemplates) ? s.settings.txTemplates : [];
       s.transactions = Array.isArray(s.transactions) ? s.transactions : [];
       return s;
@@ -234,7 +226,7 @@ function loadState(){
     ],
     history: [],
     transactions: [],
-    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1, dashMode: "full" },
+    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [] },
   };
 }
 
@@ -378,160 +370,8 @@ function setActiveView(name){
   if (name === "Cashflow") renderCashflow();
 }
 
-function openDashAllModal(){
-  const modal = document.getElementById("dashAllAssetsModal");
-  if (!modal) return;
-  modal.setAttribute("aria-hidden","false");
-  document.body.style.overflow = "hidden";
-  tryVibrate(8);
-  renderDashAllList();
-  document.getElementById("dashAllQ").oninput = renderDashAllList;
-}
-function closeDashAllModal(){
-  const modal = document.getElementById("dashAllAssetsModal");
-  if (!modal) return;
-  modal.setAttribute("aria-hidden","true");
-  document.body.style.overflow = "";
-}
-function renderDashAllList(){
-  const q = (document.getElementById("dashAllQ").value || "").trim().toLowerCase();
-  const box = document.getElementById("dashAllList");
-  if (!box) return;
-  const items = (state.assets||[])
-    .filter(a => (Number(a.value)||0) > 0)
-    .filter(a => (a.name||"").toLowerCase().includes(q) || normalizeAssetClass(a.class).toLowerCase().includes(q))
-    .slice()
-    .sort((a,b)=> (Number(b.value)||0)-(Number(a.value)||0));
-
-  box.innerHTML = "";
-  if (!items.length){
-    box.innerHTML = `<div class="note">Sem resultados.</div>`;
-    return;
-  }
-  for (const a of items){
-    const div = document.createElement("div");
-    div.className = "item";
-    div.innerHTML = `
-      <div class="item__left">
-        <div class="item__name">${escapeHtml(a.name||"—")}</div>
-        <div class="item__meta">${escapeHtml(normalizeAssetClass(a.class)||"—")}</div>
-      </div>
-      <div class="item__right" style="display:flex; align-items:center; gap:10px">
-        <div style="text-align:right">
-          <div class="item__value">${fmtMoney(Number(a.value)||0)}</div>
-          <div class="badge">${pct(Number(a.value)||0, totals().assetsTotal)}</div>
-        </div>
-        <button class="star ${a.fav ? "star--on":""}" aria-label="Favorito" title="Favorito">★</button>
-      </div>
-    `;
-    div.querySelector(".star")?.addEventListener("click",(e)=>{ e.stopPropagation(); toggleFav(a.id); renderDashAllList(); });
-    div.addEventListener("click", ()=>{ closeDashAllModal(); openEdit("asset", a.id); });
-    box.appendChild(div);
-  }
-}
-
-function applyDashMode(){
-  const mode = state?.settings?.dashMode || "full";
-  document.body.classList.toggle("dash-daily", mode === "daily");
-}
-
-
-function ensureDashDailyEl(){
-  let el = document.getElementById("dashDaily");
-  if (el) return el;
-  const view = document.getElementById("viewDashboard");
-  if (!view) return null;
-  // insert after first card (net worth) if possible
-  el = document.createElement("div");
-  el.id = "dashDaily";
-  el.className = "card dash-daily-only";
-  el.style.marginTop = "10px";
-  // place near top
-  const firstCard = view.querySelector(".card");
-  if (firstCard && firstCard.parentElement){
-    firstCard.parentElement.insertBefore(el, firstCard.nextSibling);
-  } else {
-    view.appendChild(el);
-  }
-  return el;
-}
-
-function renderDashDaily(){
-  const el = ensureDashDailyEl();
-  if (!el) return;
-  const t = totals();
-  // Top 5 assets
-  const items = (state.assets||[]).filter(a => (Number(a.value)||0) > 0).slice()
-    .sort((a,b)=> (Number(b.value)||0)-(Number(a.value)||0))
-    .slice(0,5);
-
-  const year = String(new Date().getFullYear());
-  let cov = null;
-  try{ cov = computeCoverage(year); }catch{ cov = null; }
-  const pct = cov && cov.exp>0 ? Math.max(0, Math.min(1, cov.covNet)) : 0;
-
-  el.innerHTML = `
-    <div class="card__head">
-      <div>
-        <div class="title">Modo diário</div>
-        <div class="muted">Leitura rápida</div>
-      </div>
-    </div>
-    <div class="annual">
-      <div class="kpi"><div class="kpi__label">Património líquido</div><div class="kpi__value">${fmtMoney(t.netWorth)}</div></div>
-      <div class="kpi"><div class="kpi__label">Ativos</div><div class="kpi__value">${fmtMoney(t.assetsTotal)}</div></div>
-      <div class="kpi"><div class="kpi__label">Passivos</div><div class="kpi__value">${fmtMoney(t.liabilitiesTotal)}</div></div>
-      <div class="kpi"><div class="kpi__label">Passivo anual (líq.)</div><div class="kpi__value">${fmtMoney(computePassiveAnnualGross().net)}</div></div>
-    </div>
-
-    <div class="coverage" style="margin-top:10px">
-      <div class="coverage__row">
-        <div>
-          <div class="coverage__title">Cobertura (ano ${escapeHtml(year)})</div>
-          <div class="coverage__meta">${cov ? `Despesas: ${fmtMoney(cov.exp)} • Passivo líq.: ${fmtMoney(cov.passiveNet)}` : "Sem dados de balanço/snapshots."}</div>
-        </div>
-        <div class="coverage__pct">${(pct*100).toFixed(1)}%</div>
-      </div>
-      <div class="coverage__bar"><div class="coverage__fill" style="width:${(pct*100).toFixed(1)}%"></div></div>
-    </div>
-
-    <div class="card card--inner" style="margin-top:10px">
-      <div class="card__head">
-        <div>
-          <div class="title">Top 5 ativos</div>
-          <div class="muted">por valor</div>
-        </div>
-        <button class="btn btn--text" id="btnDailyAll">Ver o resto</button>
-      </div>
-      <div class="list" id="dailyTop5"></div>
-    </div>
-  `;
-  const list = el.querySelector("#dailyTop5");
-  if (items.length===0){
-    list.innerHTML = `<div class="note">Sem ativos.</div>`;
-  } else {
-    list.innerHTML = "";
-    for (const a of items){
-      const div = document.createElement("div");
-      div.className = "item";
-      div.innerHTML = `
-        <div class="item__left">
-          <div class="item__name">${escapeHtml(a.name||"—")}</div>
-          <div class="item__meta">${escapeHtml(normalizeAssetClass(a.class)||"—")}</div>
-        </div>
-        <div class="item__right"><div class="item__value">${fmtMoney(Number(a.value)||0)}</div></div>
-      `;
-      div.addEventListener("click", ()=> openEdit("asset", a.id));
-      list.appendChild(div);
-    }
-  }
-  el.querySelector("#btnDailyAll")?.addEventListener("click", openDashAllModal);
-}
-
 function renderDashboard(){
   applyDashMode();
-  renderTplManager();
-  markDashFull();
   const t = computeTotals();
   el("netWorth").textContent = fmtMoney(t.netWorth);
   el("netWorthSub").textContent = `Ativos ${fmtMoney(t.assetsTotal)}  |  Passivos ${fmtMoney(t.liabTotal)}`;
@@ -547,47 +387,31 @@ function renderDashboard(){
 }
 
 function renderTopAssets(){
-  const elList = document.getElementById("topAssets");
-  const btnAll = document.getElementById("btnDashAll");
-  if (!elList) return;
-
-  const items = (state.assets||[]).filter(a => (Number(a.value)||0) > 0).slice()
-    .sort((a,b)=> (Number(b.value)||0)-(Number(a.value)||0));
-
-  const top = items.slice(0,10);
-  elList.innerHTML = "";
-  if (top.length === 0){
-    elList.innerHTML = `<div class="note">Sem ativos. Adiciona ou importa dados.</div>`;
-    if (btnAll) btnAll.style.display = "none";
+  const box = el("topAssets");
+  box.innerHTML = "";
+  const items = topAssets(6);
+  if (items.length === 0){
+    box.innerHTML = `<div class="note">Sem ativos. Adiciona um ativo para começar.</div>`;
     return;
   }
-
-  for (const a of top){
+  for (const a of items){
+    const meta = `${a.class || "—"} • ${a.incomeType && a.incomeType !== "none" ? "com rendimento" : "sem rendimento"}`;
     const div = document.createElement("div");
     div.className = "item";
     div.innerHTML = `
       <div class="item__left">
         <div class="item__name">${escapeHtml(a.name || "—")}</div>
-        <div class="item__meta">${escapeHtml(normalizeAssetClass(a.class) || "—")}</div>
+        <div class="item__meta">${escapeHtml(meta)}</div>
       </div>
-      <div class="item__right" style="display:flex; align-items:center; gap:10px">
-        <div style="text-align:right">
-          <div class="item__value">${fmtMoney(Number(a.value)||0)}</div>
-          <div class="badge">${pct(Number(a.value)||0, totals().assetsTotal)}</div>
-        </div>
-        <button class="star ${a.fav ? "star--on":""}" aria-label="Favorito" title="Favorito">★</button>
+      <div class="item__right">
+        <div class="item__value">${fmtMoney(Number(a.value)||0)}</div>
+        <div class="badge"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${getClassColor(a.class)}"></span>${escapeHtml(a.class || "Outros")}</div>
       </div>
     `;
-    div.querySelector(".star")?.addEventListener("click",(e)=>{ e.stopPropagation(); toggleFav(a.id); renderTopAssets(); });
-    div.addEventListener("click", ()=> openEdit("asset", a.id));
-    elList.appendChild(div);
-  }
-
-  if (btnAll){
-    btnAll.style.display = items.length > 10 ? "inline-flex" : "none";
+    div.addEventListener("click", () => openEdit(a.id, "asset"));
+    box.appendChild(div);
   }
 }
-
 
 function renderAllocationChart(){
   const compact = allocationByClass(6);
@@ -744,18 +568,6 @@ function renderPassiveChart(){
 }
 
 
-function normalizeAssetClass(cls){
-  const c = (cls||"").trim();
-  const low = c.toLowerCase();
-  if (["cripto","criptoativos","criptoactivos","crypto","cryptos","criptomoedas","criptomoeda"].includes(low)) return "Cripto";
-  if (["ações","acao","acoes","stocks","equities"].includes(low)) return "Ações";
-  if (["etf","etfs"].includes(low)) return "ETFs";
-  if (["liquidez","cash","dinheiro"].includes(low)) return "Liquidez";
-  if (["imobiliario","imobiliário","real estate"].includes(low)) return "Imobiliário";
-  return c || "Outros";
-}
-
-
 function toggleFav(id){
   const a = (state.assets||[]).find(x=>x.id===id);
   if (!a) return;
@@ -785,7 +597,7 @@ function renderAssetsTop10(){
     div.innerHTML = `
       <div class="item__left">
         <div class="item__name">${escapeHtml(x.name||"—")}</div>
-        <div class="item__meta">${escapeHtml(normalizeAssetClass(x.class)||"—")}</div>
+        <div class="item__meta">${escapeHtml(x.class||"—")}</div>
       </div>
       <div class="item__right" style="display:flex; align-items:center; gap:10px">
         <div style="text-align:right">
@@ -805,7 +617,7 @@ function renderAssets(){
   renderAssetsTop10();
   document.getElementById('onlyFav')?.addEventListener('change', renderAssetsTop10);
   // fill class filter
-  const classes = Array.from(new Set(state.assets.map(a => normalizeAssetClass(a.class)).filter(Boolean))).sort();
+  const classes = Array.from(new Set(state.assets.map(a => a.class).filter(Boolean))).sort();
   const sel = el("fClass");
   sel.innerHTML = `<option value="">Todas as classes</option>` + classes.map(c => `<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`).join("");
 
@@ -1024,80 +836,6 @@ function computeCoverage(year){
   return { exp, passiveNet, passiveGross, covNet, covGross };
 }
 
-
-function renderTplManager(){
-  const list = document.getElementById("tplList");
-  if (!list) return;
-  const tpls = state.settings?.txTemplates || [];
-  list.innerHTML = "";
-  if (!tpls.length){
-    list.innerHTML = `<div class="note">Sem templates.</div>`;
-    return;
-  }
-  for (const t of tpls){
-    const div = document.createElement("div");
-    div.className = "item";
-    const kind = t.kind === "income" ? "Entrada" : "Saída";
-    const amt = (t.amount==null || t.amount==="") ? "—" : fmtMoney(Number(t.amount)||0);
-    div.innerHTML = `
-      <div class="item__left">
-        <div class="item__name">${escapeHtml(t.name||"—")}</div>
-        <div class="item__meta">${escapeHtml(kind)} • ${escapeHtml(t.class||"—")} • Valor: ${escapeHtml(amt)}</div>
-      </div>
-      <div class="item__actions">
-        <button class="btn btn--mini" data-act="edit">Editar</button>
-        <button class="btn btn--mini btn--danger" data-act="del">Apagar</button>
-      </div>
-    `;
-    div.querySelector('[data-act="edit"]').addEventListener("click",(e)=>{ e.stopPropagation(); editTemplate(t.id); });
-    div.querySelector('[data-act="del"]').addEventListener("click",(e)=>{ e.stopPropagation(); deleteTemplate(t.id); });
-    list.appendChild(div);
-  }
-}
-
-function addTemplate(){
-  const kind = prompt("Tipo (income/expense):", "income");
-  if (!kind) return;
-  const name = prompt("Nome do template:", "Salário");
-  if (!name) return;
-  const cls = prompt("Classe (ex: Salário, Habitação, Alimentação):", kind==="income"?"Salário":"Outros") || "Outros";
-  const amountStr = prompt("Valor fixo (opcional; deixa vazio para introduzir mensalmente):", "");
-  const amount = amountStr.trim()==="" ? null : Number(amountStr.replace(",", "."));
-  const id = "tpl_" + Math.random().toString(36).slice(2,10);
-  state.settings.txTemplates.unshift({ id, kind: kind==="expense"?"expense":"income", class: cls, name, amount: isFinite(amount)?amount:null });
-  saveState();
-  renderTplManager();
-  renderTemplates();
-  showToast("Template criado.");
-}
-
-function editTemplate(id){
-  const t = (state.settings.txTemplates||[]).find(x=>x.id===id);
-  if (!t) return;
-  const name = prompt("Nome:", t.name||"") ?? t.name;
-  const cls = prompt("Classe:", t.class||"") ?? t.class;
-  const kind = prompt("Tipo (income/expense):", t.kind||"income") ?? t.kind;
-  const amountStr = prompt("Valor fixo (vazio = variável):", (t.amount==null?"":String(t.amount))) ;
-  const amount = (amountStr==null || String(amountStr).trim()==="") ? null : Number(String(amountStr).replace(",", "."));
-  t.name = name;
-  t.class = cls;
-  t.kind = (kind==="expense") ? "expense" : "income";
-  t.amount = isFinite(amount) ? amount : null;
-  saveState();
-  renderTplManager();
-  renderTemplates();
-  showToast("Template atualizado.");
-}
-
-function deleteTemplate(id){
-  if (!confirm("Apagar template?")) return;
-  state.settings.txTemplates = (state.settings.txTemplates||[]).filter(x=>x.id!==id);
-  saveState();
-  renderTplManager();
-  renderTemplates();
-  showToast("Template apagado.");
-}
-
 function renderSettings(){
   el("baseCurrency").value = state.settings.baseCurrency || "EUR";
   el("taxRate").value = Number(state.settings.taxRate || 0);
@@ -1173,24 +911,6 @@ function setupButtons(){
 
   // templates manager
   document.getElementById('btnTplAdd')?.addEventListener('click', addTemplate);
-
-  // bank CSV
-  document.getElementById('btnBankCsvImport')?.addEventListener('click', async ()=>{
-    const input = document.getElementById('bankCsvFile');
-    const note = document.getElementById('bankCsvNote');
-    const f = input?.files?.[0];
-    if (!f){ alert('Escolhe um ficheiro CSV.'); return; }
-    const text = await f.text();
-    const res = importBankCsv(text);
-    if (note){ note.style.display='block'; note.textContent = res.added ? `Importados ${res.added} movimentos.` : `Falhou: ${res.reason}`; }
-    renderCashflow();
-    showToast(res.added ? `Importados ${res.added}.` : 'Nada importado.');
-    input.value='';
-  });
-
-  // dashboard modal
-  document.getElementById('btnDashAll')?.addEventListener('click', openDashAllModal);
-  document.getElementById('dashAllAssetsModal')?.addEventListener('click', (e)=>{ const t=e.target; if (t?.dataset?.dashClose) closeDashAllModal(); });
 
   // security
   document.getElementById('secEnable')?.addEventListener('click', enableEncryption);
@@ -1976,11 +1696,7 @@ async function importEncryptedBackupFile(file){
     const obj = await decryptJson(pass, payload);
     state = obj;
     // normalize
-    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1, dashMode: "full" };
-        if (state.settings.autoLockMin==null) state.settings.autoLockMin = 5;
-        if (state.settings.hideValues==null) state.settings.hideValues = 0;
-        if (state.settings.haptics==null) state.settings.haptics = 1;
-        if (!state.settings.dashMode) state.settings.dashMode = "full";
+    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [] };
     state.settings.txTemplates = Array.isArray(state.settings.txTemplates) ? state.settings.txTemplates : [];
     state.assets = Array.isArray(state.assets) ? state.assets : [];
     state.liabilities = Array.isArray(state.liabilities) ? state.liabilities : [];
@@ -2047,28 +1763,6 @@ function updateSecurityUI(){
   elStatus.innerHTML = `Estado: <b>${enabled ? (locked ? "Encriptado (bloqueado)" : "Encriptado (ativo)") : "Sem encriptação"}</b>.`;
 }
 
-let autoLockTimer = null;
-function scheduleAutoLock(){
-  if (!isEncryptedEnabled()) return; // only meaningful when encrypted
-  const mins = Number(state?.settings?.autoLockMin || 0);
-  if (!mins || mins <= 0) return;
-  if (autoLockTimer) clearTimeout(autoLockTimer);
-  autoLockTimer = setTimeout(()=>{
-    lockApp();
-    sessionStorage.removeItem("PF_SEC_PASS");
-    try{ updateSecurityUI(); }catch{}
-    alert("Sessão bloqueada por inatividade.");
-    location.reload();
-  }, mins * 60 * 1000);
-}
-function bindActivityAutoLock(){
-  const bump = ()=> scheduleAutoLock();
-  ["click","keydown","touchstart","scroll"].forEach(ev=> window.addEventListener(ev, bump, {passive:true}));
-  document.addEventListener("visibilitychange", ()=>{
-    if (document.hidden) scheduleAutoLock();
-  });
-}
-
 // ===== Init =====
 async function renderAll(){
   renderDashboard();
@@ -2090,3 +1784,187 @@ function init(){
 }
 
 document.addEventListener("DOMContentLoaded", init);
+
+
+// ===== Templates manager (v10.1) =====
+function renderTplManager(){
+  const list = document.getElementById("tplList");
+  if (!list) return;
+  const tpls = state.settings?.txTemplates || [];
+  list.innerHTML = "";
+  if (!tpls.length){
+    list.innerHTML = `<div class="note">Sem templates.</div>`;
+    return;
+  }
+  for (const t of tpls){
+    const div = document.createElement("div");
+    div.className = "item";
+    const kind = t.kind === "income" ? "Entrada" : "Saída";
+    const amt = (t.amount==null || t.amount==="") ? "—" : fmtMoney(Number(t.amount)||0);
+    div.innerHTML = `
+      <div class="item__left">
+        <div class="item__name">${escapeHtml(t.name||"—")}</div>
+        <div class="item__meta">${escapeHtml(kind)} • ${escapeHtml(t.class||"—")} • Valor: ${escapeHtml(amt)}</div>
+      </div>
+      <div class="item__right" style="display:flex; gap:8px">
+        <button class="btn btn--mini" data-act="edit">Editar</button>
+        <button class="btn btn--mini btn--danger" data-act="del">Apagar</button>
+      </div>`;
+    div.querySelector('[data-act="edit"]').addEventListener("click",(e)=>{ e.stopPropagation(); editTemplate(t.id); });
+    div.querySelector('[data-act="del"]').addEventListener("click",(e)=>{ e.stopPropagation(); deleteTemplate(t.id); });
+    list.appendChild(div);
+  }
+}
+function addTemplate(){
+  const kind = prompt("Tipo (income/expense):", "income");
+  if (!kind) return;
+  const name = prompt("Nome do template:", "Salário");
+  if (!name) return;
+  const cls = prompt("Classe:", kind==="income"?"Salário":"Outros") || "Outros";
+  const amountStr = prompt("Valor fixo (opcional; vazio = variável):", "");
+  const amount = amountStr.trim()==="" ? null : Number(amountStr.replace(",", "."));
+  const id = "tpl_" + Math.random().toString(36).slice(2,10);
+  state.settings.txTemplates = state.settings.txTemplates || [];
+  state.settings.txTemplates.unshift({ id, kind: kind==="expense"?"expense":"income", class: cls, name, amount: isFinite(amount)?amount:null });
+  saveState();
+  renderTplManager();
+  renderTemplates();
+  renderTplManager();
+  showToast("Template criado.");
+}
+function editTemplate(id){
+  const t = (state.settings.txTemplates||[]).find(x=>x.id===id);
+  if (!t) return;
+  const name = prompt("Nome:", t.name||"") ?? t.name;
+  const cls = prompt("Classe:", t.class||"") ?? t.class;
+  const kind = prompt("Tipo (income/expense):", t.kind||"income") ?? t.kind;
+  const amountStr = prompt("Valor fixo (vazio = variável):", (t.amount==null?"":String(t.amount))) ;
+  const amount = (amountStr==null || String(amountStr).trim()==="") ? null : Number(String(amountStr).replace(",", "."));
+  t.name = name;
+  t.class = cls;
+  t.kind = (kind==="expense") ? "expense" : "income";
+  t.amount = isFinite(amount) ? amount : null;
+  saveState();
+  renderTplManager();
+  renderTemplates();
+  renderTplManager();
+  showToast("Template atualizado.");
+}
+function deleteTemplate(id){
+  if (!confirm("Apagar template?")) return;
+  state.settings.txTemplates = (state.settings.txTemplates||[]).filter(x=>x.id!==id);
+  saveState();
+  renderTplManager();
+  renderTemplates();
+  renderTplManager();
+  showToast("Template apagado.");
+}
+
+
+// ===== Bank CSV import (v10.1) =====
+function detectDelimiter(text){
+  const firstLine = text.split(/\r?\n/).find(l=>l.trim().length) || "";
+  const candidates = [",",";","\t"];
+  let best = ",", bestCount = -1;
+  for (const d of candidates){
+    const c = firstLine.split(d).length;
+    if (c>bestCount){ bestCount=c; best=d; }
+  }
+  return best;
+}
+function parseCsv(text){
+  const delim = detectDelimiter(text);
+  const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+  if (!lines.length) return { headers:[], rows:[] };
+  const headers = lines[0].split(delim).map(h=>h.trim().replace(/^"|"$/g,""));
+  const rows = [];
+  for (let i=1;i<lines.length;i++){
+    const cols = lines[i].split(delim).map(c=>c.trim().replace(/^"|"$/g,""));
+    const row = {};
+    headers.forEach((h,idx)=> row[h]=cols[idx] ?? "");
+    rows.push(row);
+  }
+  return { headers, rows };
+}
+function pickCol(headers, names){
+  const low = headers.map(h=>h.toLowerCase());
+  for (const n of names){
+    const idx = low.findIndex(h=>h.includes(n));
+    if (idx>=0) return headers[idx];
+  }
+  return null;
+}
+function parseAmount(str){
+  if (str==null) return NaN;
+  const s = String(str).replace(/\u00a0/g," ").trim();
+  let x = s.replace(/[€$£]/g,"").replace(/\s/g,"");
+  const comma = x.lastIndexOf(",");
+  const dot = x.lastIndexOf(".");
+  if (comma>-1 && dot>-1){
+    if (comma>dot){ x = x.replace(/\./g,"").replace(",", "."); }
+    else { x = x.replace(/,/g,""); }
+  } else if (comma>-1){
+    x = x.replace(/\./g,"").replace(",", ".");
+  }
+  return Number(x);
+}
+function guessTxClass(desc){
+  const d = (desc||"").toLowerCase();
+  const map = [
+    ["continente","Alimentação"],["pingo","Alimentação"],["lidl","Alimentação"],["aldi","Alimentação"],["super","Alimentação"],
+    ["uber","Transportes"],["bolt","Transportes"],["galp","Transportes"],["repsol","Transportes"],
+    ["vodafone","Telecom"],["meo","Telecom"],["nos","Telecom"],
+    ["edp","Utilidades"],["água","Utilidades"],
+    ["renda","Habitação"],["prestação","Habitação"],["hipoteca","Habitação"],
+    ["escola","Educação"],
+    ["farmácia","Saúde"],["hospital","Saúde"],
+  ];
+  for (const [k,cls] of map){ if (d.includes(k)) return cls; }
+  return "Outros";
+}
+function ymd(dateStr){
+  const s = (dateStr||"").trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+  const m = s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (!m) return "";
+  const dd = m[1].padStart(2,"0");
+  const mm = m[2].padStart(2,"0");
+  const yy = m[3].length===2 ? ("20"+m[3]) : m[3];
+  return `${yy}-${mm}-${dd}`;
+}
+function importBankCsv(text){
+  const { headers, rows } = parseCsv(text);
+  if (!headers.length || !rows.length) return { added:0, reason:"CSV vazio." };
+  const colDate = pickCol(headers, ["data","date"]);
+  const colDesc = pickCol(headers, ["descr","desc","memo","mov","operation","details","detalhe"]);
+  const colAmt  = pickCol(headers, ["montante","valor","amount","quantia","importe"]);
+  const colDebit = pickCol(headers, ["debit","débito","debito"]);
+  const colCredit = pickCol(headers, ["credit","crédito","credito"]);
+  if (!colDate || (!colAmt && !(colDebit && colCredit))){
+    return { added:0, reason:`Colunas não reconhecidas. Preciso de data + (valor OU débito/crédito). Headers: ${headers.join(", ")}` };
+  }
+  let added = 0;
+  const now = Date.now();
+  state.transactions = state.transactions || [];
+  for (const r of rows){
+    const date = ymd(r[colDate]);
+    if (!date) continue;
+    const desc = (colDesc ? (r[colDesc]||"") : "Movimento").trim() || "Movimento";
+    let amt = NaN;
+    if (colAmt) amt = parseAmount(r[colAmt]);
+    else {
+      const d = parseAmount(r[colDebit]);
+      const c = parseAmount(r[colCredit]);
+      if (isFinite(c) && c!==0) amt = c;
+      else if (isFinite(d) && d!==0) amt = -Math.abs(d);
+    }
+    if (!isFinite(amt) || amt===0) continue;
+    const kind = amt>=0 ? "income" : "expense";
+    const cls = guessTxClass(desc);
+    const tx = { id: "tx_" + Math.random().toString(36).slice(2,10) + "_" + (now+added), ts: now+added, date, kind, class: cls, name: desc.slice(0,80), amount: Math.abs(amt) };
+    state.transactions.unshift(tx);
+    added++;
+  }
+  saveState();
+  return { added, reason: added? "" : "Sem linhas válidas." };
+}
