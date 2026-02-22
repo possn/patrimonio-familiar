@@ -8,10 +8,10 @@
 
   <link rel="icon" href="assets/icon-192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="assets/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="stylesheet" href="styles.css?v=4">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script defer src="app.js?v=3"></script>
+  <script defer src="app.js?v=4"></script>
 </head>
 <body>
   <header class="topbar">
@@ -107,7 +107,7 @@
         <button class="seg__btn" id="segLiabs">Passivos</button>
       </div>
 
-      <div class="card">
+      <div class="card" id="txCard">
         <div class="card__head">
           <div>
             <div class="card__title" id="assetsTitle">Ativos</div>
@@ -135,7 +135,7 @@
 
     <!-- IMPORT -->
     <section class="view" id="viewImport" data-view="import" hidden>
-      <div class="card">
+      <div class="card" id="txCard">
         <div class="card__head">
           <div>
             <div class="card__title">Importar (Excel/CSV)</div>
@@ -153,7 +153,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="txCard">
         <div class="card__head">
           <div>
             <div class="card__title">Backup</div>
@@ -167,7 +167,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="txCard">
         <div class="card__head">
           <div>
             <div class="card__title">Reset</div>
@@ -182,7 +182,7 @@
 
     <!-- CASHFLOW -->
     <section class="view" id="viewCashflow" data-view="cashflow" hidden>
-      <div class="card">
+      <div class="card" id="txCard">
         <div class="card__head">
           <div>
             <div class="card__title">Fluxo de caixa</div>
@@ -213,12 +213,13 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="txCard">
         <div class="card__head">
           <div>
             <div class="card__title">Movimentos</div>
-            <div class="card__muted">Toca para editar.</div>
+            <div class="card__muted">Últimos 5 (expande para ver todos).</div>
           </div>
+          <button class="link" id="btnTxToggle" style="display:none">Ver todos</button>
         </div>
         <div id="txList" class="list"></div>
       </div>
@@ -228,7 +229,7 @@
 
     <!-- SETTINGS -->
     <section class="view" id="viewSettings" data-view="settings" hidden>
-      <div class="card">
+      <div class="card" id="txCard">
         <div class="card__head">
           <div>
             <div class="card__title">Definições</div>
@@ -244,7 +245,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="txCard">
         <div class="card__head">
           <div>
             <div class="card__title">Metodologia</div>
@@ -269,7 +270,7 @@
     <button class="navbtn" data-nav="import" id="navImport"><span class="navico">⇅</span><span class="navlbl">Importar</span></button>
     <button class="navbtn" data-nav="cashflow" id="navCashflow"><span class="navico">€</span><span class="navlbl">Balanço</span></button>
     <button class="navbtn" data-nav="settings" id="navSettings"><span class="navico">⚙</span><span class="navlbl">Definições</span></button>
-  </nav>
+  </div></nav>
 
   <!-- Action sheet -->
   <div class="sheet" id="sheet" aria-hidden="true">

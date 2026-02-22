@@ -1,6 +1,10 @@
 /* Património Familiar — rebuild v1 (no SW, no haze overlays) */
 "use strict";
 
+const TX_PREVIEW_COUNT = 5;
+let txExpanded = false;
+
+
 function safeClone(obj){
   // structuredClone isn't available in some iOS WebViews; JSON clone is sufficient for our plain objects.
   try{
@@ -16,7 +20,7 @@ function safeStorageSet(key, value){
   try{ localStorage.setItem(key, value); return true; }catch{ return false; }
 }
 
-const STORAGE_KEY = "PF_STATE_REBUILD_V1";
+const STORAGE_KEY = "PF_STATE_REBUILD_V2";
 
 const DEFAULT_STATE = {
   settings: { currency: "EUR" },
@@ -693,6 +697,37 @@ function importFile(){
   }
 }
 
+function getAny(obj, keys){
+  for (const k of keys){
+    if (obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== "") return obj[k];
+  }
+  return "";
+}
+function numAny(obj, keys){
+  const v = getAny(obj, keys);
+  if (v === "") return 0;
+  return Number(String(v).replace(/\s/g,"").replace(",", ".").replace(/[^0-9.\-]/g,"")) || 0;
+}
+function strAny(obj, keys){
+  return String(getAny(obj, keys)).trim();
+}
+
+function detectHoldingsColumns(headers){
+  const h = new Set(headers.map(x=>String(x||"").toLowerCase().trim()));
+  const holdingSignals = ["ticker","symbol","isin","shares","quantity","units","holding","market value","market_value","value_eur","value","nav","position","asset","coin","crypto"];
+  let score = 0;
+  for (const s of holdingSignals){
+    for (const k of h){
+      if (k.includes(s.replace(" ","_")) || k.includes(s)) { score++; break; }
+    }
+  }
+  return score >= 3; // heuristic
+}
+function hasExplicitTxType(headers){
+  const h = new Set(headers.map(x=>String(x||"").toLowerCase().trim()));
+  return h.has("tipo") || h.has("type") || h.has("transaction_type") || h.has("tx_type");
+}
+
 function normalizeHeader(h){
   return String(h||"").trim().toLowerCase()
     .replace(/\s+/g,"_")
@@ -862,3 +897,46 @@ function init(){
 }
 
 document.addEventListener("DOMContentLoaded", init);
+
+function renderTxRow(t){
+  const el = document.createElement("div");
+  el.className = "item";
+  const sign = t.type === "out" ? "−" : "+";
+  const meta = `${t.category || "Movimento"} · ${formatDateShort(t.date)}`;
+  el.innerHTML = `
+    <div class="item__left">
+      <div class="item__name">${escapeHTML(sign + " " + (t.category || "Movimento"))}</div>
+      <div class="item__meta">${escapeHTML(meta)}</div>
+    </div>
+    <div class="item__val">${formatMoney(t.value || 0)}</div>
+  `;
+  el.addEventListener("click", ()=> openTxModal(t.id));
+  return el;
+}
+
+function renderTxList(){
+  const card = document.getElementById("txCard");
+  const list = document.getElementById("txList");
+  const btn = document.getElementById("btnTxToggle");
+  if (!card || !list) return;
+
+  const tx = (state.transactions || []).slice().sort((a,b)=> (b.date||"").localeCompare(a.date||""));
+  if (tx.length === 0){
+    card.style.display = "none";
+    return;
+  }
+  card.style.display = "";
+  const show = txExpanded ? tx : tx.slice(0, TX_PREVIEW_COUNT);
+
+  list.innerHTML = "";
+  show.forEach(t => list.appendChild(renderTxRow(t)));
+
+  if (btn){
+    if (tx.length > TX_PREVIEW_COUNT){
+      btn.style.display = "";
+      btn.textContent = txExpanded ? "Ver menos" : "Ver todos";
+    } else {
+      btn.style.display = "none";
+    }
+  }
+}

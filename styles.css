@@ -300,7 +300,6 @@ textarea.input{resize:vertical}
   z-index: 60;
   display:flex;
   justify-content:center;
-  pointer-events:none;
 }
 .bottomnav::before{
   content:"";
@@ -315,9 +314,17 @@ textarea.input{resize:vertical}
   border-radius: 26px;
   box-shadow: 0 18px 50px rgba(15,23,42,.16);
   backdrop-filter: blur(14px);
-  pointer-events:none;
 }
-.bottomnav > .navbtn{
+.bottomnav__bar{
+  position: relative;
+  width: min(720px, calc(100vw - 22px));
+  display:grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  padding: 10px;
+}
+
+.navbtn{
   pointer-events:auto;
   position: relative;
   width: min(720px, calc(100vw - 22px));
