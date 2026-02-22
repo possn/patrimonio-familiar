@@ -1,1221 +1,961 @@
-(() => {
-  'use strict';
+// Património Familiar — v8 rebuild (stable, sem dependências externas)
+// Tudo local (localStorage). Sem login/back-end.
+// Funcionalidades: ativos/passivos, distribuição, snapshots, top10, cripto, balanço mensal (entradas/saídas), templates salário, import/export CSV/JSON.
 
-  // --------------------
-  // Util
-  // --------------------
-  const $ = (q, el=document) => el.querySelector(q);
-  const $$ = (q, el=document) => Array.from(el.querySelectorAll(q));
+const STORAGE_KEY = "PF_STATE_V8";
 
-  const DEFAULT_CLASSES = [
-    'Imobiliário','Liquidez','Ações','ETFs','Fundos','PPR','Depósitos a prazo','Ouro','Prata','Arte','Cripto','Outros'
-  ];
+const DEFAULT_CLASSES = [
+  { key: "Liquidez", color: "#a78bfa" },
+  { key: "Imobiliário", color: "#34d399" },
+  { key: "Ações", color: "#22d3ee" },
+  { key: "ETFs", color: "#4ade80" },
+  { key: "Fundos", color: "#fbbf24" },
+  { key: "PPR", color: "#fb7185" },
+  { key: "Depósitos a prazo", color: "#60a5fa" },
+  { key: "Cripto", color: "#93c5fd" },
+  { key: "Ouro", color: "#f59e0b" },
+  { key: "Prata", color: "#cbd5e1" },
+  { key: "Arte", color: "#f472b6" },
+  { key: "Outros", color: "#94a3b8" },
+];
 
-  const STORAGE_KEY = 'pf_state_v12';
+const el = (id) => document.getElementById(id);
 
-  const nowISO = () => new Date().toISOString();
-  const ym = (d=new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+function uid(){
+  return Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
 
-  const fmtMoney = (v, cur) => {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return '—';
-    try {
-      return new Intl.NumberFormat('pt-PT', { style:'currency', currency: cur || 'EUR', maximumFractionDigits: 0 }).format(n);
-    } catch {
-      return `${Math.round(n)} ${cur||'EUR'}`;
-    }
-  };
+function clamp(n,min,max){ return Math.max(min, Math.min(max, n)); }
 
-  const fmtPct = (v) => {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return '—';
-    return `${n.toFixed(1)}%`;
-  };
+function safeNum(x, fallback=0){
+  const n = Number(String(x).replace(",", "."));
+  return Number.isFinite(n) ? n : fallback;
+}
 
-  const uid = () => Math.random().toString(16).slice(2) + Date.now().toString(16);
-
-  const safeParse = (s, fallback=null) => {
-    try { return JSON.parse(s); } catch { return fallback; }
-  };
-
-  // --------------------
-  // State
-  // --------------------
-  const defaultState = () => ({
-    version: 12,
-    settings: {
-      currency: 'EUR',
-      taxRate: 28,
-      passcodeHash: null, // SHA-256 hex
-      locked: false,
-    },
-    assets: [],
-    liabilities: [],
-    snapshots: [], // { ym, assetsTotal, liabilitiesTotal, netWorth, passiveGrossAnnual, passiveNetAnnual }
-    cashflow: [], // [{ ym, income:[{id,who,cat,amt,note}], expenses:[{id,cat,amt,note}] }]
-    bankMoves: [] // [{id,date,desc,amount,cat,ym}]
-  });
-
-  let state = load();
-
-  function load(){
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const st = raw ? safeParse(raw, null) : null;
-    if (!st || typeof st !== 'object') return defaultState();
-    // minimal migrations
-    const base = defaultState();
-    const merged = {
-      ...base,
-      ...st,
-      settings: { ...base.settings, ...(st.settings||{}) },
-      assets: Array.isArray(st.assets)? st.assets : [],
-      liabilities: Array.isArray(st.liabilities)? st.liabilities : [],
-      snapshots: Array.isArray(st.snapshots)? st.snapshots : [],
-      cashflow: Array.isArray(st.cashflow)? st.cashflow : [],
-      bankMoves: Array.isArray(st.bankMoves)? st.bankMoves : [],
-    };
-    return merged;
+function fmtMoney(n){
+  const ccy = state.settings.baseCurrency || "EUR";
+  const v = Number.isFinite(n) ? n : 0;
+  try{
+    return new Intl.NumberFormat("pt-PT", { style:"currency", currency:ccy, maximumFractionDigits:0 }).format(v);
+  }catch{
+    return `${v.toFixed(0)} ${ccy}`;
   }
+}
 
-  function save(){
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }
+function fmtDateISO(d){
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return "";
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth()+1).padStart(2,"0");
+  const da = String(dt.getDate()).padStart(2,"0");
+  return `${y}-${m}-${da}`;
+}
 
-  // --------------------
-  // Error trap (visible)
-  // --------------------
-  function showError(err){
+function monthKeyFromDateISO(dateISO){
+  // "YYYY-MM"
+  if (!dateISO) return "";
+  return dateISO.slice(0,7);
+}
+
+function loadState(){
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (raw){
     try{
-      console.error(err);
-      const card = $('#debugCard');
-      const txt = $('#debugText');
-      if (!card || !txt) return;
-      card.hidden = false;
-      txt.textContent = String(err?.stack || err?.message || err);
-      // force switch to settings to show
-      goView('Settings');
-    }catch(_){ /* ignore */ }
+      const s = JSON.parse(raw);
+      s.assets = Array.isArray(s.assets) ? s.assets : [];
+      s.liabilities = Array.isArray(s.liabilities) ? s.liabilities : [];
+      s.history = Array.isArray(s.history) ? s.history : []; // [{month, netWorth, assets, liabilities, passiveNet}]
+      s.transactions = Array.isArray(s.transactions) ? s.transactions : []; // [{id,date,kind,category,description,amount}]
+      s.settings = s.settings || { baseCurrency:"EUR", taxRate:0 };
+      return s;
+    }catch{}
   }
-
-  window.addEventListener('error', (e) => showError(e.error || e.message));
-  window.addEventListener('unhandledrejection', (e) => showError(e.reason || e));
-
-  // --------------------
-  // Crypto (hash)
-  // --------------------
-  async function sha256Hex(text){
-    const enc = new TextEncoder().encode(text);
-    const buf = await crypto.subtle.digest('SHA-256', enc);
-    const arr = Array.from(new Uint8Array(buf));
-    return arr.map(b=>b.toString(16).padStart(2,'0')).join('');
-  }
-
-  // --------------------
-  // Derived
-  // --------------------
-  function totals(){
-    const assetsTotal = state.assets.reduce((s,a)=>s + (Number(a.value)||0), 0);
-    const liabilitiesTotal = state.liabilities.reduce((s,a)=>s + (Number(a.value)||0), 0);
-    const netWorth = assetsTotal - liabilitiesTotal;
-    const passiveGrossAnnual = state.assets.reduce((s,a)=>s + calcPassiveAnnualGross(a), 0);
-    const tax = clamp((Number(state.settings.taxRate)||0)/100, 0, 0.9);
-    const passiveNetAnnual = passiveGrossAnnual * (1 - tax);
-    return { assetsTotal, liabilitiesTotal, netWorth, passiveGrossAnnual, passiveNetAnnual };
-  }
-
-  function calcPassiveAnnualGross(item){
-    const value = Number(item.value)||0;
-    const t = item.incomeType || 'none';
-    const iv = Number(item.incomeValue)||0;
-    if (!value || !iv) {
-      // rent can be without value
-      if (t === 'rent') return (Number(item.incomeValue)||0) * 12;
-      return 0;
-    }
-    if (t === 'div_yield') return value * (iv/100);
-    if (t === 'div_amount') return iv;
-    if (t === 'rate') return value * (iv/100);
-    if (t === 'rent') return iv * 12;
-    return 0;
-  }
-
-  function groupByClass(items){
-    const m = new Map();
-    for(const it of items){
-      const c = it.class || 'Outros';
-      const v = Number(it.value)||0;
-      m.set(c, (m.get(c)||0) + v);
-    }
-    return Array.from(m.entries()).map(([k,v])=>({k,v})).sort((a,b)=>b.v-a.v);
-  }
-
-  function sortedAssets(){
-    return [...state.assets].sort((a,b)=>(Number(b.value)||0)-(Number(a.value)||0));
-  }
-
-  // --------------------
-  // Views
-  // --------------------
-  const VIEW_IDS = {
-    Dashboard: 'viewDashboard',
-    Assets: 'viewAssets',
-    Import: 'viewImport',
-    Cashflow: 'viewCashflow',
-    Settings: 'viewSettings',
-    Lock: 'viewLock'
+  // seed mínimo
+  return {
+    assets: [
+      { id: uid(), class:"Liquidez", name:"Conta à ordem", value:12000, incomeType:"none", incomeValue:0, notes:"", favorite:true },
+      { id: uid(), class:"ETFs", name:"VWCE", value:25000, incomeType:"div_yield", incomeValue:1.8, notes:"yield %/ano (aprox.)", favorite:true },
+      { id: uid(), class:"Cripto", name:"BTC", value:5000, incomeType:"none", incomeValue:0, notes:"exemplo (edita)", favorite:false },
+      { id: uid(), class:"Imobiliário", name:"Apartamento", value:180000, incomeType:"rent_month", incomeValue:700, notes:"renda mensal", favorite:true },
+    ],
+    liabilities: [
+      { id: uid(), name:"Crédito habitação", value:120000, notes:"" }
+    ],
+    history: [],
+    transactions: [],
+    settings: { baseCurrency:"EUR", taxRate: 0 }
   };
+}
 
-  function goView(name){
-    const isLocked = !!state.settings.locked;
-    const target = isLocked && name !== 'Lock' ? 'Lock' : name;
+function saveState(){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
 
-    for(const [k,id] of Object.entries(VIEW_IDS)){
-      const el = document.getElementById(id);
-      if (!el) continue;
-      el.classList.toggle('view--active', k === target);
-      el.style.display = (k === target) ? 'block' : 'none';
+/* ---------- Anti-cache / SW antigo (iOS/GitHub Pages) ---------- */
+async function tryUnregisterServiceWorkers(){
+  try{
+    if ("serviceWorker" in navigator){
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const r of regs) await r.unregister();
     }
-
-    $$('.bottomnav .tab').forEach(btn=>{
-      const v = btn.dataset.view;
-      btn.classList.toggle('tab--active', v === target);
-    });
-
-    // render per view
-    if (target === 'Dashboard') renderDashboard();
-    if (target === 'Assets') renderAssets();
-    if (target === 'Cashflow') renderCashflow();
-    if (target === 'Settings') renderSettings();
-  }
-
-  // --------------------
-  // Charts (pure SVG)
-  // --------------------
-  function svgEl(name, attrs={}){
-    const el = document.createElementNS('http://www.w3.org/2000/svg', name);
-    for(const [k,v] of Object.entries(attrs)) el.setAttribute(k, String(v));
-    return el;
-  }
-
-  function renderDonut(el, data, opts={}){
-    // data: [{label, value, color}]
-    el.innerHTML = '';
-    const w = opts.size || 220;
-    const h = opts.size || 220;
-    const r = (w/2) - 14;
-    const rIn = r - 18;
-
-    const total = data.reduce((s,d)=>s+d.value,0) || 1;
-    let a0 = -Math.PI/2;
-
-    const svg = svgEl('svg', { viewBox:`0 0 ${w} ${h}`, width:'100%', height:'auto' });
-
-    // base ring
-    const base = svgEl('circle', { cx:w/2, cy:h/2, r:r-9, fill:'none', stroke:'rgba(255,255,255,.10)', 'stroke-width':18 });
-    svg.appendChild(base);
-
-    for(const d of data){
-      const frac = d.value/total;
-      const a1 = a0 + frac*2*Math.PI;
-      const x0 = w/2 + r*Math.cos(a0);
-      const y0 = h/2 + r*Math.sin(a0);
-      const x1 = w/2 + r*Math.cos(a1);
-      const y1 = h/2 + r*Math.sin(a1);
-      const large = frac > 0.5 ? 1 : 0;
-      const path = svgEl('path', {
-        d: `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`,
-        fill:'none',
-        stroke: d.color,
-        'stroke-width': 18,
-        'stroke-linecap':'round'
-      });
-      svg.appendChild(path);
-      a0 = a1;
+  }catch{}
+}
+async function tryClearCaches(){
+  try{
+    if (window.caches && caches.keys){
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
     }
+  }catch{}
+}
 
-    // inner cut
-    const hole = svgEl('circle', { cx:w/2, cy:h/2, r:rIn, fill:'rgba(11,18,32,.92)', stroke:'rgba(255,255,255,.06)' });
-    svg.appendChild(hole);
+/* ---------- Cálculos ---------- */
+function sumAssets(){
+  return state.assets.reduce((a,x)=>a + safeNum(x.value,0), 0);
+}
+function sumLiabilities(){
+  return state.liabilities.reduce((a,x)=>a + safeNum(x.value,0), 0);
+}
+function netWorth(){
+  return sumAssets() - sumLiabilities();
+}
 
-    const t1 = svgEl('text', { x:w/2, y:h/2-4, 'text-anchor':'middle', 'font-size':'12', fill:'rgba(232,238,252,.65)', 'font-weight':'700' });
-    t1.textContent = opts.centerLabel || 'Ativos';
-    svg.appendChild(t1);
-
-    const t2 = svgEl('text', { x:w/2, y:h/2+18, 'text-anchor':'middle', 'font-size':'18', fill:'#e8eefc', 'font-weight':'900' });
-    t2.textContent = opts.centerValue || '';
-    svg.appendChild(t2);
-
-    el.appendChild(svg);
+function passiveAnnualGross(){
+  // incomeType:
+  // none
+  // div_yield: incomeValue = %/ano
+  // div_amount_year: incomeValue = €/ano
+  // rent_month: incomeValue = €/mês
+  // interest_year: incomeValue = €/ano
+  let total = 0;
+  for (const a of state.assets){
+    const v = safeNum(a.value,0);
+    const t = a.incomeType || "none";
+    const iv = safeNum(a.incomeValue,0);
+    if (t === "div_yield") total += v * (iv/100);
+    else if (t === "div_amount_year") total += iv;
+    else if (t === "rent_month") total += iv * 12;
+    else if (t === "interest_year") total += iv;
   }
+  return total;
+}
+function passiveAnnualNet(){
+  const gross = passiveAnnualGross();
+  const tax = clamp(safeNum(state.settings.taxRate,0), 0, 80) / 100;
+  return gross * (1 - tax);
+}
 
-  function renderLine(el, series, opts={}){
-    // series: [{xLabel, y}] ordered
-    el.innerHTML = '';
-    const w = opts.width || 680;
-    const h = opts.height || 220;
-    const pad = 26;
-
-    const ys = series.map(p=>p.y);
-    const minY = Math.min(...ys, 0);
-    const maxY = Math.max(...ys, 1);
-    const span = (maxY - minY) || 1;
-
-    const svg = svgEl('svg', { viewBox:`0 0 ${w} ${h}`, width:'100%', height:'auto' });
-
-    // grid lines
-    for(let i=0;i<5;i++){
-      const y = pad + i*(h-2*pad)/4;
-      svg.appendChild(svgEl('line', { x1:pad, y1:y, x2:w-pad, y2:y, stroke:'rgba(255,255,255,.06)', 'stroke-width':1 }));
-    }
-
-    const pts = series.map((p,i)=>{
-      const x = pad + (series.length===1?0.5:i/(series.length-1))*(w-2*pad);
-      const y = h - pad - ((p.y - minY)/span)*(h-2*pad);
-      return {x,y};
-    });
-
-    const d = pts.map((p,i)=>`${i?'L':'M'} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' ');
-    const path = svgEl('path', { d, fill:'none', stroke:'rgba(88,193,255,.92)', 'stroke-width':3, 'stroke-linecap':'round', 'stroke-linejoin':'round' });
-    svg.appendChild(path);
-
-    // points
-    pts.forEach(p=>{
-      svg.appendChild(svgEl('circle',{cx:p.x,cy:p.y,r:4,fill:'rgba(155,140,255,.92)',stroke:'rgba(0,0,0,.35)','stroke-width':1}));
-    });
-
-    // x labels (first + last)
-    if(series.length>=1){
-      const first = series[0].xLabel;
-      const last = series[series.length-1].xLabel;
-      const tx1 = svgEl('text',{x:pad,y:h-8,'text-anchor':'start','font-size':'12',fill:'rgba(232,238,252,.55)','font-weight':'700'});
-      tx1.textContent = first;
-      svg.appendChild(tx1);
-      const tx2 = svgEl('text',{x:w-pad,y:h-8,'text-anchor':'end','font-size':'12',fill:'rgba(232,238,252,.55)','font-weight':'700'});
-      tx2.textContent = last;
-      svg.appendChild(tx2);
-    }
-
-    // empty label
-    if(series.length===0){
-      const t = svgEl('text',{x:w/2,y:h/2,'text-anchor':'middle','font-size':'13',fill:'rgba(232,238,252,.55)','font-weight':'800'});
-      t.textContent = opts.empty || 'Sem histórico.';
-      svg.appendChild(t);
-    }
-
-    el.appendChild(svg);
+function allocByClass(){
+  const map = new Map();
+  for (const c of DEFAULT_CLASSES) map.set(c.key, 0);
+  for (const a of state.assets){
+    const k = a.class || "Outros";
+    map.set(k, (map.get(k) || 0) + safeNum(a.value,0));
   }
-
-  // --------------------
-  // Render
-  // --------------------
-  let passiveMode = 'net';
-
-  function renderDashboard(){
-    const cur = state.settings.currency;
-    const t = totals();
-
-    $('#netWorth').textContent = fmtMoney(t.netWorth, cur);
-    $('#netWorthSub').textContent = `Ativos ${fmtMoney(t.assetsTotal,cur)} | Passivos ${fmtMoney(t.liabilitiesTotal,cur)}`;
-
-    const passiveShown = (passiveMode==='gross') ? t.passiveGrossAnnual : t.passiveNetAnnual;
-    $('#passiveAnnual').textContent = fmtMoney(passiveShown, cur);
-    $('#passiveMonthly').textContent = fmtMoney(passiveShown/12, cur);
-
-    // distribution donut
-    const grouped = groupByClass(state.assets).filter(x=>x.v>0);
-    const colors = palette(grouped.length);
-    const donutData = grouped.map((g,i)=>({label:g.k,value:g.v,color:colors[i]}));
-
-    renderDonut($('#donutWrap'), donutData, {
-      size: 240,
-      centerLabel: 'Ativos',
-      centerValue: fmtMoney(t.assetsTotal, cur)
-    });
-
-    // legend
-    const leg = $('#distLegend');
-    leg.innerHTML = '';
-    const totalA = t.assetsTotal || 1;
-    grouped.slice(0,6).forEach((g,i)=>{
-      const row = document.createElement('div');
-      row.className = 'legrow';
-      const left = document.createElement('div');
-      left.style.display='flex';
-      left.style.alignItems='center';
-      left.style.gap='8px';
-      const dot = document.createElement('div');
-      dot.className='dot';
-      dot.style.background = colors[i];
-      const name = document.createElement('div');
-      name.style.fontWeight='800';
-      name.style.fontSize='13px';
-      name.textContent = g.k;
-      left.appendChild(dot); left.appendChild(name);
-
-      const right = document.createElement('div');
-      right.style.color='rgba(232,238,252,.70)';
-      right.style.fontWeight='900';
-      right.style.fontSize='13px';
-      right.textContent = `${Math.round((g.v/totalA)*100)}%`;
-
-      row.appendChild(left); row.appendChild(right);
-      leg.appendChild(row);
-    });
-
-    // dist detail list
-    const det = $('#distDetailList');
-    det.innerHTML='';
-    grouped.forEach((g,i)=>{
-      det.appendChild(listRow(g.k, `${fmtMoney(g.v,cur)} · ${Math.round((g.v/totalA)*100)}%`, colors[i]));
-    });
-
-    // trends
-    const snaps = [...state.snapshots].sort((a,b)=>a.ym.localeCompare(b.ym));
-    renderLine($('#nwTrend'), snaps.map(s=>({xLabel:s.ym,y:Number(s.netWorth)||0})), { empty: 'Sem histórico. Clica em “Registar mês”.' });
-
-    const piKey = passiveMode==='gross' ? 'passiveGrossAnnual' : 'passiveNetAnnual';
-    renderLine($('#piTrend'), snaps.map(s=>({xLabel:s.ym,y:Number(s[piKey])||0})), { empty: 'Sem histórico. Clica em “Registar mês”.' });
-
-    // top 10
-    const top = sortedAssets();
-    const top10 = top.slice(0,10);
-    const topList = $('#topList');
-    topList.innerHTML='';
-    top10.forEach(a=> topList.appendChild(assetRow(a, cur)));
-
-    const all = $('#allAssetsList');
-    all.innerHTML='';
-    top.slice(10).forEach(a=> all.appendChild(assetRow(a, cur)));
-
-    // hide "ver tudo" if <=10
-    const btn = $('[data-action="toggle-top"]');
-    if (btn) btn.style.display = (top.length>10) ? 'inline-flex' : 'none';
+  // filter >0
+  const out = [];
+  for (const c of DEFAULT_CLASSES){
+    const v = map.get(c.key) || 0;
+    if (v > 0) out.push({ key:c.key, value:v, color:c.color });
   }
-
-  function renderAssets(){
-    // filter options
-    const sel = $('#assetFilter');
-    const classes = allClasses();
-    sel.innerHTML = '<option value="">Todas as classes</option>' + classes.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
-
-    const q = ($('#assetSearch').value||'').toLowerCase().trim();
-    const f = sel.value;
-
-    const filtered = state.assets
-      .filter(a => !f || (a.class===f))
-      .filter(a => !q || (String(a.name||'').toLowerCase().includes(q) || String(a.notes||'').toLowerCase().includes(q)) )
-      .sort((a,b)=>(Number(b.value)||0)-(Number(a.value)||0));
-
-    const favs = filtered.filter(a=>!!a.favorite);
-    const rest = filtered.filter(a=>!a.favorite);
-
-    const cur = state.settings.currency;
-
-    const favList = $('#favList');
-    favList.innerHTML='';
-    if (favs.length===0) favList.appendChild(emptyRow('Sem favoritos. Marca ★ num ativo.'));
-    favs.forEach(a=>favList.appendChild(assetRow(a, cur, true)));
-
-    const list = $('#assetList');
-    list.innerHTML='';
-    if (rest.length===0) list.appendChild(emptyRow('Sem ativos para mostrar.'));
-    rest.forEach(a=>list.appendChild(assetRow(a, cur, true)));
-
-    const liab = $('#liabList');
-    liab.innerHTML='';
-    const liabs = [...state.liabilities].sort((a,b)=>(Number(b.value)||0)-(Number(a.value)||0));
-    if (liabs.length===0) liab.appendChild(emptyRow('Sem passivos.'));
-    liabs.forEach(l=>liab.appendChild(liabRow(l, cur)));
-  }
-
-  function renderCashflow(){
-    ensureMonthExists(ym());
-
-    const picker = $('#monthPick');
-    const months = [...new Set(state.cashflow.map(m=>m.ym))].sort();
-    picker.innerHTML = months.map(m=>`<option value="${m}">${m}</option>`).join('');
-    if (!picker.value) picker.value = months[months.length-1];
-
-    const m = getMonth(picker.value);
-
-    // KPIs
-    const inc = m.income.reduce((s,x)=>s+(Number(x.amt)||0),0);
-    const exp = m.expenses.reduce((s,x)=>s+(Number(x.amt)||0),0);
-    const res = inc - exp;
-
-    const k = $('#cfKpis');
-    k.innerHTML='';
-    k.appendChild(kpi('Entradas', fmtMoney(inc, state.settings.currency)));
-    k.appendChild(kpi('Despesas', fmtMoney(exp, state.settings.currency)));
-    k.appendChild(kpi('Resultado', fmtMoney(res, state.settings.currency)));
-
-    // lists
-    const inL = $('#incomeList');
-    inL.innerHTML='';
-    if (m.income.length===0) inL.appendChild(emptyRow('Sem entradas neste mês.'));
-    m.income.forEach(x=>inL.appendChild(cfRow(x, 'income')));
-
-    const exL = $('#expenseList');
-    exL.innerHTML='';
-    if (m.expenses.length===0) exL.appendChild(emptyRow('Sem despesas neste mês.'));
-    m.expenses.forEach(x=>exL.appendChild(cfRow(x, 'expense')));
-
-    // annual trend (last 12)
-    const ordered = [...state.cashflow].sort((a,b)=>a.ym.localeCompare(b.ym));
-    const last12 = ordered.slice(-12);
-    const series = last12.map(mm=>{
-      const i = mm.income.reduce((s,x)=>s+(Number(x.amt)||0),0);
-      const e = mm.expenses.reduce((s,x)=>s+(Number(x.amt)||0),0);
-      return {xLabel:mm.ym, y:i-e};
-    });
-    renderLine($('#cfTrend'), series, { empty: 'Sem histórico de balanço.' });
-  }
-
-  function renderSettings(){
-    $('#baseCurrency').value = state.settings.currency || 'EUR';
-    $('#taxRate').value = Number(state.settings.taxRate ?? 28);
-
-    const st = $('#lockState');
-    if (state.settings.passcodeHash) {
-      st.textContent = state.settings.locked ? 'Bloqueado' : 'Desbloqueado';
-    } else {
-      st.textContent = 'Sem código';
+  // any unknown classes
+  for (const [k,v] of map.entries()){
+    if (!DEFAULT_CLASSES.some(c=>c.key===k) && v>0){
+      out.push({ key:k, value:v, color:"#94a3b8" });
     }
   }
+  // sort desc
+  out.sort((a,b)=>b.value-a.value);
+  return out;
+}
 
-  // --------------------
-  // UI helpers
-  // --------------------
-  function palette(n){
-    // deterministic nice palette
-    const base = [
-      '#35d08d','#58c1ff','#9b8cff','#f6c25b','#ff6b6b','#a3b3c9','#6ee7b7','#60a5fa','#c4b5fd','#f59e0b','#fb7185','#93c5fd'
-    ];
-    const out = [];
-    for(let i=0;i<n;i++) out.push(base[i % base.length]);
-    return out;
+/* ---------- UI: Tabs ---------- */
+function setTab(tab){
+  for (const btn of document.querySelectorAll(".tabbtn")){
+    btn.classList.toggle("tabbtn--active", btn.dataset.tab === tab);
+  }
+  const pages = ["dashboard","assets","import","balance","settings"];
+  for (const p of pages){
+    const sec = el(`page-${p}`);
+    if (sec) sec.style.display = (p===tab) ? "" : "none";
+  }
+  state.ui = state.ui || {};
+  state.ui.activeTab = tab;
+  saveState();
+  if (tab === "dashboard") renderDashboard();
+  if (tab === "assets") renderAssets();
+  if (tab === "balance") renderBalance();
+  if (tab === "settings") renderSettings();
+}
+
+document.addEventListener("click", (ev)=>{
+  const t = ev.target.closest("[data-tab]");
+  if (t){ setTab(t.dataset.tab); }
+});
+
+el("btnAddQuick").addEventListener("click", ()=> openAddAssetModal());
+
+/* ---------- Modal helpers ---------- */
+function openModal(title, bodyHTML){
+  el("modalTitle").textContent = title;
+  el("modalBody").innerHTML = bodyHTML;
+  el("modal").classList.add("modal--open");
+  el("modal").setAttribute("aria-hidden","false");
+}
+function closeModal(){
+  el("modal").classList.remove("modal--open");
+  el("modal").setAttribute("aria-hidden","true");
+  el("modalBody").innerHTML = "";
+}
+document.addEventListener("click", (ev)=>{
+  const a = ev.target.closest("[data-action]");
+  if (!a) return;
+  const action = a.dataset.action;
+  if (action === "closeModal") closeModal();
+  if (action === "openAddAsset") openAddAssetModal();
+  if (action === "openAddLiability") openAddLiabilityModal();
+  if (action === "snapshotMonth") snapshotMonth();
+  if (action === "clearHistory") clearHistory();
+  if (action === "goAssets") setTab("assets");
+  if (action === "openAddIncome") openTxModal("income");
+  if (action === "openAddExpense") openTxModal("expense");
+  if (action === "applySalaryTemplate") applySalaryTemplate();
+  if (action === "exportJson") exportJson();
+  if (action === "importJson") el("fileJson").click();
+  if (action === "resetAll") resetAll();
+  if (action === "hardRefresh") hardRefresh();
+});
+
+el("modal").addEventListener("click",(ev)=>{
+  if (ev.target === el("modal")) closeModal();
+});
+
+/* ---------- Charts (canvas, sem libs) ---------- */
+function clearCanvas(c){
+  const ctx = c.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = c.clientWidth || c.width;
+  const cssH = c.clientHeight || c.height;
+  c.width = Math.floor(cssW * dpr);
+  c.height = Math.floor(cssH * dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,cssW,cssH);
+  return {ctx, w:cssW, h:cssH};
+}
+
+function drawDonut(canvas, series){
+  const {ctx,w,h} = clearCanvas(canvas);
+  ctx.save();
+  const cx = w/2, cy = h/2;
+  const r = Math.min(w,h)*0.42;
+  const thickness = r*0.35;
+  const total = series.reduce((a,x)=>a+x.value,0) || 1;
+  let ang = -Math.PI/2;
+  for (const s of series){
+    const frac = s.value/total;
+    const a2 = ang + frac*2*Math.PI;
+    ctx.beginPath();
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = thickness;
+    ctx.lineCap = "butt";
+    ctx.arc(cx, cy, r, ang, a2);
+    ctx.stroke();
+    ang = a2;
+  }
+  // inner circle
+  ctx.beginPath();
+  ctx.fillStyle = "rgba(11,18,32,1)";
+  ctx.arc(cx, cy, r - thickness/2 - 1, 0, 2*Math.PI);
+  ctx.fill();
+
+  // total text
+  ctx.fillStyle = "rgba(229,231,235,.92)";
+  ctx.font = "800 18px system-ui";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("Ativos", cx, cy-10);
+  ctx.fillStyle = "rgba(229,231,235,.98)";
+  ctx.font = "900 22px system-ui";
+  ctx.fillText(fmtMoney(sumAssets()), cx, cy+16);
+  ctx.restore();
+}
+
+function drawLine(canvas, points){
+  const {ctx,w,h} = clearCanvas(canvas);
+  ctx.save();
+  // padding
+  const padL = 38, padR = 16, padT = 12, padB = 26;
+  const x0=padL, x1=w-padR, y0=padT, y1=h-padB;
+  ctx.strokeStyle = "rgba(148,163,184,.18)";
+  ctx.lineWidth = 1;
+  // grid lines
+  const lines = 4;
+  for (let i=0;i<=lines;i++){
+    const y = y0 + (y1-y0)*(i/lines);
+    ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
   }
 
-  function escapeHtml(s){
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  if (!points || points.length === 0){
+    ctx.fillStyle = "rgba(148,163,184,.75)";
+    ctx.font = "700 13px system-ui";
+    ctx.fillText("Sem histórico. Usa “Registar mês”.", x0, y0+22);
+    ctx.restore();
+    return;
   }
 
-  function listRow(title, sub, color){
-    const el = document.createElement('div');
-    el.className='item';
-    el.innerHTML = `
-      <div class="item__left">
-        <div class="item__title">${escapeHtml(title)}</div>
-        <div class="item__sub">${escapeHtml(sub)}</div>
+  const ys = points.map(p=>p.y);
+  let minY = Math.min(...ys), maxY = Math.max(...ys);
+  if (minY === maxY){ minY -= 1; maxY += 1; }
+  const scaleX = (i)=> x0 + (x1-x0)*(i/(points.length-1 || 1));
+  const scaleY = (v)=> y1 - (y1-y0)*((v-minY)/(maxY-minY));
+
+  // line
+  ctx.beginPath();
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = "rgba(34,211,238,.9)";
+  points.forEach((p,i)=>{
+    const x = scaleX(i);
+    const y = scaleY(p.y);
+    if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+
+  // dots
+  for (let i=0;i<points.length;i++){
+    const x=scaleX(i), y=scaleY(points[i].y);
+    ctx.beginPath();
+    ctx.fillStyle="rgba(124,58,237,.95)";
+    ctx.arc(x,y,3.5,0,2*Math.PI);
+    ctx.fill();
+  }
+
+  // labels (min/max)
+  ctx.fillStyle = "rgba(148,163,184,.85)";
+  ctx.font = "700 12px system-ui";
+  ctx.textAlign="left"; ctx.textBaseline="middle";
+  ctx.fillText(fmtMoney(maxY), 6, y0+2);
+  ctx.fillText(fmtMoney(minY), 6, y1);
+
+  // x labels (first/last)
+  ctx.textAlign="left";
+  ctx.fillText(points[0].x, x0, h-10);
+  ctx.textAlign="right";
+  ctx.fillText(points[points.length-1].x, x1, h-10);
+
+  ctx.restore();
+}
+
+/* ---------- Render ---------- */
+function renderDashboard(){
+  const a = sumAssets();
+  const l = sumLiabilities();
+  const nw = a - l;
+  el("kpiNetWorth").textContent = fmtMoney(nw);
+  el("kpiSub").textContent = `Ativos ${fmtMoney(a)} | Passivos ${fmtMoney(l)}`;
+
+  const pY = passiveAnnualNet();
+  el("kpiPassiveYear").textContent = fmtMoney(pY);
+  el("kpiPassiveMonth").textContent = fmtMoney(pY/12);
+
+  const alloc = allocByClass();
+  drawDonut(el("chartAlloc"), alloc);
+
+  // pills
+  const total = alloc.reduce((s,x)=>s+x.value,0) || 1;
+  el("allocPills").innerHTML = alloc.map(x=>{
+    const pct = Math.round((x.value/total)*100);
+    return `<div class="pill"><span class="dot" style="background:${x.color}"></span>${escapeHtml(x.key)} <small>${pct}%</small></div>`;
+  }).join("");
+
+  // trend
+  const pts = state.history
+    .slice()
+    .sort((a,b)=>a.month.localeCompare(b.month))
+    .map(h=>({x:h.month, y:safeNum(h.netWorth,0)}));
+  drawLine(el("chartTrend"), pts);
+
+  // top10
+  const top = state.assets.slice().sort((a,b)=>safeNum(b.value)-safeNum(a.value)).slice(0,10);
+  el("top10List").innerHTML = top.length ? top.map(a=>assetRowHTML(a)).join("") : `<div class="muted">Sem ativos.</div>`;
+}
+
+function renderAssets(){
+  const mode = el("assetFilter").value;
+  let list = state.assets.slice();
+  if (mode === "fav") list = list.filter(a=>!!a.favorite);
+  list.sort((a,b)=>safeNum(b.value)-safeNum(a.value));
+  el("assetsList").innerHTML = list.length ? list.map(a=>assetRowHTML(a,true)).join("") : `<div class="muted">Sem ativos.</div>`;
+}
+el("assetFilter").addEventListener("change", renderAssets);
+
+function renderBalance(){
+  // init month picker to current month if empty
+  const inp = el("balanceMonth");
+  if (!inp.value){
+    const d = new Date();
+    const m = String(d.getMonth()+1).padStart(2,"0");
+    inp.value = `${d.getFullYear()}-${m}`;
+  }
+  const mk = inp.value;
+  const tx = state.transactions.filter(t=>monthKeyFromDateISO(t.date)===mk);
+  const inc = tx.filter(t=>t.kind==="income").reduce((s,t)=>s+safeNum(t.amount),0);
+  const out = tx.filter(t=>t.kind==="expense").reduce((s,t)=>s+safeNum(t.amount),0);
+  el("kpiIn").textContent = fmtMoney(inc);
+  el("kpiOut").textContent = fmtMoney(out);
+  el("kpiNet").textContent = fmtMoney(inc - out);
+
+  tx.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  el("txList").innerHTML = tx.length ? tx.map(t=>txRowHTML(t)).join("") : `<div class="muted">Sem movimentos neste mês.</div>`;
+}
+el("balanceMonth").addEventListener("change", renderBalance);
+
+function renderSettings(){
+  el("baseCurrency").value = state.settings.baseCurrency || "EUR";
+  el("taxRate").value = (state.settings.taxRate ?? 0);
+}
+
+el("baseCurrency").addEventListener("change", ()=>{
+  state.settings.baseCurrency = el("baseCurrency").value;
+  saveState();
+  rerenderAll();
+});
+el("taxRate").addEventListener("input", ()=>{
+  state.settings.taxRate = safeNum(el("taxRate").value,0);
+  saveState();
+  rerenderAll();
+});
+
+function rerenderAll(){
+  const tab = (state.ui && state.ui.activeTab) || "dashboard";
+  if (tab === "dashboard") renderDashboard();
+  if (tab === "assets") renderAssets();
+  if (tab === "balance") renderBalance();
+  if (tab === "settings") renderSettings();
+}
+
+/* ---------- HTML helpers ---------- */
+function escapeHtml(s){
+  return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+}
+
+function assetRowHTML(a, editable=false){
+  const cls = escapeHtml(a.class || "Outros");
+  const nm = escapeHtml(a.name || "");
+  const val = fmtMoney(safeNum(a.value));
+  const fav = a.favorite ? "★" : "☆";
+  const tag = `<span class="tag"><span class="dot"></span>${cls}</span>`;
+  const sub = (a.notes && String(a.notes).trim()) ? escapeHtml(a.notes) : cls;
+  const data = editable ? `data-edit-asset="${a.id}"` : "";
+  return `
+    <div class="item" ${data}>
+      <div class="item__l">
+        <div class="item__title">${nm}</div>
+        <div class="item__sub">${sub}</div>
       </div>
-      <div class="item__right">
-        <span class="badge"><span class="dot" style="background:${color||'rgba(255,255,255,.4)'}"></span></span>
+      <div class="item__r">
+        <div class="item__val">${val}</div>
+        <div class="tag" style="margin-top:8px">${fav} ${cls}</div>
       </div>
-    `;
-    return el;
-  }
+    </div>
+  `;
+}
 
-  function emptyRow(text){
-    const el = document.createElement('div');
-    el.className='item';
-    el.innerHTML = `<div class="item__left"><div class="item__sub">${escapeHtml(text)}</div></div>`;
-    return el;
-  }
-
-  function assetRow(a, cur, editable=false){
-    const el = document.createElement('div');
-    el.className='item';
-    el.dataset.id = a.id;
-    el.dataset.kind = 'asset';
-    const tag = a.class || 'Outros';
-    const passive = calcPassiveAnnualGross(a);
-    const ptxt = passive>0 ? ` · passivo ${fmtMoney(passive*(1-clamp((Number(state.settings.taxRate)||0)/100,0,0.9)),cur)}/ano (líq.)` : '';
-    el.innerHTML = `
-      <div class="item__left">
-        <div class="item__title">${escapeHtml(a.name||'Sem nome')} ${a.favorite?'★':''}</div>
-        <div class="item__sub">${escapeHtml(tag)}${ptxt}</div>
+function txRowHTML(t){
+  const d = escapeHtml(t.date||"");
+  const desc = escapeHtml(t.description||"");
+  const cat = escapeHtml(t.category||"");
+  const kind = t.kind==="income" ? "Entrada" : "Despesa";
+  const amt = fmtMoney(safeNum(t.amount));
+  return `
+    <div class="item" data-edit-tx="${t.id}">
+      <div class="item__l">
+        <div class="item__title">${kind}: ${desc || cat}</div>
+        <div class="item__sub">${d} • ${cat}</div>
       </div>
-      <div class="item__right">
-        <div class="item__val">${fmtMoney(a.value,cur)}</div>
-        ${editable?`<div class="item__tag"><button class="btn btn--text" data-action="edit" data-id="${a.id}" data-kind="asset">Editar</button></div>`:''}
+      <div class="item__r">
+        <div class="item__val">${amt}</div>
       </div>
-    `;
-    return el;
+    </div>
+  `;
+}
+
+/* ---------- CRUD modals ---------- */
+function openAddAssetModal(existingId=null){
+  const a = existingId ? state.assets.find(x=>x.id===existingId) : null;
+  const title = existingId ? "Editar ativo" : "Adicionar ativo";
+  const classOptions = DEFAULT_CLASSES.map(c=>`<option value="${escapeHtml(c.key)}">${escapeHtml(c.key)}</option>`).join("");
+  openModal(title, `
+    <div class="field">
+      <label>Classe</label>
+      <select id="m_class">${classOptions}</select>
+    </div>
+    <div class="field">
+      <label>Nome</label>
+      <input id="m_name" placeholder="ex: VWCE, Apartamento, Conta, BTC">
+    </div>
+    <div class="field">
+      <label>Valor (${escapeHtml(state.settings.baseCurrency||"EUR")})</label>
+      <input id="m_value" inputmode="decimal" placeholder="ex: 25000">
+    </div>
+
+    <div class="field">
+      <label>Tipo de rendimento</label>
+      <select id="m_incomeType">
+        <option value="none">Sem</option>
+        <option value="div_yield">Dividend yield (%/ano)</option>
+        <option value="div_amount_year">Dividendos fixos (€/ano)</option>
+        <option value="rent_month">Renda (€/mês)</option>
+        <option value="interest_year">Juros (€/ano)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Valor do rendimento (depende do tipo)</label>
+      <input id="m_incomeValue" inputmode="decimal" placeholder="ex: 1.8 (yield) ou 700 (renda)">
+    </div>
+
+    <div class="field">
+      <label>Notas</label>
+      <textarea id="m_notes" placeholder="opcional"></textarea>
+    </div>
+
+    <div class="field">
+      <label><input type="checkbox" id="m_fav"> Favorito</label>
+    </div>
+
+    <div class="actions">
+      <button class="btn" data-action="saveAsset">${existingId ? "Guardar" : "Adicionar"}</button>
+      ${existingId ? `<button class="btn btn--ghost" data-action="deleteAsset">Apagar</button>` : ``}
+    </div>
+  `);
+
+  // seed values
+  if (a){
+    el("m_class").value = a.class || "Outros";
+    el("m_name").value = a.name || "";
+    el("m_value").value = a.value ?? "";
+    el("m_incomeType").value = a.incomeType || "none";
+    el("m_incomeValue").value = a.incomeValue ?? "";
+    el("m_notes").value = a.notes || "";
+    el("m_fav").checked = !!a.favorite;
+  }else{
+    el("m_class").value = "Liquidez";
   }
 
-  function liabRow(l, cur){
-    const el = document.createElement('div');
-    el.className='item';
-    el.dataset.id = l.id;
-    el.dataset.kind = 'liability';
-    el.innerHTML = `
-      <div class="item__left">
-        <div class="item__title">${escapeHtml(l.name||'Passivo')}</div>
-        <div class="item__sub">${escapeHtml(l.class||'Passivo')}</div>
-      </div>
-      <div class="item__right">
-        <div class="item__val">${fmtMoney(l.value,cur)}</div>
-        <div class="item__tag"><button class="btn btn--text" data-action="edit" data-id="${l.id}" data-kind="liability">Editar</button></div>
-      </div>
-    `;
-    return el;
-  }
-
-  function kpi(label, value){
-    const el = document.createElement('div');
-    el.className='kpi';
-    el.innerHTML = `<div class="kpi__lab">${escapeHtml(label)}</div><div class="kpi__val">${escapeHtml(value)}</div>`;
-    return el;
-  }
-
-  function cfRow(x, kind){
-    const el = document.createElement('div');
-    el.className='item';
-    const title = (kind==='income') ? (x.who?`${x.who} — ${x.cat||'Entrada'}`:(x.cat||'Entrada')) : (x.cat||'Despesa');
-    el.innerHTML = `
-      <div class="item__left">
-        <div class="item__title">${escapeHtml(title)}</div>
-        <div class="item__sub">${escapeHtml(x.note||'')}</div>
-      </div>
-      <div class="item__right">
-        <div class="item__val">${fmtMoney(x.amt, state.settings.currency)}</div>
-        <div class="item__tag"><button class="btn btn--text" data-action="edit-cf" data-kind="${kind}" data-id="${x.id}">Editar</button></div>
-      </div>
-    `;
-    return el;
-  }
-
-  // --------------------
-  // Months
-  // --------------------
-  function ensureMonthExists(ymStr){
-    if (!state.cashflow.some(m=>m.ym===ymStr)){
-      state.cashflow.push({ ym: ymStr, income: [], expenses: [] });
-      save();
-    }
-  }
-
-  function getMonth(ymStr){
-    ensureMonthExists(ymStr);
-    return state.cashflow.find(m=>m.ym===ymStr);
-  }
-
-  // --------------------
-  // Classes
-  // --------------------
-  function allClasses(){
-    const set = new Set(DEFAULT_CLASSES);
-    for(const a of state.assets) if (a.class) set.add(a.class);
-    for(const l of state.liabilities) if (l.class) set.add(l.class);
-    return Array.from(set);
-  }
-
-  // --------------------
-  // Modal
-  // --------------------
-  function openModal(title, html){
-    $('#modalTitle').textContent = title;
-    $('#modalBody').innerHTML = html;
-    $('#modal').setAttribute('aria-hidden','false');
-  }
-  function closeModal(){
-    $('#modal').setAttribute('aria-hidden','true');
-    $('#modalBody').innerHTML = '';
-  }
-
-  function assetForm(kind, item){
-    const classes = allClasses();
-    const isAsset = kind==='asset';
-    const name = item?.name || '';
-    const cls = item?.class || (isAsset ? 'ETFs' : 'Passivo');
-    const value = item?.value ?? '';
-    const incomeType = item?.incomeType || 'none';
-    const incomeValue = item?.incomeValue ?? '';
-    const favorite = !!item?.favorite;
-    const notes = item?.notes || '';
-
-    const incomeBlock = isAsset ? `
-      <div class="row row--wrap">
-        <div class="field">
-          <div class="label">Rendimento passivo</div>
-          <select class="select" id="f_incomeType">
-            <option value="none">Sem rendimento</option>
-            <option value="div_yield">Dividendos (%/ano)</option>
-            <option value="div_amount">Dividendos (€ / ano)</option>
-            <option value="rate">Taxa (%/ano)</option>
-            <option value="rent">Renda (€/mês)</option>
-          </select>
-        </div>
-        <div class="field">
-          <div class="label">Valor do rendimento</div>
-          <input class="input" id="f_incomeValue" type="number" step="0.01" value="${escapeHtml(incomeValue)}" placeholder="ex: 3.2">
-          <div class="hint">Consoante o tipo escolhido.</div>
-        </div>
-      </div>
-      <div class="row">
-        <label class="hint" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="f_fav" ${favorite?'checked':''}> Favorito</label>
-      </div>
-    ` : '';
-
-    return `
-      <form id="editForm" class="stack">
-        <input type="hidden" id="f_id" value="${escapeHtml(item?.id||'')}">
-        <input type="hidden" id="f_kind" value="${escapeHtml(kind)}">
-
-        <div class="row row--wrap">
-          <div class="field">
-            <div class="label">Classe</div>
-            <select class="select" id="f_class">
-              ${classes.map(c=>`<option value="${escapeHtml(c)}" ${c===cls?'selected':''}>${escapeHtml(c)}</option>`).join('')}
-            </select>
-          </div>
-          <div class="field">
-            <div class="label">Nome</div>
-            <input class="input" id="f_name" value="${escapeHtml(name)}" placeholder="ex: VWCE, Casa, BTC, Depósito X" required>
-          </div>
-        </div>
-
-        <div class="row row--wrap">
-          <div class="field">
-            <div class="label">Valor (${escapeHtml(state.settings.currency)})</div>
-            <input class="input" id="f_value" type="number" step="0.01" value="${escapeHtml(value)}" placeholder="ex: 12500" required>
-            <div class="hint">Passivos: valor positivo = dívida (subtrai ao património).</div>
-          </div>
-        </div>
-
-        ${incomeBlock}
-
-        <div class="row row--wrap">
-          <div class="field">
-            <div class="label">Notas</div>
-            <input class="input" id="f_notes" value="${escapeHtml(notes)}" placeholder="opcional">
-          </div>
-        </div>
-
-        <div class="row">
-          <button class="btn btn--primary" type="submit">Guardar</button>
-          ${item?.id?`<button class="btn btn--danger" type="button" data-action="delete-item" data-kind="${kind}" data-id="${item.id}">Eliminar</button>`:''}
-        </div>
-      </form>
-    `;
-  }
-
-  function cfForm(kind, item, ymStr){
-    const isIncome = kind==='income';
-    const who = item?.who || (isIncome?'Pedro':'');
-    const cat = item?.cat || (isIncome?'Salário':'Renda/Crédito');
-    const amt = item?.amt ?? '';
-    const note = item?.note || '';
-
-    const whoBlock = isIncome ? `
-      <div class="field">
-        <div class="label">Origem</div>
-        <select class="select" id="cf_who">
-          <option value="Pedro" ${who==='Pedro'?'selected':''}>Pedro</option>
-          <option value="Esposa" ${who==='Esposa'?'selected':''}>Esposa</option>
-          <option value="Outros" ${who==='Outros'?'selected':''}>Outros</option>
-        </select>
-      </div>
-    ` : '';
-
-    return `
-      <form id="cfForm" class="stack">
-        <input type="hidden" id="cf_kind" value="${escapeHtml(kind)}">
-        <input type="hidden" id="cf_id" value="${escapeHtml(item?.id||'')}">
-        <input type="hidden" id="cf_ym" value="${escapeHtml(ymStr)}">
-
-        <div class="row row--wrap">
-          ${whoBlock}
-          <div class="field">
-            <div class="label">Categoria</div>
-            <input class="input" id="cf_cat" value="${escapeHtml(cat)}" placeholder="ex: Salário, Renda, Alimentação" required>
-          </div>
-        </div>
-
-        <div class="row row--wrap">
-          <div class="field">
-            <div class="label">Montante (${escapeHtml(state.settings.currency)})</div>
-            <input class="input" id="cf_amt" type="number" step="0.01" value="${escapeHtml(amt)}" required>
-          </div>
-          <div class="field">
-            <div class="label">Nota</div>
-            <input class="input" id="cf_note" value="${escapeHtml(note)}" placeholder="opcional">
-          </div>
-        </div>
-
-        <div class="row">
-          <button class="btn btn--primary" type="submit">Guardar</button>
-          ${item?.id?`<button class="btn btn--danger" type="button" data-action="delete-cf" data-kind="${kind}" data-id="${item.id}">Eliminar</button>`:''}
-        </div>
-      </form>
-    `;
-  }
-
-  // --------------------
-  // Actions
-  // --------------------
-  async function handleAction(action, target){
-    const cur = state.settings.currency;
-
-    if (action === 'add-asset'){
-      openModal('Adicionar ativo', assetForm('asset', null));
-      return;
-    }
-    if (action === 'add-liability'){
-      openModal('Adicionar passivo', assetForm('liability', null));
-      return;
-    }
-    if (action === 'snapshot'){
-      const t = totals();
-      const m = ym();
-      const i = state.snapshots.findIndex(s=>s.ym===m);
-      const snap = {
-        ym: m,
-        assetsTotal: t.assetsTotal,
-        liabilitiesTotal: t.liabilitiesTotal,
-        netWorth: t.netWorth,
-        passiveGrossAnnual: t.passiveGrossAnnual,
-        passiveNetAnnual: t.passiveNetAnnual,
-        ts: nowISO()
+  // bind save/delete (one-shot via delegation)
+  document.addEventListener("click", function handler(ev){
+    const act = ev.target.closest("[data-action]");
+    if (!act) return;
+    if (act.dataset.action === "saveAsset"){
+      const obj = {
+        id: a ? a.id : uid(),
+        class: el("m_class").value,
+        name: el("m_name").value.trim(),
+        value: safeNum(el("m_value").value,0),
+        incomeType: el("m_incomeType").value,
+        incomeValue: safeNum(el("m_incomeValue").value,0),
+        notes: el("m_notes").value.trim(),
+        favorite: el("m_fav").checked
       };
-      if (i>=0) state.snapshots[i] = snap; else state.snapshots.push(snap);
-      save();
-      renderDashboard();
-      return;
-    }
-    if (action === 'toggle-dist'){
-      const box = $('#distDetail');
-      box.hidden = !box.hidden;
-      return;
-    }
-    if (action === 'toggle-top'){
-      const box = $('#topAll');
-      const btn = $('[data-action="toggle-top"]');
-      box.hidden = !box.hidden;
-      if (btn) btn.textContent = box.hidden ? 'Ver tudo' : 'Esconder';
-      return;
-    }
-    if (action === 'clear-snapshots'){
-      state.snapshots = [];
-      save();
-      renderDashboard();
-      return;
-    }
-    if (action === 'edit'){
-      const id = target.dataset.id;
-      const kind = target.dataset.kind;
-      const item = (kind==='asset') ? state.assets.find(x=>x.id===id) : state.liabilities.find(x=>x.id===id);
-      openModal(kind==='asset'?'Editar ativo':'Editar passivo', assetForm(kind, item||null));
-      return;
-    }
-    if (action === 'delete-item'){
-      const id = target.dataset.id;
-      const kind = target.dataset.kind;
-      if (kind==='asset') state.assets = state.assets.filter(x=>x.id!==id);
-      if (kind==='liability') state.liabilities = state.liabilities.filter(x=>x.id!==id);
-      save();
+      if (!obj.name){ alert("Nome em falta."); return; }
+      if (a){
+        const idx = state.assets.findIndex(x=>x.id===a.id);
+        if (idx>=0) state.assets[idx]=obj;
+      }else{
+        state.assets.push(obj);
+      }
+      saveState();
       closeModal();
-      renderDashboard();
-      renderAssets();
-      return;
+      rerenderAll();
+      document.removeEventListener("click", handler, true);
     }
-    if (action === 'close-modal'){
-      closeModal();
-      return;
+    if (act.dataset.action === "deleteAsset" && a){
+      if (confirm("Apagar este ativo?")){
+        state.assets = state.assets.filter(x=>x.id!==a.id);
+        saveState();
+        closeModal();
+        rerenderAll();
+        document.removeEventListener("click", handler, true);
+      }
     }
-    if (action === 'export-json'){
-      const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
-      downloadBlob(blob, `patrimonio-familiar-backup_${ym()}.json`);
-      return;
-    }
-    if (action === 'import-json'){
-      const f = $('#fileJSON').files?.[0];
-      if (!f) return alert('Escolhe um ficheiro JSON primeiro.');
-      const text = await f.text();
-      const parsed = safeParse(text, null);
-      if (!parsed) return alert('JSON inválido.');
-      state = {
-        ...defaultState(),
-        ...parsed,
-        settings: { ...defaultState().settings, ...(parsed.settings||{}) },
-        assets: Array.isArray(parsed.assets)?parsed.assets:[],
-        liabilities: Array.isArray(parsed.liabilities)?parsed.liabilities:[],
-        snapshots: Array.isArray(parsed.snapshots)?parsed.snapshots:[],
-        cashflow: Array.isArray(parsed.cashflow)?parsed.cashflow:[],
-        bankMoves: Array.isArray(parsed.bankMoves)?parsed.bankMoves:[],
+  }, true);
+}
+
+function openAddLiabilityModal(existingId=null){
+  const l = existingId ? state.liabilities.find(x=>x.id===existingId) : null;
+  const title = existingId ? "Editar passivo" : "Adicionar passivo";
+  openModal(title, `
+    <div class="field">
+      <label>Nome</label>
+      <input id="m_l_name" placeholder="ex: Crédito habitação">
+    </div>
+    <div class="field">
+      <label>Valor em dívida (${escapeHtml(state.settings.baseCurrency||"EUR")})</label>
+      <input id="m_l_value" inputmode="decimal" placeholder="ex: 120000">
+    </div>
+    <div class="field">
+      <label>Notas</label>
+      <textarea id="m_l_notes" placeholder="opcional"></textarea>
+    </div>
+    <div class="actions">
+      <button class="btn" data-action="saveLiability">${existingId ? "Guardar" : "Adicionar"}</button>
+      ${existingId ? `<button class="btn btn--ghost" data-action="deleteLiability">Apagar</button>` : ``}
+    </div>
+  `);
+  if (l){
+    el("m_l_name").value = l.name || "";
+    el("m_l_value").value = l.value ?? "";
+    el("m_l_notes").value = l.notes || "";
+  }
+
+  document.addEventListener("click", function handler(ev){
+    const act = ev.target.closest("[data-action]");
+    if (!act) return;
+    if (act.dataset.action === "saveLiability"){
+      const obj = {
+        id: l ? l.id : uid(),
+        name: el("m_l_name").value.trim(),
+        value: safeNum(el("m_l_value").value,0),
+        notes: el("m_l_notes").value.trim()
       };
-      save();
-      goView('Dashboard');
-      alert('Importado.');
-      return;
-    }
-    if (action === 'wipe'){
-      if (!confirm('Apagar todos os dados locais?')) return;
-      localStorage.removeItem(STORAGE_KEY);
-      state = defaultState();
-      save();
-      goView('Dashboard');
-      return;
-    }
-
-    if (action === 'add-month'){
-      const d = new Date();
-      d.setMonth(d.getMonth()+1);
-      const m = ym(d);
-      ensureMonthExists(m);
-      save();
-      renderCashflow();
-      return;
-    }
-
-    if (action === 'add-income' || action === 'add-expense'){
-      const ymStr = $('#monthPick').value;
-      const kind = (action === 'add-income') ? 'income' : 'expense';
-      openModal(kind==='income'?'Adicionar entrada':'Adicionar despesa', cfForm(kind, null, ymStr));
-      return;
-    }
-
-    if (action === 'edit-cf'){
-      const kind = target.dataset.kind;
-      const id = target.dataset.id;
-      const ymStr = $('#monthPick').value;
-      const m = getMonth(ymStr);
-      const arr = (kind==='income') ? m.income : m.expenses;
-      const item = arr.find(x=>x.id===id);
-      openModal('Editar', cfForm(kind, item||null, ymStr));
-      return;
-    }
-
-    if (action === 'delete-cf'){
-      const kind = target.dataset.kind;
-      const id = target.dataset.id;
-      const ymStr = $('#monthPick').value;
-      const m = getMonth(ymStr);
-      if (kind==='income') m.income = m.income.filter(x=>x.id!==id);
-      else m.expenses = m.expenses.filter(x=>x.id!==id);
-      save();
+      if (!obj.name){ alert("Nome em falta."); return; }
+      if (l){
+        const idx = state.liabilities.findIndex(x=>x.id===l.id);
+        if (idx>=0) state.liabilities[idx]=obj;
+      }else{
+        state.liabilities.push(obj);
+      }
+      saveState();
       closeModal();
-      renderCashflow();
-      return;
+      rerenderAll();
+      document.removeEventListener("click", handler, true);
     }
-
-    if (action === 'set-passcode'){
-      const code = ($('#passcode').value||'').trim();
-      if (!code) return alert('Introduce um código.');
-      state.settings.passcodeHash = await sha256Hex(code);
-      state.settings.locked = false;
-      $('#passcode').value='';
-      save();
-      renderSettings();
-      alert('Código guardado.');
-      return;
-    }
-    if (action === 'remove-passcode'){
-      if (!confirm('Remover código?')) return;
-      state.settings.passcodeHash = null;
-      state.settings.locked = false;
-      save();
-      renderSettings();
-      goView('Settings');
-      return;
-    }
-    if (action === 'lock-now'){
-      if (!state.settings.passcodeHash) return alert('Define um código primeiro.');
-      state.settings.locked = true;
-      save();
-      goView('Lock');
-      return;
-    }
-    if (action === 'unlock'){
-      const code = ($('#unlockCode').value||'').trim();
-      if (!code) return;
-      const h = await sha256Hex(code);
-      if (h === state.settings.passcodeHash){
-        state.settings.locked = false;
-        $('#unlockCode').value='';
-        $('#unlockHint').textContent='';
-        save();
-        goView('Dashboard');
-      } else {
-        $('#unlockHint').textContent='Código incorrecto.';
-      }
-      return;
-    }
-  }
-
-  function downloadBlob(blob, filename){
-    const a = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url), 1000);
-  }
-
-  // --------------------
-  // CSV import
-  // --------------------
-  function parseCSV(text){
-    // simple CSV parser (comma/semicolon)
-    const lines = text.replace(/\r/g,'').split('\n').filter(l=>l.trim().length>0);
-    if (lines.length===0) return [];
-    const sep = (lines[0].includes(';') && !lines[0].includes(',')) ? ';' : ',';
-    const rows = lines.map(l=>splitCSVLine(l, sep));
-    const header = rows[0].map(h=>h.trim());
-    const out = [];
-    for(let i=1;i<rows.length;i++){
-      const r = rows[i];
-      const obj = {};
-      header.forEach((h,idx)=> obj[h] = (r[idx]??'').trim());
-      out.push(obj);
-    }
-    return out;
-  }
-
-  function splitCSVLine(line, sep){
-    const res = [];
-    let cur = '';
-    let inQ = false;
-    for(let i=0;i<line.length;i++){
-      const ch = line[i];
-      if (ch==='"'){
-        if (inQ && line[i+1]==='"'){ cur+='"'; i++; }
-        else inQ = !inQ;
-        continue;
-      }
-      if (!inQ && ch===sep){ res.push(cur); cur=''; continue; }
-      cur += ch;
-    }
-    res.push(cur);
-    return res;
-  }
-
-  async function importAssetsCSV(file){
-    const txt = await file.text();
-    const rows = parseCSV(txt);
-    if (rows.length===0) return alert('CSV vazio.');
-
-    const mapped = rows.map(r=>({
-      id: uid(),
-      class: r.class || r.Classe || r.classe || 'Outros',
-      name: r.name || r.Nome || r.nome || 'Sem nome',
-      value: Number(String(r.value||r.Valor||r.valor||'0').replace(',','.')) || 0,
-      incomeType: r.incomeType || r.rendimentoTipo || 'none',
-      incomeValue: Number(String(r.incomeValue||r.rendimentoValor||'0').replace(',','.')) || 0,
-      favorite: String(r.favorite||'').toLowerCase()==='true' || String(r.favorito||'').toLowerCase()==='true',
-      notes: r.notes || r.Notas || r.notas || ''
-    }));
-
-    state.assets = mapped;
-    save();
-    goView('Dashboard');
-    alert(`Importados ${mapped.length} ativos.`);
-  }
-
-  async function importBankCSV(file){
-    const txt = await file.text();
-    const rows = parseCSV(txt);
-    if (rows.length===0) return alert('CSV vazio.');
-
-    // detect columns
-    const cols = Object.keys(rows[0]||{});
-    const pick = (cands) => cols.find(c => cands.some(k => c.toLowerCase().includes(k)));
-    const cDate = pick(['data','date']);
-    const cDesc = pick(['descr','desc','mov','detal','memo']);
-    const cAmt  = pick(['mont','amount','valor','value','importe']);
-
-    if (!cAmt) return alert('Não consegui detectar a coluna do montante.');
-
-    const moves = rows.map(r=>{
-      const rawAmt = String(r[cAmt]||'0').replace(/\s/g,'').replace('.','').replace(',','.');
-      const amount = Number(rawAmt) || 0;
-      const dateStr = (cDate ? String(r[cDate]||'') : '').trim();
-      const desc = (cDesc ? String(r[cDesc]||'') : '').trim();
-      const yms = guessYM(dateStr) || ym();
-      return { id: uid(), date: dateStr, desc, amount, cat:'', ym: yms };
-    });
-
-    state.bankMoves.push(...moves);
-    // auto-create expenses from negative amounts in that month (uncategorized)
-    for(const mv of moves){
-      ensureMonthExists(mv.ym);
-      const m = getMonth(mv.ym);
-      if (mv.amount < 0){
-        m.expenses.push({ id: uid(), cat: mv.cat || 'Banco (importado)', amt: Math.abs(mv.amount), note: mv.desc||mv.date||'' });
-      } else if (mv.amount > 0){
-        m.income.push({ id: uid(), who:'Outros', cat: mv.cat || 'Banco (importado)', amt: mv.amount, note: mv.desc||mv.date||'' });
+    if (act.dataset.action === "deleteLiability" && l){
+      if (confirm("Apagar este passivo?")){
+        state.liabilities = state.liabilities.filter(x=>x.id!==l.id);
+        saveState();
+        closeModal();
+        rerenderAll();
+        document.removeEventListener("click", handler, true);
       }
     }
+  }, true);
+}
 
-    save();
-    goView('Cashflow');
-    alert(`Importados ${moves.length} movimentos.`);
+function openTxModal(kind, existingId=null){
+  const t = existingId ? state.transactions.find(x=>x.id===existingId) : null;
+  const title = t ? "Editar movimento" : (kind==="income" ? "Adicionar entrada" : "Adicionar despesa");
+  const today = fmtDateISO(new Date());
+  openModal(title, `
+    <div class="field">
+      <label>Data</label>
+      <input id="m_t_date" type="date">
+    </div>
+    <div class="field">
+      <label>Categoria</label>
+      <input id="m_t_cat" placeholder="ex: Salário, Renda, Supermercado, Escola">
+    </div>
+    <div class="field">
+      <label>Descrição</label>
+      <input id="m_t_desc" placeholder="opcional">
+    </div>
+    <div class="field">
+      <label>Valor (${escapeHtml(state.settings.baseCurrency||"EUR")})</label>
+      <input id="m_t_amt" inputmode="decimal" placeholder="ex: 2500">
+    </div>
+    <div class="actions">
+      <button class="btn" data-action="saveTx">${t ? "Guardar" : "Adicionar"}</button>
+      ${t ? `<button class="btn btn--ghost" data-action="deleteTx">Apagar</button>` : ``}
+    </div>
+  `);
+
+  if (t){
+    el("m_t_date").value = t.date || today;
+    el("m_t_cat").value = t.category || "";
+    el("m_t_desc").value = t.description || "";
+    el("m_t_amt").value = t.amount ?? "";
+  }else{
+    el("m_t_date").value = today;
   }
 
-  function guessYM(dateStr){
-    // tries dd/mm/yyyy or yyyy-mm-dd
-    const s = String(dateStr||'').trim();
-    let m;
-    if ((m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/))) return `${m[1]}-${String(m[2]).padStart(2,'0')}`;
-    if ((m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})/))) {
-      const y = (m[3].length===2) ? `20${m[3]}` : m[3];
-      return `${y}-${String(m[2]).padStart(2,'0')}`;
+  document.addEventListener("click", function handler(ev){
+    const act = ev.target.closest("[data-action]");
+    if (!act) return;
+    if (act.dataset.action === "saveTx"){
+      const obj = {
+        id: t ? t.id : uid(),
+        date: el("m_t_date").value,
+        kind: t ? t.kind : kind,
+        category: el("m_t_cat").value.trim(),
+        description: el("m_t_desc").value.trim(),
+        amount: safeNum(el("m_t_amt").value,0)
+      };
+      if (!obj.date){ alert("Data em falta."); return; }
+      if (!obj.category){ alert("Categoria em falta."); return; }
+      if (t){
+        const idx = state.transactions.findIndex(x=>x.id===t.id);
+        if (idx>=0) state.transactions[idx]=obj;
+      }else{
+        state.transactions.push(obj);
+      }
+      saveState();
+      closeModal();
+      renderBalance();
+      document.removeEventListener("click", handler, true);
     }
-    return null;
-  }
-
-  // --------------------
-  // Event wiring
-  // --------------------
-  function bind(){
-    // bottom nav
-    $$('.bottomnav .tab').forEach(btn=>{
-      btn.addEventListener('click', () => goView(btn.dataset.view));
-    });
-
-    // top add
-    $('#btnAdd').addEventListener('click', () => openModal('Adicionar ativo', assetForm('asset', null)));
-
-    // delegation
-    document.addEventListener('click', async (e)=>{
-      const el = e.target.closest('[data-action]');
-      if (!el) return;
-      const action = el.dataset.action;
-      e.preventDefault();
-      try { await handleAction(action, el); }
-      catch(err){ showError(err); }
-    });
-
-    // modal submit handlers
-    document.addEventListener('submit', async (e)=>{
-      const form = e.target;
-      if (form.id === 'editForm'){
-        e.preventDefault();
-        try {
-          const kind = $('#f_kind').value;
-          const id = ($('#f_id').value||'').trim() || uid();
-          const obj = {
-            id,
-            class: $('#f_class').value,
-            name: $('#f_name').value.trim(),
-            value: Number($('#f_value').value)||0,
-            notes: $('#f_notes').value.trim(),
-          };
-          if (kind==='asset'){
-            obj.incomeType = $('#f_incomeType') ? $('#f_incomeType').value : 'none';
-            obj.incomeValue = $('#f_incomeValue') ? (Number($('#f_incomeValue').value)||0) : 0;
-            obj.favorite = $('#f_fav') ? !!$('#f_fav').checked : false;
-            const i = state.assets.findIndex(x=>x.id===id);
-            if (i>=0) state.assets[i] = { ...state.assets[i], ...obj };
-            else state.assets.push(obj);
-          } else {
-            const i = state.liabilities.findIndex(x=>x.id===id);
-            if (i>=0) state.liabilities[i] = { ...state.liabilities[i], ...obj };
-            else state.liabilities.push(obj);
-          }
-          save();
-          closeModal();
-          renderDashboard();
-          renderAssets();
-        } catch(err){ showError(err); }
+    if (act.dataset.action === "deleteTx" && t){
+      if (confirm("Apagar este movimento?")){
+        state.transactions = state.transactions.filter(x=>x.id!==t.id);
+        saveState();
+        closeModal();
+        renderBalance();
+        document.removeEventListener("click", handler, true);
       }
+    }
+  }, true);
+}
 
-      if (form.id === 'cfForm'){
-        e.preventDefault();
-        try {
-          const kind = $('#cf_kind').value;
-          const id = ($('#cf_id').value||'').trim() || uid();
-          const ymStr = $('#cf_ym').value;
-          const m = getMonth(ymStr);
-          const entry = {
-            id,
-            cat: $('#cf_cat').value.trim(),
-            amt: Number($('#cf_amt').value)||0,
-            note: $('#cf_note').value.trim(),
-          };
-          if (kind==='income') entry.who = $('#cf_who').value;
+/* ---------- Edit on tap ---------- */
+document.addEventListener("click",(ev)=>{
+  const a = ev.target.closest("[data-edit-asset]");
+  if (a) openAddAssetModal(a.dataset.editAsset);
+  const t = ev.target.closest("[data-edit-tx]");
+  if (t) openTxModal("income", t.dataset.editTx);
+});
 
-          const arr = (kind==='income') ? m.income : m.expenses;
-          const i = arr.findIndex(x=>x.id===id);
-          if (i>=0) arr[i] = { ...arr[i], ...entry };
-          else arr.push(entry);
-
-          save();
-          closeModal();
-          renderCashflow();
-        } catch(err){ showError(err); }
-      }
-    });
-
-    // search
-    $('#assetSearch').addEventListener('input', () => renderAssets());
-    $('#assetFilter').addEventListener('change', () => renderAssets());
-
-    // month pick
-    $('#monthPick').addEventListener('change', () => renderCashflow());
-
-    // settings
-    $('#baseCurrency').addEventListener('change', () => {
-      state.settings.currency = $('#baseCurrency').value;
-      save();
-      renderDashboard();
-      renderAssets();
-      renderCashflow();
-    });
-    $('#taxRate').addEventListener('change', () => {
-      state.settings.taxRate = Number($('#taxRate').value)||0;
-      save();
-      renderDashboard();
-    });
-
-    // passive segment
-    $$('.seg__btn').forEach(b=>{
-      b.addEventListener('click', () => {
-        $$('.seg__btn').forEach(x=>x.classList.remove('seg__btn--active'));
-        b.classList.add('seg__btn--active');
-        passiveMode = b.dataset.seg === 'gross' ? 'gross' : 'net';
-        renderDashboard();
-      });
-    });
-
-    // file inputs
-    $('#fileAssetsCSV').addEventListener('change', async ()=>{
-      const f = $('#fileAssetsCSV').files?.[0];
-      if (f) { try { await importAssetsCSV(f); } catch(err){ showError(err); } }
-    });
-    $('#fileBankCSV').addEventListener('change', async ()=>{
-      const f = $('#fileBankCSV').files?.[0];
-      if (f) { try { await importBankCSV(f); } catch(err){ showError(err); } }
-    });
-
-    // close modal on overlay escape
-    document.addEventListener('keydown', (e)=>{
-      if (e.key==='Escape') closeModal();
-    });
+/* ---------- History snapshots ---------- */
+function snapshotMonth(){
+  // key month = current balanceMonth if set else current
+  let mk = el("balanceMonth")?.value;
+  if (!mk){
+    const d=new Date(); mk=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
   }
+  const snap = {
+    month: mk,
+    netWorth: netWorth(),
+    assets: sumAssets(),
+    liabilities: sumLiabilities(),
+    passiveNet: passiveAnnualNet()
+  };
+  // replace existing for month
+  state.history = state.history.filter(h=>h.month!==mk);
+  state.history.push(snap);
+  saveState();
+  renderDashboard();
+}
 
-  // --------------------
-  // Init
-  // --------------------
-  function init(){
-    // make views hidden initially (CSS display none), then show dashboard
-    Object.values(VIEW_IDS).forEach(id=>{
-      const el = document.getElementById(id);
-      if (el) el.style.display = 'none';
-    });
+function clearHistory(){
+  if (!confirm("Apagar histórico (snapshots)?")) return;
+  state.history = [];
+  saveState();
+  renderDashboard();
+}
 
-    // lock handling
-    if (state.settings.locked) goView('Lock');
-    else goView('Dashboard');
-
-    bind();
+/* ---------- Templates ---------- */
+function applySalaryTemplate(){
+  const mk = el("balanceMonth").value;
+  if (!mk){ alert("Escolhe o mês."); return; }
+  const year = mk.slice(0,4);
+  const month = mk.slice(5,7);
+  // default on day 1
+  const date = `${year}-${month}-01`;
+  // add or update two salary entries
+  const templates = [
+    { kind:"income", category:"Salário Pedro", description:"Salário (variável)", amount:0 },
+    { kind:"income", category:"Salário Cônjuge", description:"Salário (variável)", amount:0 },
+  ];
+  for (const tpl of templates){
+    // find existing same month + category
+    const existing = state.transactions.find(t=>monthKeyFromDateISO(t.date)===mk && t.kind===tpl.kind && t.category===tpl.category);
+    if (existing){
+      // keep amount
+      existing.date = existing.date || date;
+      existing.description = existing.description || tpl.description;
+    }else{
+      state.transactions.push({ id:uid(), date, ...tpl });
+    }
   }
+  saveState();
+  renderBalance();
+  alert("Templates adicionados. Edita os valores (toque no movimento).");
+}
 
-  // Run after DOM
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-  else init();
+/* ---------- Import / Export ---------- */
+function exportJson(){
+  const blob = new Blob([JSON.stringify(state,null,2)], {type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `patrimonio-familiar-backup-${Date.now()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
+el("fileJson").addEventListener("change", async ()=>{
+  const f = el("fileJson").files[0];
+  if (!f) return;
+  try{
+    const txt = await f.text();
+    const s = JSON.parse(txt);
+    if (!s || typeof s !== "object") throw new Error("JSON inválido");
+    if (!confirm("Importar este backup vai substituir os dados locais. Continuar?")) return;
+    // basic validate + defaults
+    state.assets = Array.isArray(s.assets) ? s.assets : [];
+    state.liabilities = Array.isArray(s.liabilities) ? s.liabilities : [];
+    state.history = Array.isArray(s.history) ? s.history : [];
+    state.transactions = Array.isArray(s.transactions) ? s.transactions : [];
+    state.settings = s.settings || { baseCurrency:"EUR", taxRate:0 };
+    saveState();
+    closeModal();
+    rerenderAll();
+    setTab("dashboard");
+  }catch(e){
+    alert("Falha ao importar JSON: " + (e.message || e));
+  }finally{
+    el("fileJson").value = "";
+  }
+});
+
+function parseCSV(text){
+  // parser simples (suporta aspas)
+  const rows = [];
+  let i=0, cur="", inQ=false;
+  const pushCell = (row)=>{ row.push(cur); cur=""; };
+  let row=[];
+  while (i<text.length){
+    const ch=text[i];
+    if (ch === '"'){
+      if (inQ && text[i+1] === '"'){ cur+='"'; i++; }
+      else inQ=!inQ;
+    }else if (ch === "," && !inQ){
+      pushCell(row);
+    }else if ((ch === "\n" || ch === "\r") && !inQ){
+      if (ch === "\r" && text[i+1]==="\n") i++;
+      pushCell(row);
+      if (row.some(c=>c!=="" )) rows.push(row);
+      row=[];
+    }else{
+      cur+=ch;
+    }
+    i++;
+  }
+  pushCell(row);
+  if (row.some(c=>c!=="" )) rows.push(row);
+  return rows;
+}
+
+function csvToObjects(text){
+  const rows = parseCSV(text.trim());
+  if (rows.length < 2) return [];
+  const head = rows[0].map(h=>String(h).trim());
+  return rows.slice(1).map(r=>{
+    const obj={};
+    head.forEach((h,idx)=> obj[h]= (r[idx] ?? "").trim());
+    return obj;
+  });
+}
+
+el("fileAssetsCsv").addEventListener("change", async ()=>{
+  const f = el("fileAssetsCsv").files[0];
+  if (!f) return;
+  try{
+    const txt = await f.text();
+    const objs = csvToObjects(txt);
+    if (!objs.length) throw new Error("CSV vazio");
+    // merge by name+class, else add
+    for (const o of objs){
+      const obj = {
+        id: uid(),
+        class: o.class || "Outros",
+        name: (o.name||"").trim(),
+        value: safeNum(o.value,0),
+        incomeType: (o.incomeType||"none").trim(),
+        incomeValue: safeNum(o.incomeValue,0),
+        notes: (o.notes||"").trim(),
+        favorite: String(o.favorite||"").toLowerCase() === "true"
+      };
+      if (!obj.name) continue;
+      state.assets.push(obj);
+    }
+    saveState();
+    rerenderAll();
+    alert("Importação de ativos concluída.");
+  }catch(e){
+    alert("Falha ao importar CSV de ativos: " + (e.message||e));
+  }finally{
+    el("fileAssetsCsv").value = "";
+  }
+});
+
+el("fileTxCsv").addEventListener("change", async ()=>{
+  const f = el("fileTxCsv").files[0];
+  if (!f) return;
+  try{
+    const txt = await f.text();
+    const objs = csvToObjects(txt);
+    if (!objs.length) throw new Error("CSV vazio");
+    for (const o of objs){
+      const kind = (o.kind||"").trim();
+      if (!["income","expense"].includes(kind)) continue;
+      const obj = {
+        id: uid(),
+        date: (o.date||"").trim(),
+        kind,
+        category: (o.category||"").trim(),
+        description: (o.description||"").trim(),
+        amount: safeNum(o.amount,0),
+      };
+      if (!obj.date || !obj.category) continue;
+      state.transactions.push(obj);
+    }
+    saveState();
+    renderBalance();
+    alert("Importação de movimentos concluída.");
+  }catch(e){
+    alert("Falha ao importar CSV de movimentos: " + (e.message||e));
+  }finally{
+    el("fileTxCsv").value = "";
+  }
+});
+
+/* ---------- Reset / Refresh ---------- */
+function resetAll(){
+  if (!confirm("Isto vai apagar todos os dados locais. Continuar?")) return;
+  localStorage.removeItem(STORAGE_KEY);
+  state = loadState();
+  saveState();
+  location.reload();
+}
+
+async function hardRefresh(){
+  // remove SW + caches + reload
+  await tryUnregisterServiceWorkers();
+  await tryClearCaches();
+  // force cache-bust
+  const u = new URL(location.href);
+  u.searchParams.set("v", String(Date.now()));
+  location.replace(u.toString());
+}
+
+/* ---------- Init ---------- */
+let state = loadState();
+saveState();
+
+(async ()=>{
+  // Evita que SW antigos “prendam” builds no iOS
+  await tryUnregisterServiceWorkers();
+  // UI init
+  // default month picker
+  const d = new Date();
+  el("balanceMonth").value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+
+  // initial render
+  renderDashboard();
+  renderAssets();
+  renderBalance();
+  renderSettings();
+
+  const tab = (state.ui && state.ui.activeTab) || "dashboard";
+  setTab(tab);
 })();

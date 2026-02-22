@@ -5,16 +5,14 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
   <meta name="theme-color" content="#0b1220"/>
   <title>Património Familiar</title>
-  <meta name="description" content="App local (offline-first) para acompanhar património familiar: ativos, passivos, distribuição, rendimento passivo e balanço.">
+  <meta name="description" content="Dashboard simples para acompanhar património familiar (ativos, passivos, distribuição, rendimento passivo e balanço). Tudo local, sem backend.">
 
   <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Património">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-
-  <link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png" media="(prefers-color-scheme: light)">
-  <link rel="icon" href="assets/favicon-32-dark.png" sizes="32x32" type="image/png" media="(prefers-color-scheme: dark)">
-  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
 
   <link rel="stylesheet" href="styles.css">
   <script defer src="app.js"></script>
@@ -25,323 +23,200 @@
       <img class="brand__icon" src="assets/icon-192.png" alt="Ícone">
       <div class="brand__text">
         <div class="brand__title">Património Familiar</div>
-        <div class="brand__sub">Net worth · Distribuição · Rendimento passivo</div>
+        <div class="brand__sub">Net worth • Distribuição • Rendimento passivo</div>
       </div>
     </div>
-    <button class="btn btn--fab" id="btnAdd" aria-label="Adicionar">+</button>
+    <div class="topbar__actions">
+      <button id="btnAddQuick" class="btn btn--primary" title="Adicionar">＋</button>
+    </div>
   </header>
 
-  <main class="app" id="appRoot">
-    <section class="view view--active" id="viewDashboard" aria-label="Dashboard">
-      <div class="grid">
-        <div class="card card--hero">
-          <div class="hero">
-            <div>
-              <div class="label">Património líquido</div>
-              <div class="value" id="netWorth">—</div>
-              <div class="muted" id="netWorthSub">Ativos — | Passivos —</div>
-            </div>
-            <div class="hero__right">
-              <div class="pill">
-                <div class="pill__label">Rendimento passivo (anual)</div>
-                <div class="pill__value" id="passiveAnnual">—</div>
-              </div>
-              <div class="pill pill--ghost">
-                <div class="pill__label">Mensal (estim.)</div>
-                <div class="pill__value" id="passiveMonthly">—</div>
-              </div>
-            </div>
+  <main>
+    <!-- DASHBOARD -->
+    <section id="page-dashboard" class="page">
+      <div class="card">
+        <div class="h2">Património líquido</div>
+        <div class="kpi__value" id="kpiNetWorth">—</div>
+        <div class="muted" id="kpiSub">Ativos — | Passivos —</div>
+        <div class="row" style="margin-top:12px">
+          <div class="kpi">
+            <div class="kpi__label">Rendimento passivo (anual)</div>
+            <div class="kpi__value" id="kpiPassiveYear">—</div>
           </div>
-          <div class="dashquick">
-            <button class="chipbtn" data-action="add-asset">+ Ativo</button>
-            <button class="chipbtn" data-action="add-liability">− Passivo</button>
-            <button class="chipbtn" data-action="snapshot">⟲ Registar mês</button>
+          <div class="kpi">
+            <div class="kpi__label">Mensal (estim.)</div>
+            <div class="kpi__value" id="kpiPassiveMonth">—</div>
           </div>
         </div>
-
-        <div class="card">
-          <div class="card__head">
-            <div>
-              <div class="card__title">Distribuição</div>
-              <div class="card__sub">Por classe (ativos)</div>
-            </div>
-            <button class="btn btn--text" data-action="toggle-dist">Detalhe</button>
-          </div>
-          <div class="card__body">
-            <div class="split">
-              <div class="chart" id="donutWrap"></div>
-              <div class="legend" id="distLegend"></div>
-            </div>
-            <div class="collapse" id="distDetail" hidden>
-              <div class="list" id="distDetailList"></div>
-            </div>
-          </div>
+        <div class="actions">
+          <button class="btn" data-action="openAddAsset">+ Ativo</button>
+          <button class="btn" data-action="openAddLiability">− Passivo</button>
+          <button class="btn" data-action="snapshotMonth">⟲ Registar mês</button>
         </div>
-
-        <div class="card">
-          <div class="card__head">
-            <div>
-              <div class="card__title">Tendência do património</div>
-              <div class="card__sub">Histórico (snapshots)</div>
-            </div>
-            <button class="btn btn--text" data-action="clear-snapshots">Limpar</button>
-          </div>
-          <div class="card__body">
-            <div class="chart" id="nwTrend"></div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card__head">
-            <div>
-              <div class="card__title">Evolução do rendimento passivo</div>
-              <div class="card__sub">Histórico (snapshots)</div>
-            </div>
-            <div class="seg" role="tablist" aria-label="Modo">
-              <button class="seg__btn seg__btn--active" data-seg="net" aria-selected="true">Líquido</button>
-              <button class="seg__btn" data-seg="gross" aria-selected="false">Bruto</button>
-            </div>
-          </div>
-          <div class="card__body">
-            <div class="chart" id="piTrend"></div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card__head">
-            <div>
-              <div class="card__title">Top 10 por valor</div>
-              <div class="card__sub">Ativos (maior → menor)</div>
-            </div>
-            <button class="btn btn--text" data-action="toggle-top">Ver tudo</button>
-          </div>
-          <div class="card__body">
-            <div class="list" id="topList"></div>
-            <div class="collapse" id="topAll" hidden>
-              <div class="list" id="allAssetsList"></div>
-            </div>
-          </div>
-        </div>
-
       </div>
-    </section>
 
-    <section class="view" id="viewAssets" aria-label="Ativos">
-      <div class="grid">
-        <div class="card">
-          <div class="card__head">
-            <div>
-              <div class="card__title">Ativos</div>
-              <div class="card__sub">Favoritos e lista</div>
-            </div>
-            <div class="row">
-              <input class="input input--sm" id="assetSearch" placeholder="Procurar…">
-              <select class="select select--sm" id="assetFilter">
-                <option value="">Todas as classes</option>
-              </select>
-            </div>
-          </div>
-          <div class="card__body">
-            <div class="subhead">Favoritos</div>
-            <div class="list" id="favList"></div>
-            <div class="subhead">Todos</div>
-            <div class="list" id="assetList"></div>
-          </div>
+      <div class="card">
+        <div class="h2">Distribuição por classe (Ativos)</div>
+        <div class="chartbox">
+          <canvas id="chartAlloc" height="240"></canvas>
         </div>
+        <div id="allocPills" class="pills"></div>
+        <div class="smallnote">Mostra apenas classes com valor &gt; 0.</div>
+      </div>
 
-        <div class="card">
-          <div class="card__head">
-            <div>
-              <div class="card__title">Passivos</div>
-              <div class="card__sub">Dívidas / empréstimos</div>
-            </div>
-          </div>
-          <div class="card__body">
-            <div class="list" id="liabList"></div>
-          </div>
+      <div class="card">
+        <div class="h2">Tendência do património</div>
+        <div class="chartbox">
+          <canvas id="chartTrend" height="220"></canvas>
+        </div>
+        <div class="actions" style="justify-content:space-between">
+          <div class="muted" id="trendHint">Histórico (snapshots)</div>
+          <button class="btn btn--ghost" data-action="clearHistory">Limpar</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="h2">Top 10 ativos (por valor)</div>
+        <div id="top10List" class="list"></div>
+        <div class="actions">
+          <button class="btn btn--ghost" data-action="goAssets">Ver restantes</button>
         </div>
       </div>
     </section>
 
-    <section class="view" id="viewImport" aria-label="Importar">
-      <div class="grid">
-        <div class="card">
-          <div class="card__head">
-            <div>
-              <div class="card__title">Importar / Exportar</div>
-              <div class="card__sub">CSV (ativos) · CSV bancário (movimentos) · JSON (backup total)</div>
-            </div>
-          </div>
-          <div class="card__body">
-            <div class="stack">
-              <div class="row row--wrap">
-                <div class="field">
-                  <div class="label">Importar CSV (ativos)</div>
-                  <input type="file" id="fileAssetsCSV" accept=".csv,text/csv" class="input">
-                  <div class="hint">Colunas mínimas: class,name,value. Opcional: incomeType,incomeValue,favorite,notes</div>
-                </div>
-                <div class="field">
-                  <div class="label">Importar CSV bancário (movimentos)</div>
-                  <input type="file" id="fileBankCSV" accept=".csv,text/csv" class="input">
-                  <div class="hint">Detecta data/descrição/montante. Define categoria depois no Balanço.</div>
-                </div>
-              </div>
+    <!-- ATIVOS -->
+    <section id="page-assets" class="page" style="display:none">
+      <div class="card">
+        <div class="h1">Ativos</div>
+        <div class="muted">Favoritos e lista completa. Edita tocando num item.</div>
+        <div class="field">
+          <label>Filtro</label>
+          <select id="assetFilter">
+            <option value="all">Todos</option>
+            <option value="fav">Favoritos</option>
+          </select>
+        </div>
+      </div>
 
-              <div class="row">
-                <button class="btn" data-action="export-json">Exportar JSON</button>
-                <input type="file" id="fileJSON" accept="application/json" class="input">
-                <button class="btn" data-action="import-json">Importar JSON</button>
-              </div>
+      <div class="card">
+        <div class="h2">Lista</div>
+        <div id="assetsList" class="list"></div>
+      </div>
+    </section>
 
-              <div class="row">
-                <button class="btn btn--danger" data-action="wipe">Apagar tudo (local)</button>
-              </div>
+    <!-- IMPORTAR -->
+    <section id="page-import" class="page" style="display:none">
+      <div class="card">
+        <div class="h1">Importar / Exportar</div>
+        <div class="muted">Recomendado: CSV. XLSX é opcional (depende do teu export).</div>
 
-              <div class="note">Dados ficam no teu dispositivo (localStorage). Não há backend.</div>
-            </div>
-          </div>
+        <div class="field">
+          <label>Importar CSV (Ativos)</label>
+          <input id="fileAssetsCsv" type="file" accept=".csv,text/csv">
+          <div class="smallnote">Colunas: class,name,value,incomeType,incomeValue,notes,favorite</div>
+        </div>
+
+        <div class="field">
+          <label>Importar CSV (Movimentos — Balanço)</label>
+          <input id="fileTxCsv" type="file" accept=".csv,text/csv">
+          <div class="smallnote">Colunas: date,kind,category,description,amount (kind: income|expense)</div>
+        </div>
+
+        <div class="actions">
+          <button class="btn" data-action="exportJson">Exportar JSON (backup)</button>
+          <button class="btn btn--ghost" data-action="importJson">Importar JSON</button>
+          <input id="fileJson" type="file" accept="application/json" style="display:none">
         </div>
       </div>
     </section>
 
-    <section class="view" id="viewCashflow" aria-label="Balanço">
-      <div class="grid">
-        <div class="card">
-          <div class="card__head">
-            <div>
-              <div class="card__title">Balanço</div>
-              <div class="card__sub">Entradas · Saídas · Resultado (mensal e anual)</div>
-            </div>
-            <button class="btn btn--text" data-action="add-month">+ Mês</button>
+    <!-- BALANÇO -->
+    <section id="page-balance" class="page" style="display:none">
+      <div class="card">
+        <div class="h1">Balanço</div>
+        <div class="muted">Entradas e saídas por mês.</div>
+        <div class="field">
+          <label>Mês</label>
+          <input id="balanceMonth" type="month">
+        </div>
+        <div class="row" style="margin-top:10px">
+          <div class="kpi">
+            <div class="kpi__label">Entradas</div>
+            <div class="kpi__value" id="kpiIn">—</div>
           </div>
-          <div class="card__body">
-            <div class="row row--wrap">
-              <select class="select" id="monthPick"></select>
-              <button class="btn" data-action="add-income">+ Entrada</button>
-              <button class="btn" data-action="add-expense">+ Despesa</button>
-            </div>
-
-            <div class="kpis" id="cfKpis"></div>
-
-            <div class="subgrid">
-              <div>
-                <div class="subhead">Entradas</div>
-                <div class="list" id="incomeList"></div>
-              </div>
-              <div>
-                <div class="subhead">Despesas</div>
-                <div class="list" id="expenseList"></div>
-              </div>
-            </div>
-
-            <div class="divider"></div>
-            <div class="subhead">Resumo anual</div>
-            <div class="chart" id="cfTrend"></div>
+          <div class="kpi">
+            <div class="kpi__label">Saídas</div>
+            <div class="kpi__value" id="kpiOut">—</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Saldo</div>
+            <div class="kpi__value" id="kpiNet">—</div>
           </div>
         </div>
+        <div class="actions">
+          <button class="btn" data-action="openAddIncome">+ Entrada</button>
+          <button class="btn" data-action="openAddExpense">− Despesa</button>
+          <button class="btn btn--ghost" data-action="applySalaryTemplate">Template Salários</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="h2">Movimentos</div>
+        <div id="txList" class="list"></div>
       </div>
     </section>
 
-    <section class="view" id="viewSettings" aria-label="Definições">
-      <div class="grid">
-        <div class="card">
-          <div class="card__head">
-            <div>
-              <div class="card__title">Definições</div>
-              <div class="card__sub">Preferências locais</div>
-            </div>
-          </div>
-          <div class="card__body">
-            <div class="row row--wrap">
-              <div class="field">
-                <div class="label">Moeda base</div>
-                <select class="select" id="baseCurrency">
-                  <option value="EUR">EUR (€)</option>
-                  <option value="USD">USD ($)</option>
-                  <option value="GBP">GBP (£)</option>
-                </select>
-              </div>
-              <div class="field">
-                <div class="label">Impostos efectivos no rendimento passivo</div>
-                <div class="row">
-                  <input class="input" id="taxRate" type="number" step="0.1" placeholder="ex: 28">
-                  <div class="muted">%</div>
-                </div>
-                <div class="hint">Usado para estimar rendimento líquido.</div>
-              </div>
-            </div>
+    <!-- DEFINIÇÕES -->
+    <section id="page-settings" class="page" style="display:none">
+      <div class="card">
+        <div class="h1">Definições</div>
+        <div class="muted">Preferências locais (no dispositivo).</div>
 
-            <div class="divider"></div>
-
-            <div class="row row--wrap">
-              <div class="field" style="flex:1">
-                <div class="label">Bloqueio por código</div>
-                <input class="input" id="passcode" type="password" placeholder="definir / alterar código">
-                <div class="hint">Opcional. Protege o acesso no dispositivo.</div>
-              </div>
-              <div class="field">
-                <div class="label">Estado</div>
-                <div class="pill pill--ghost" id="lockState">Desbloqueado</div>
-              </div>
-            </div>
-
-            <div class="row">
-              <button class="btn" data-action="set-passcode">Guardar código</button>
-              <button class="btn" data-action="lock-now">Bloquear agora</button>
-              <button class="btn btn--danger" data-action="remove-passcode">Remover código</button>
-            </div>
-
-            <div class="divider"></div>
-
-            <div class="note">Privacidade: sem login e sem backend. Tudo corre no teu browser. Recomendado: usar código e exportar JSON como backup.</div>
-          </div>
+        <div class="field">
+          <label>Moeda base</label>
+          <select id="baseCurrency">
+            <option value="EUR">EUR (€)</option>
+            <option value="USD">USD ($)</option>
+            <option value="GBP">GBP (£)</option>
+          </select>
         </div>
 
-        <div class="card" id="debugCard" hidden>
-          <div class="card__head">
-            <div>
-              <div class="card__title">Erro na app</div>
-              <div class="card__sub">Copia isto e envia-me</div>
-            </div>
-          </div>
-          <div class="card__body">
-            <pre class="pre" id="debugText"></pre>
-          </div>
+        <div class="field">
+          <label>Impostos efectivos no rendimento passivo (%)</label>
+          <input id="taxRate" type="number" inputmode="decimal" placeholder="ex: 28">
         </div>
+
+        <div class="actions">
+          <button class="btn btn--ghost" data-action="resetAll">Reset total (apaga dados)</button>
+          <button class="btn btn--ghost" data-action="hardRefresh">Forçar refresh (limpar cache)</button>
+        </div>
+
+        <hr>
+        <div class="muted smallnote">Armazenamento: localStorage (no teu iPhone/PC). Não há backend.</div>
       </div>
     </section>
-
-    <section class="view" id="viewLock" aria-label="Bloqueado">
-      <div class="lock">
-        <div class="lock__card">
-          <div class="lock__title">Património Familiar</div>
-          <div class="lock__sub">Introduz o código para desbloquear</div>
-          <input class="input" id="unlockCode" type="password" inputmode="numeric" autocomplete="off" placeholder="Código">
-          <button class="btn btn--primary" data-action="unlock">Desbloquear</button>
-          <div class="hint" id="unlockHint"></div>
-        </div>
-      </div>
-    </section>
-
   </main>
 
-  <nav class="bottomnav" aria-label="Navegação">
-    <button class="tab tab--active" data-view="Dashboard"><span class="tab__icon">▣</span><span class="tab__text">Dashboard</span></button>
-    <button class="tab" data-view="Assets"><span class="tab__icon">≡</span><span class="tab__text">Ativos</span></button>
-    <button class="tab" data-view="Import"><span class="tab__icon">⇅</span><span class="tab__text">Importar</span></button>
-    <button class="tab" data-view="Cashflow"><span class="tab__icon">€</span><span class="tab__text">Balanço</span></button>
-    <button class="tab" data-view="Settings"><span class="tab__icon">⚙</span><span class="tab__text">Definições</span></button>
+  <!-- bottom nav -->
+  <nav class="bnav">
+    <div class="bnav__inner">
+      <button class="tabbtn tabbtn--active" data-tab="dashboard"><i>▣</i><span>Dashboard</span></button>
+      <button class="tabbtn" data-tab="assets"><i>≡</i><span>Ativos</span></button>
+      <button class="tabbtn" data-tab="import"><i>⇅</i><span>Importar</span></button>
+      <button class="tabbtn" data-tab="balance"><i>€</i><span>Balanço</span></button>
+      <button class="tabbtn" data-tab="settings"><i>⚙︎</i><span>Definições</span></button>
+    </div>
   </nav>
 
-  <!-- modal simples -->
-  <div class="modal" id="modal" aria-hidden="true">
-    <div class="modal__overlay" data-action="close-modal"></div>
-    <div class="modal__panel">
-      <div class="modal__head">
-        <div class="modal__title" id="modalTitle">Adicionar</div>
-        <button class="btn btn--text" data-action="close-modal">Fechar</button>
+  <!-- Modal (sheet) -->
+  <div id="modal" class="modal" aria-hidden="true">
+    <div class="sheet">
+      <div class="sheet__top">
+        <div id="modalTitle" class="sheet__title">—</div>
+        <button class="iconbtn" data-action="closeModal" aria-label="Fechar">✕</button>
       </div>
-      <div class="modal__body" id="modalBody"></div>
+      <hr>
+      <div id="modalBody"></div>
     </div>
   </div>
 </body>
