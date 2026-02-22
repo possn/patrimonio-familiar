@@ -1,7 +1,108 @@
 /* Património Familiar — REBUILD percento-ish v5 (fix nav+import+tx) */
 "use strict";
 
-const STORAGE_KEY = "PF_STATE_PERCENTO_V5";
+// =======================
+// Persistence (iOS-safe)
+// =======================
+// iOS in-app browsers / Private Mode can drop localStorage between sessions.
+// Use IndexedDB as primary storage with localStorage fallback.
+
+const STORAGE_KEY = "PF_STATE_PERCENTO_V5"; // keep for backwards-compat
+
+const DB_NAME = "pf_percento";
+const DB_STORE = "kv";
+const DB_KEY = "state";
+
+function idbAvailable(){
+  return typeof indexedDB !== "undefined" && indexedDB;
+}
+
+function idbOpen(){
+  return new Promise((resolve, reject) => {
+    try{
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if(!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error("IDB open failed"));
+    }catch(e){ reject(e); }
+  });
+}
+
+async function idbGet(key){
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    try{
+      const tx = db.transaction(DB_STORE, "readonly");
+      const st = tx.objectStore(DB_STORE);
+      const req = st.get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error("IDB get failed"));
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => { try{db.close();}catch{} };
+    }catch(e){ try{db.close();}catch{} reject(e); }
+  });
+}
+
+async function idbSet(key, value){
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    try{
+      const tx = db.transaction(DB_STORE, "readwrite");
+      const st = tx.objectStore(DB_STORE);
+      st.put(value, key);
+      tx.oncomplete = () => { try{db.close();}catch{} resolve(true); };
+      tx.onerror = () => { try{db.close();}catch{} reject(tx.error || new Error("IDB set failed")); };
+    }catch(e){ try{db.close();}catch{} reject(e); }
+  });
+}
+
+async function idbDel(key){
+  const db = await idbOpen();
+  return new Promise((resolve) => {
+    try{
+      const tx = db.transaction(DB_STORE, "readwrite");
+      const st = tx.objectStore(DB_STORE);
+      st.delete(key);
+      tx.oncomplete = () => { try{db.close();}catch{} resolve(true); };
+      tx.onerror = () => { try{db.close();}catch{} resolve(false); };
+    }catch(e){ try{db.close();}catch{} resolve(false); }
+  });
+}
+
+async function requestPersistentStorage(){
+  try{
+    if(navigator.storage && navigator.storage.persist){
+      await navigator.storage.persist();
+    }
+  }catch(_){/* ignore */}
+}
+
+async function storageGet(){
+  // 1) IndexedDB
+  if(idbAvailable()){
+    try{
+      const v = await idbGet(DB_KEY);
+      if(v) return v;
+    }catch(_){/* fall through */}
+  }
+  // 2) localStorage fallback
+  try{ return localStorage.getItem(STORAGE_KEY); }catch(_){ return null; }
+}
+
+async function storageSet(raw){
+  if(idbAvailable()){
+    try{ await idbSet(DB_KEY, raw); return; }catch(_){/* fall through */}
+  }
+  try{ localStorage.setItem(STORAGE_KEY, raw); }catch(_){/* ignore */}
+}
+
+async function storageClear(){
+  if(idbAvailable()) await idbDel(DB_KEY);
+  try{ localStorage.removeItem(STORAGE_KEY); }catch(_){/* ignore */}
+}
 const TX_PREVIEW_COUNT = 5;
 
 const DEFAULT_STATE = {
@@ -12,7 +113,7 @@ const DEFAULT_STATE = {
   history: []       // {dateISO, net, assets, liabilities, passiveAnnual}
 };
 
-let state = loadState();
+let state = structuredClone(DEFAULT_STATE);
 let currentView = "dashboard";
 let showingLiabs = false;
 let summaryExpanded = false;
@@ -116,12 +217,11 @@ function parseNum(x){
   return neg ? -out : out;
 }
 
-function loadState(){
+async function loadStateAsync(){
   try{
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = await storageGet();
     if (!raw) return structuredClone(DEFAULT_STATE);
     const parsed = JSON.parse(raw);
-    // harden: ensure arrays
     return {
       settings: parsed.settings || {currency:"EUR"},
       assets: Array.isArray(parsed.assets) ? parsed.assets : [],
@@ -134,12 +234,26 @@ function loadState(){
   }
 }
 
-function saveState(){
+function showStorageWarningOnce(){
   try{
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }catch(e){
-    alert("Não foi possível guardar (storage cheio ou bloqueado).");
+    if(sessionStorage.getItem("pf_storage_warned")) return;
+    sessionStorage.setItem("pf_storage_warned","1");
+  }catch{}
+  // Non-blocking toast
+  toast("Atenção: alguns browsers (modo privado / app do GitHub) podem não guardar. Abre no Safari e adiciona ao Ecrã principal para máxima fiabilidade.");
+}
+
+async function saveStateAsync(){
+  try{
+    await storageSet(JSON.stringify(state));
+  }catch(_){
+    showStorageWarningOnce();
   }
+}
+
+// Backwards-compatible sync-ish wrapper (fire-and-forget)
+function saveState(){
+  void saveStateAsync();
 }
 
 function setView(view){
@@ -1037,7 +1151,7 @@ async function importJSON(file){
 /* reset */
 function resetAll(){
   if (!confirm("Apagar tudo deste dispositivo?")) return;
-  try{ localStorage.removeItem(STORAGE_KEY); }catch{}
+  void storageClear();
   state = structuredClone(DEFAULT_STATE);
   saveState();
   renderDashboard();
@@ -1157,4 +1271,9 @@ function wire(){
   renderCashflow();
 }
 
-document.addEventListener("DOMContentLoaded", wire);
+document.addEventListener("DOMContentLoaded", async () => {
+  await requestPersistentStorage();
+  state = await loadStateAsync();
+  wire();
+  renderAll();
+});
