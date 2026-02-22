@@ -1,5 +1,37 @@
 // Património Familiar — app.js (offline-first, vanilla JS)
 // Libs: Chart.js (alloc + trend) | SheetJS (XLSX/CSV import)
+// ===== Debug / errores =====
+(function(){
+  const boxId = "pfErrorBox";
+  function ensureBox(){
+    let b = document.getElementById(boxId);
+    if (b) return b;
+    b = document.createElement("div");
+    b.id = boxId;
+    b.style.cssText = "position:fixed;left:12px;right:12px;bottom:84px;z-index:99999;background:rgba(0,0,0,.88);color:#fff;padding:10px 12px;border-radius:12px;font:12px/1.35 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial;display:none;";
+    b.innerHTML = "<div style="display:flex;gap:8px;align-items:center;justify-content:space-between"><b>Erro na app</b><button id="pfErrClose" style="background:transparent;border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:10px;padding:4px 8px">Fechar</button></div><pre id="pfErrText" style="white-space:pre-wrap;margin:8px 0 0"></pre>";
+    document.addEventListener("click", (e)=>{ if (e.target && e.target.id==="pfErrClose") b.style.display="none"; });
+    document.body.appendChild(b);
+    return b;
+  }
+  function showErr(msg){
+    try{
+      const b = ensureBox();
+      const p = b.querySelector("#pfErrText");
+      if (p) p.textContent = msg;
+      b.style.display = "block";
+    }catch(_){ }
+  }
+  window.addEventListener("error", (ev)=>{
+    const msg = (ev && ev.error && ev.error.stack) ? ev.error.stack : (ev.message || "Erro desconhecido");
+    showErr(msg);
+  });
+  window.addEventListener("unhandledrejection", (ev)=>{
+    const msg = (ev && ev.reason && ev.reason.stack) ? ev.reason.stack : String(ev.reason || "Promise rejeitada");
+    showErr(msg);
+  });
+})();
+
 
 const STORAGE_KEY = "PF_STATE_V1";
 const STORAGE_KEY_ENC = "PF_STATE_V1_ENC";
@@ -173,11 +205,10 @@ async function bootState(){
     const obj = await decryptJson(pass, payload);
     state = obj;
     // normalize
-    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1, dashMode: "full" };
+    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1 };
         if (state.settings.autoLockMin==null) state.settings.autoLockMin = 5;
         if (state.settings.hideValues==null) state.settings.hideValues = 0;
         if (state.settings.haptics==null) state.settings.haptics = 1;
-        if (!state.settings.dashMode) state.settings.dashMode = "full";
     state.settings.txTemplates = Array.isArray(state.settings.txTemplates) ? state.settings.txTemplates : [];
     state.assets = Array.isArray(state.assets) ? state.assets : [];
     state.liabilities = Array.isArray(state.liabilities) ? state.liabilities : [];
@@ -199,7 +230,7 @@ function defaultState(){
     liabilities: [],
     history: [],
     transactions: [],
-    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1, dashMode: "full" }
+    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1 }
   };
 }
 
@@ -212,11 +243,10 @@ function loadState(){
       s.assets = Array.isArray(s.assets) ? s.assets : [];
       s.liabilities = Array.isArray(s.liabilities) ? s.liabilities : [];
       s.history = Array.isArray(s.history) ? s.history : [];
-      s.settings = s.settings || { baseCurrency:"EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1, dashMode: "full" };
+      s.settings = s.settings || { baseCurrency:"EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1 };
       if (s.settings.autoLockMin==null) s.settings.autoLockMin = 5;
       if (s.settings.hideValues==null) s.settings.hideValues = 0;
       if (s.settings.haptics==null) s.settings.haptics = 1;
-      if (!s.settings.dashMode) s.settings.dashMode = "full";
       s.settings.txTemplates = Array.isArray(s.settings.txTemplates) ? s.settings.txTemplates : [];
       s.transactions = Array.isArray(s.transactions) ? s.transactions : [];
       return s;
@@ -234,7 +264,7 @@ function loadState(){
     ],
     history: [],
     transactions: [],
-    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1, dashMode: "full" },
+    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1 },
   };
 }
 
@@ -430,96 +460,7 @@ function renderDashAllList(){
   }
 }
 
-
-
-function renderDashDaily(){
-  const card = document.getElementById("dashDailyCard");
-  if (!card) return;
-
-  const kpis = document.getElementById("dashDailyKpis");
-  const top5 = document.getElementById("dashDailyTop5");
-  const covTitle = document.getElementById("dashDailyCovTitle");
-  const covMeta  = document.getElementById("dashDailyCovMeta");
-  const covPct   = document.getElementById("dashDailyCovPct");
-  const covFill  = document.getElementById("dashDailyCovFill");
-
-  const t = totals();
-  const passive = computePassiveAnnualGross(); // {gross, net}
-
-  // KPIs
-  if (kpis){
-    kpis.innerHTML = `
-      <div class="kpi"><div class="kpi__label">Património líquido</div><div class="kpi__value">${fmtMoney(t.netWorth)}</div></div>
-      <div class="kpi"><div class="kpi__label">Ativos</div><div class="kpi__value">${fmtMoney(t.assetsTotal)}</div></div>
-      <div class="kpi"><div class="kpi__label">Passivos</div><div class="kpi__value">${fmtMoney(t.liabilitiesTotal)}</div></div>
-      <div class="kpi"><div class="kpi__label">Passivo anual (líq.)</div><div class="kpi__value">${fmtMoney(passive.net)}</div></div>
-    `;
-  }
-
-  // Coverage (year)
-  const year = String(new Date().getFullYear());
-  if (covTitle) covTitle.textContent = `Cobertura (ano ${year})`;
-
-  let cov = null;
-  try { cov = computeCoverage(year); } catch { cov = null; }
-
-  if (!cov || !isFinite(cov.exp) || cov.exp <= 0){
-    if (covMeta) covMeta.textContent = "Sem despesas suficientes para calcular.";
-    if (covPct) covPct.textContent = "—";
-    if (covFill) covFill.style.width = "0%";
-  } else {
-    const p = Math.max(0, Math.min(1, cov.covNet));
-    if (covMeta) covMeta.textContent = `Despesas: ${fmtMoney(cov.exp)} • Passivo líq.: ${fmtMoney(cov.passiveNet)}`;
-    if (covPct) covPct.textContent = `${(p*100).toFixed(1)}%`;
-    if (covFill) covFill.style.width = `${(p*100).toFixed(1)}%`;
-  }
-
-  // Top 5 assets
-  const items = (state.assets||[])
-    .filter(a => (Number(a.value)||0) > 0)
-    .slice()
-    .sort((a,b)=> (Number(b.value)||0)-(Number(a.value)||0))
-    .slice(0,5);
-
-  if (top5){
-    top5.innerHTML = "";
-    if (!items.length){
-      top5.innerHTML = `<div class="note">Sem ativos.</div>`;
-    } else {
-      for (const a of items){
-        const div = document.createElement("div");
-        div.className = "item";
-        div.innerHTML = `
-          <div class="item__left">
-            <div class="item__name">${escapeHtml(a.name||"—")}</div>
-            <div class="item__meta">${escapeHtml(normalizeAssetClass(a.class)||"—")}</div>
-          </div>
-          <div class="item__right"><div class="item__value">${fmtMoney(Number(a.value)||0)}</div></div>
-        `;
-        div.addEventListener("click", ()=> openEdit("asset", a.id));
-        top5.appendChild(div);
-      }
-    }
-  }
-
-  document.getElementById("btnDailyAll")?.addEventListener("click", openDashAllModal);
-}
-
-
-
-function markDashFull(){
-  const ids = ["chartAlloc","chartNetWorth","chartPassive","topAssets"];
-  for (const id of ids){
-    const el = document.getElementById(id);
-    if (!el) continue;
-    const card = el.closest(".card") || el.closest(".card--inner");
-    if (card) card.setAttribute("data-dash-full","1");
-  }
-}
-
 function renderDashboard(){
-  applyDashMode();
-  markDashFull();
   const t = computeTotals();
   el("netWorth").textContent = fmtMoney(t.netWorth);
   el("netWorthSub").textContent = `Ativos ${fmtMoney(t.assetsTotal)}  |  Passivos ${fmtMoney(t.liabTotal)}`;
@@ -531,7 +472,6 @@ function renderDashboard(){
   renderPassiveChart();
   try{ renderCoverage(String(new Date().getFullYear())); }catch{}
   renderTopAssets();
-  renderDashDaily();
 }
 
 function renderTopAssets(){
@@ -741,12 +681,6 @@ function normalizeAssetClass(cls){
   if (["liquidez","cash","dinheiro"].includes(low)) return "Liquidez";
   if (["imobiliario","imobiliário","real estate"].includes(low)) return "Imobiliário";
   return c || "Outros";
-}
-
-
-function applyDashMode(){
-  const mode = state?.settings?.dashMode || "full";
-  document.body.classList.toggle("dash-daily", mode === "daily");
 }
 
 
@@ -1018,82 +952,6 @@ function computeCoverage(year){
   return { exp, passiveNet, passiveGross, covNet, covGross };
 }
 
-
-
-function renderTplManager(){
-  const list = document.getElementById("tplList");
-  if (!list) return;
-  const tpls = state.settings?.txTemplates || [];
-  list.innerHTML = "";
-  if (!tpls.length){
-    list.innerHTML = `<div class="note">Sem templates.</div>`;
-    return;
-  }
-  for (const t of tpls){
-    const div = document.createElement("div");
-    div.className = "item";
-    const kind = t.kind === "income" ? "Entrada" : "Saída";
-    const amt = (t.amount==null || t.amount==="") ? "—" : fmtMoney(Number(t.amount)||0);
-    div.innerHTML = `
-      <div class="item__left">
-        <div class="item__name">${escapeHtml(t.name||"—")}</div>
-        <div class="item__meta">${escapeHtml(kind)} • ${escapeHtml(t.class||"—")} • Valor: ${escapeHtml(amt)}</div>
-      </div>
-      <div class="item__right" style="display:flex; gap:8px; align-items:center">
-        <button class="btn btn--text" data-act="edit">Editar</button>
-        <button class="btn btn--text" data-act="del">Apagar</button>
-      </div>
-    `;
-    div.querySelector('[data-act="edit"]').addEventListener("click",(e)=>{ e.stopPropagation(); editTemplate(t.id); });
-    div.querySelector('[data-act="del"]').addEventListener("click",(e)=>{ e.stopPropagation(); deleteTemplate(t.id); });
-    list.appendChild(div);
-  }
-}
-
-function addTemplate(){
-  const kindIn = prompt("Tipo (income/expense):", "income");
-  if (!kindIn) return;
-  const name = prompt("Nome do template:", "Salário");
-  if (!name) return;
-  const cls = prompt("Classe (ex: Salário, Habitação, Alimentação):", kindIn==="income"?"Salário":"Outros") || "Outros";
-  const amountStr = prompt("Valor fixo (opcional; deixa vazio para valor variável):", "");
-  const amount = (amountStr==null || amountStr.trim()==="") ? null : Number(amountStr.replace(",", "."));
-  const id = "tpl_" + Math.random().toString(36).slice(2,10);
-  state.settings.txTemplates = state.settings.txTemplates || [];
-  state.settings.txTemplates.unshift({ id, kind: kindIn==="expense" ? "expense":"income", class: cls, name, amount: isFinite(amount)?amount:null });
-  saveState();
-  renderTplManager();
-  renderTemplates();
-  showToast("Template criado.");
-}
-
-function editTemplate(id){
-  const t = (state.settings.txTemplates||[]).find(x=>x.id===id);
-  if (!t) return;
-  const name = prompt("Nome:", t.name||"") ?? t.name;
-  const cls = prompt("Classe:", t.class||"") ?? t.class;
-  const kind = prompt("Tipo (income/expense):", t.kind||"income") ?? t.kind;
-  const amountStr = prompt("Valor fixo (vazio = variável):", (t.amount==null?"":String(t.amount)));
-  const amount = (amountStr==null || String(amountStr).trim()==="") ? null : Number(String(amountStr).replace(",", "."));
-  t.name = name;
-  t.class = cls;
-  t.kind = (kind==="expense") ? "expense" : "income";
-  t.amount = isFinite(amount)?amount:null;
-  saveState();
-  renderTplManager();
-  renderTemplates();
-  showToast("Template atualizado.");
-}
-
-function deleteTemplate(id){
-  if (!confirm("Apagar template?")) return;
-  state.settings.txTemplates = (state.settings.txTemplates||[]).filter(x=>x.id!==id);
-  saveState();
-  renderTplManager();
-  renderTemplates();
-  showToast("Template apagado.");
-}
-
 function renderSettings(){
   el("baseCurrency").value = state.settings.baseCurrency || "EUR";
   el("taxRate").value = Number(state.settings.taxRate || 0);
@@ -1165,24 +1023,6 @@ function setupButtons(){
     state.settings.taxRate = Number(el("taxRate").value || 0);
     saveState();
     renderDashboard();
-  });
-
-  // templates manager
-  document.getElementById('btnTplAdd')?.addEventListener('click', addTemplate);
-
-  // bank CSV
-  document.getElementById('btnBankCsvImport')?.addEventListener('click', async ()=>{
-    const input = document.getElementById('bankCsvFile');
-    const note = document.getElementById('bankCsvNote');
-    const f = input?.files?.[0];
-    if (!f){ alert('Escolhe um ficheiro CSV.'); return; }
-    const text = await f.text();
-    const res = importBankCsv(text);
-    if (note){ note.style.display='block'; note.textContent = res.added ? `Importados ${res.added} movimentos.` : `Falhou: ${res.reason}`; }
-    try{ renderCashflow(); }catch{}
-    try{ renderBalance(); }catch{}
-    showToast(res.added ? `Importados ${res.added}.` : 'Nada importado.');
-    input.value='';
   });
 
   // dashboard modal
@@ -1569,11 +1409,7 @@ function escapeAttr(s){
 
 // ===== Service worker =====
 function setupSW(){
-  if ("serviceWorker" in navigator){
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./service-worker.js").catch(()=>{});
-    });
-  }
+  // Desativado para evitar caches presas no iOS/GitHub Pages.
 }
 
 function renderTemplates(){
@@ -1973,11 +1809,10 @@ async function importEncryptedBackupFile(file){
     const obj = await decryptJson(pass, payload);
     state = obj;
     // normalize
-    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1, dashMode: "full" };
+    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [], autoLockMin: 5, hideValues: 0, haptics: 1 };
         if (state.settings.autoLockMin==null) state.settings.autoLockMin = 5;
         if (state.settings.hideValues==null) state.settings.hideValues = 0;
         if (state.settings.haptics==null) state.settings.haptics = 1;
-        if (!state.settings.dashMode) state.settings.dashMode = "full";
     state.settings.txTemplates = Array.isArray(state.settings.txTemplates) ? state.settings.txTemplates : [];
     state.assets = Array.isArray(state.assets) ? state.assets : [];
     state.liabilities = Array.isArray(state.liabilities) ? state.liabilities : [];
@@ -2012,7 +1847,6 @@ async function enableEncryption(){
   setSecMeta({ enabled:true, locked:false, ts: Date.now() });
   showToast("Encriptação ativada.");
   updateSecurityUI();
-  renderTplManager();
 }
 
 async function disableEncryption(){
@@ -2030,7 +1864,6 @@ async function disableEncryption(){
     sessionStorage.removeItem("PF_SEC_PASS");
     showToast("Encriptação desativada.");
     updateSecurityUI();
-  renderTplManager();
     renderAll();
   }catch(e){
     alert("Password incorreta.");

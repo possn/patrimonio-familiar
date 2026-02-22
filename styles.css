@@ -649,20 +649,7 @@ body{
 
 /* v9: dashboard all assets modal */
 
-
-/* v9.1: lock horizontal scroll on iPhone (prevents "dancing") */
-html, body {
-  width: 100%;
-  max-width: 100%;
-  overflow-x: hidden !important;
-}
-* { box-sizing: border-box; }
-.app, .view, .container, main {
-  max-width: 100vw !important;
-}
-
-
-/* v9.1: Dashboard daily mode */
-.dash-daily-only { display:none; }
-body.dash-daily .dash-daily-only { display:block; }
-body.dash-daily [data-dash-full="1"] { display:none !important; }
+/* Anti-dança horizontal (iOS) */
+#appRoot, .view, .grid, .card{ max-width: 100%; }
+.view{ overflow-x:hidden; }
+img, canvas, svg{ max-width:100%; height:auto; }
