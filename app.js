@@ -517,6 +517,12 @@ function renderCashflow(){
   renderTxList();
 }
 
+// Compat: some codepaths (e.g., CSV import) call renderBalance().
+// In this build, the Balance tab is rendered via renderCashflow().
+function renderBalance(){
+  renderCashflow();
+}
+
 function expandRecurring(tx){
   // Recorrentes contam para o mês selecionado e meses futuros; isto é uma aproximação.
   // Mantemos também o item original para o mês da data.
@@ -808,7 +814,8 @@ function classifyRow(r){
   // This file is not a holdings snapshot; we derive positions by aggregating trades.
   const hasTicker = !!(r.ticker || r.symbol);
   const cps = parseNumberSmart(r.cost_per_share || r.costpershare || r.price || r.preco || r.unit_price);
-  if (hasTicker && Number.isFinite(qty) && Number.isFinite(cps) && hasDate) return "trade";
+  // Date can be missing/blank in some exports; it's not required to build holdings.
+  if (hasTicker && Number.isFinite(qty) && Number.isFinite(cps)) return "trade";
 
   if (hasDate && Number.isFinite(amount) && Math.abs(amount) > 0) return "movimento";
 
