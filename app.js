@@ -1,6 +1,21 @@
 /* Património Familiar — rebuild v1 (no SW, no haze overlays) */
 "use strict";
 
+function safeClone(obj){
+  // structuredClone isn't available in some iOS WebViews; JSON clone is sufficient for our plain objects.
+  try{
+    if (typeof structuredClone === "function") return structuredClone(obj);
+  }catch{}
+  return JSON.parse(JSON.stringify(obj));
+}
+
+function safeStorageGet(key){
+  try{ return localStorage.getItem(key); }catch{ return null; }
+}
+function safeStorageSet(key, value){
+  try{ localStorage.setItem(key, value); return true; }catch{ return false; }
+}
+
 const STORAGE_KEY = "PF_STATE_REBUILD_V1";
 
 const DEFAULT_STATE = {
@@ -40,8 +55,8 @@ function uid(){
 
 function loadState(){
   try{
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return structuredClone(DEFAULT_STATE);
+    const raw = safeStorageGet(STORAGE_KEY);
+    if (!raw) return safeClone(DEFAULT_STATE);
     const obj = JSON.parse(raw);
     return {
       settings: { currency: obj?.settings?.currency || "EUR" },
@@ -51,12 +66,12 @@ function loadState(){
       history: Array.isArray(obj?.history) ? obj.history : []
     };
   }catch{
-    return structuredClone(DEFAULT_STATE);
+    return safeClone(DEFAULT_STATE);
   }
 }
 
 function saveState(){
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  safeStorageSet(STORAGE_KEY, JSON.stringify(state));
 }
 
 function totals(){
