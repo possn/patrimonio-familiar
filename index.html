@@ -55,8 +55,8 @@
   <link rel="apple-touch-startup-image" href="assets/splash-ipad-pro-12.9-light.png" media="(device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2) and (prefers-color-scheme: light)">
   <link rel="apple-touch-startup-image" href="assets/splash-ipad-pro-12.9-dark.png" media="(device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2) and (prefers-color-scheme: dark)">
 
-  <link rel="stylesheet" href="styles.css">
-  <script defer src="app.js"></script>
+  <link rel="stylesheet" href="styles.css?v=16">
+  <script defer src="app.js?v=16"></script>
 </head>
 <body>
   <header class="topbar">
@@ -67,8 +67,9 @@
         <div class="brand__sub">Net worth • Distribuição • Rendimento passivo</div>
       </div>
     </div>
-<div id="distList" class="distList"></div>
-<button id="btnDistToggle" class="linkBtn" style="display:none">Ver o resto</button>
+<div id="distTop" class="templates" style="margin-top:12px"></div>
+<div id="distList" class="distList" style="display:none"></div>
+<button id="btnDistToggle" class="linkBtn" style="display:none">Ver mais</button>
     <div class="topbar__actions">
       <button id="btnAddQuick" class="btn btn--primary" title="Adicionar ativo" aria-label="Adicionar ativo">＋</button>
     </div>
@@ -108,7 +109,7 @@
               <div class="title">Distribuição</div>
               <div class="muted">Por classe (Ativos)</div>
             </div>
-            <div class="row" style="gap:8px"><button class="btn btn--text" id="btnAllocDetail">Detalhe</button><button class="btn btn--text" id="btnAddSnapshot">Registar mês</button></div>
+            <div class="row" style="gap:8px"><button class="btn btn--text" id="btnAllocDetail">Detalhe</button></div>
           </div>
 
           <div class="dist">
@@ -238,7 +239,7 @@
 
           <div class="stack">
             <input id="fileInput" type="file" accept=".csv,.xlsx,.xls"/>
-            <div class="row">
+            <div class="row" id="importRow">
               <button class="btn btn--primary" id="btnImport">Importar</button>
               <button class="btn" id="btnDownloadTemplate">Template CSV</button>
             </div>
@@ -673,5 +674,23 @@
         </div>
       </div>
     </div>
+<!-- Distribution detail modal -->
+<div class="modal" id="distModal" aria-hidden="true">
+  <div class="modal__overlay" data-close="dist"></div>
+  <div class="modal__panel">
+    <div class="modal__head">
+      <div>
+        <div class="title">Distribuição</div>
+        <div class="muted">Por classe (Ativos)</div>
+      </div>
+      <button class="iconBtn" id="btnCloseDist" aria-label="Fechar">×</button>
+    </div>
+    <div class="modal__body">
+      <div id="distListModal" class="distList"></div>
+      <button id="btnDistToggleModal" class="linkBtn" style="margin-top:10px">Ver o resto</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

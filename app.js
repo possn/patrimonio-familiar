@@ -1752,10 +1752,125 @@ function renderDistList(labels, values, colors, total){
     if (items.length > topN){
       btn.style.display = "inline-flex";
       btn.textContent = distShowAll ? "Mostrar menos" : "Ver o resto";
-      btn.onclick = ()=>{ distShowAll = !distShowAll; renderDistList(labels, values, colors, total); };
+      btn.onclick = ()=>{ distShowAll = !distShowAll; renderDistTop(labels, values, colors, total); };
     }else{
       btn.style.display = "none";
     }
   }
 }
 
+
+
+// --- v15 Distribution UI (simple) ---
+let distModalShowAll = false;
+
+function openDistModal(){
+  const m = document.getElementById("distModal");
+  if (!m) return;
+  m.setAttribute("aria-hidden","false");
+}
+function closeDistModal(){
+  const m = document.getElementById("distModal");
+  if (!m) return;
+  m.setAttribute("aria-hidden","true");
+}
+
+function renderDistTop(labels, values, colors, total){
+  const box = document.getElementById("distTop");
+  if (!box) return;
+  const items = labels.map((name,i)=>{
+    const v = Number(values[i])||0;
+    const p = total>0 ? (v/total) : 0;
+    return { name, v, p, color: colors?.[i] || null };
+  }).filter(x=>x.v>0).sort((a,b)=>b.v-a.v);
+
+  const top3 = items.slice(0,3);
+  box.innerHTML = "";
+  for (const it of top3){
+    const b = document.createElement("button");
+    b.className = "tpl"; // reuse chip style
+    b.innerHTML = `<span style="display:inline-flex;align-items:center;gap:8px">
+      <span class="dot" style="width:10px;height:10px;border-radius:999px;${it.color?"background:"+it.color:""}"></span>
+      ${escapeHtml(it.name)}
+    </span>
+    <span class="tpl__sub">${(it.p*100).toFixed(0)}% • ${fmtMoney(it.v)}</span>`;
+    b.addEventListener("click", openDistModal);
+    box.appendChild(b);
+  }
+
+  // Show a single "Detalhe" chip
+  const d = document.createElement("button");
+  d.className = "tpl";
+  d.innerHTML = `<span>Detalhe</span><span class="tpl__sub">Top 10 + resto</span>`;
+  d.addEventListener("click", openDistModal);
+  box.appendChild(d);
+
+  // Render modal list too
+  renderDistModalList(items);
+}
+
+function renderDistModalList(items){
+  const box = document.getElementById("distListModal");
+  const btn = document.getElementById("btnDistToggleModal");
+  if (!box) return;
+
+  const topN = 10;
+  const show = distModalShowAll ? items : items.slice(0, topN);
+
+  box.innerHTML = "";
+  for (const it of show){
+    const row = document.createElement("div");
+    row.className = "distRow";
+    const pct = (it.p*100);
+    row.innerHTML = `
+      <div class="distLeft">
+        <span class="dot" style="${it.color ? "background:"+it.color : ""}"></span>
+        <div class="distName">${escapeHtml(it.name)}</div>
+        <div class="distMeta">${pct.toFixed(0)}%</div>
+      </div>
+      <div class="distVal">${fmtMoney(it.v)}</div>`;
+    box.appendChild(row);
+  }
+
+  if (btn){
+    if (items.length > topN){
+      btn.style.display = "inline-flex";
+      btn.textContent = distModalShowAll ? "Mostrar menos" : "Ver o resto";
+      btn.onclick = ()=>{ distModalShowAll = !distModalShowAll; renderDistModalList(items); };
+    }else{
+      btn.style.display = "none";
+    }
+  }
+}
+
+document.addEventListener("click", (e)=>{
+  const t = e.target;
+  if (t?.dataset?.close === "dist") closeDistModal();
+});
+document.addEventListener("DOMContentLoaded", ()=>{
+  document.getElementById("btnCloseDist")?.addEventListener("click", closeDistModal);
+  document.getElementById("btnDistToggleModal")?.addEventListener("click", ()=>{ distModalShowAll = !distModalShowAll; });
+});
+
+
+// v16: explicit import button (iOS-friendly)
+function handleImportClick(){
+  const inp = document.getElementById("fileInput");
+  const f = inp?.files?.[0];
+  if (!f){ alert("Escolhe um ficheiro primeiro."); return; }
+  importFile();
+}
+document.addEventListener("DOMContentLoaded", ()=>{
+  document.getElementById("btnImport")?.addEventListener("click", handleImportClick);
+});
+
+
+document.addEventListener("DOMContentLoaded", ()=>{
+  const inp = document.getElementById("fileInput");
+  const btn = document.getElementById("btnImport");
+  if (inp && btn){
+    const sync=()=>{ btn.disabled = !(inp.files && inp.files.length); };
+    inp.addEventListener("change", sync);
+    sync();
+  }
+});
