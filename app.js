@@ -728,7 +728,7 @@ function downloadTemplate(){
   downloadBlob(new Blob([csv], {type:"text/csv;charset=utf-8"}), "template_patrimonio.csv");
 }
 
-async async function importFile(){
+async function importFile(){
   const file = el("fileInput").files?.[0];
   if (!file){
     note("importNote", "Escolhe um ficheiro primeiro.");
@@ -1266,10 +1266,6 @@ function openTxModal({title, item}){
   document.getElementById("txAmount").value = item?.amount ?? "";
   document.getElementById("txDate").value = item?.date || new Date().toISOString().slice(0,10);
   document.getElementById("txNotes").value = item?.notes || "";
-
-      const rec = item?.recurring;
-      document.getElementById('txRecurring').checked = !!(rec && rec.freq==='monthly');
-      document.getElementById('txUntil').value = (rec && rec.until) ? rec.until : '';
 
       const rec = item?.recurring;
       document.getElementById('txRecurring').checked = !!(rec && rec.freq==='monthly');
