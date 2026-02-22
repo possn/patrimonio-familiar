@@ -1,388 +1,143 @@
-/* Património Familiar — rebuild v1 (no SW, no haze overlays) */
+/* Património Familiar — REBUILD percento-ish v5 (fix nav+import+tx) */
 "use strict";
 
+const STORAGE_KEY = "PF_STATE_PERCENTO_V5";
 const TX_PREVIEW_COUNT = 5;
-let txExpanded = false;
-
-
-function safeClone(obj){
-  // structuredClone isn't available in some iOS WebViews; JSON clone is sufficient for our plain objects.
-  try{
-    if (typeof structuredClone === "function") return structuredClone(obj);
-  }catch{}
-  return JSON.parse(JSON.stringify(obj));
-}
-
-function safeStorageGet(key){
-  try{ return localStorage.getItem(key); }catch{ return null; }
-}
-function safeStorageSet(key, value){
-  try{ localStorage.setItem(key, value); return true; }catch{ return false; }
-}
-
-const STORAGE_KEY = "PF_STATE_REBUILD_V2";
 
 const DEFAULT_STATE = {
   settings: { currency: "EUR" },
-  assets: [],
-  liabilities: [],
-  transactions: [],
-  history: [] // {date:'YYYY-MM', net:number, passiveAnnual:number}
+  assets: [],       // {id, class, name, value, yieldType, yieldValue, notes, fav}
+  liabilities: [],  // {id, class, name, value, notes}
+  transactions: [], // {id, type:'in'|'out', category, amount, date, recurring:'none'|'monthly'|'yearly'}
+  history: []       // {dateISO, net, assets, liabilities, passiveAnnual}
 };
 
 let state = loadState();
 let currentView = "dashboard";
-let itemsShowLiabs = false;
-let summaryShowAll = false;
-let distShowAll = false;
+let showingLiabs = false;
+let summaryExpanded = false;
+let txExpanded = false;
 
 let distChart = null;
 let trendChart = null;
 
 function $(id){ return document.getElementById(id); }
-function escapeHtml(s){ return String(s ?? "").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
-
-function fmtMoney(n){
-  const cur = state.settings.currency || "EUR";
-  const v = Number(n)||0;
-  try{
-    return new Intl.NumberFormat("pt-PT",{style:"currency",currency:cur, maximumFractionDigits:0}).format(v);
-  }catch{
-    return v.toFixed(0) + " " + cur;
-  }
-}
-function fmtPct(x){ return (Number(x)||0).toFixed(0) + "%"; }
 
 function uid(){
-  return (Date.now().toString(36) + Math.random().toString(36).slice(2,8)).toUpperCase();
+  return Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
+
+function fmtEUR(n){
+  const cur = (state.settings && state.settings.currency) ? state.settings.currency : "EUR";
+  const v = Number(n || 0);
+  try{
+    return new Intl.NumberFormat("pt-PT", { style:"currency", currency: cur, maximumFractionDigits:0 }).format(v);
+  }catch{
+    return (Math.round(v)).toString() + " " + cur;
+  }
+}
+
+function parseNum(x){
+  if (x === null || x === undefined) return 0;
+  if (typeof x === "number") return isFinite(x) ? x : 0;
+  let s = String(x).trim();
+  if (!s) return 0;
+  // accept "12 345,67" or "12,345.67"
+  s = s.replace(/\s+/g,"");
+  // if has both separators, assume last is decimal
+  const hasComma = s.includes(",");
+  const hasDot = s.includes(".");
+  if (hasComma && hasDot){
+    if (s.lastIndexOf(",") > s.lastIndexOf(".")){
+      s = s.replace(/\./g,"").replace(",",".");
+    }else{
+      s = s.replace(/,/g,"");
+    }
+  }else if (hasComma && !hasDot){
+    s = s.replace(",",".");
+  }
+  const n = Number(s);
+  return isFinite(n) ? n : 0;
 }
 
 function loadState(){
   try{
-    const raw = safeStorageGet(STORAGE_KEY);
-    if (!raw) return safeClone(DEFAULT_STATE);
-    const obj = JSON.parse(raw);
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return structuredClone(DEFAULT_STATE);
+    const parsed = JSON.parse(raw);
+    // harden: ensure arrays
     return {
-      settings: { currency: obj?.settings?.currency || "EUR" },
-      assets: Array.isArray(obj?.assets) ? obj.assets : [],
-      liabilities: Array.isArray(obj?.liabilities) ? obj.liabilities : [],
-      transactions: Array.isArray(obj?.transactions) ? obj.transactions : [],
-      history: Array.isArray(obj?.history) ? obj.history : []
+      settings: parsed.settings || {currency:"EUR"},
+      assets: Array.isArray(parsed.assets) ? parsed.assets : [],
+      liabilities: Array.isArray(parsed.liabilities) ? parsed.liabilities : [],
+      transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
+      history: Array.isArray(parsed.history) ? parsed.history : []
     };
   }catch{
-    return safeClone(DEFAULT_STATE);
+    return structuredClone(DEFAULT_STATE);
   }
 }
 
 function saveState(){
-  safeStorageSet(STORAGE_KEY, JSON.stringify(state));
-}
-
-function totals(){
-  const a = state.assets.reduce((s,x)=>s + (Number(x.value)||0), 0);
-  const l = state.liabilities.reduce((s,x)=>s + (Number(x.value)||0), 0);
-  const net = a - l;
-  return { assets:a, liabs:l, net };
-}
-
-function passiveAnnualEstimate(){
-  // Only from assets (not liabilities)
-  let annual = 0;
-  for (const x of state.assets){
-    const v = Number(x.value)||0;
-    const yt = x.yieldType || "none";
-    const yv = Number(x.yieldValue)||0;
-    if (yt === "yield_pct") annual += v * (yv/100);
-    else if (yt === "income_year") annual += yv;
-    else if (yt === "rent_month") annual += yv * 12;
-  }
-  return annual;
-}
-
-function classList(){
-  // canonical classes for UI
-  return ["Liquidez","Imobiliário","Ações","ETFs","Cripto","Ouro","Prata","Arte","Fundos","PPR","Depósitos","Outros"];
-}
-
-function refreshClassSelects(){
-  const cls = classList();
-  const sel = $("itemClass");
-  if (sel){
-    sel.innerHTML = "";
-    for (const c of cls){
-      const o = document.createElement("option");
-      o.value = c; o.textContent = c;
-      sel.appendChild(o);
-    }
-  }
-  const q = $("qClass");
-  if (q){
-    // keep first option
-    const first = q.querySelector("option[value='']");
-    q.innerHTML = "";
-    const f = document.createElement("option");
-    f.value = ""; f.textContent = "Todas as classes";
-    q.appendChild(f);
-    for (const c of cls){
-      const o = document.createElement("option");
-      o.value=c; o.textContent=c;
-      q.appendChild(o);
-    }
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }catch(e){
+    alert("Não foi possível guardar (storage cheio ou bloqueado).");
   }
 }
 
 function setView(view){
   currentView = view;
-  for (const el of document.querySelectorAll(".view")){
-    el.hidden = el.dataset.view !== view;
+  for (const s of document.querySelectorAll(".view")){
+    s.hidden = s.dataset.view !== view;
   }
   for (const b of document.querySelectorAll(".navbtn")){
-    b.classList.toggle("navbtn--active", b.dataset.nav === view);
+    b.classList.toggle("navbtn--active", b.dataset.view === view);
   }
-  // Also update FAB sheet context? nothing.
+  // render on view switch
+  if (view === "dashboard") renderDashboard();
   if (view === "assets") renderItems();
   if (view === "cashflow") renderCashflow();
-  if (view === "dashboard") renderDashboard();
+  // ensure top of main content on switch (avoid manual scroll)
+  window.scrollTo({ top: 0, behavior: "instant" });
 }
 
-function openSheet(){
-  $("sheet").setAttribute("aria-hidden","false");
-}
-function closeSheet(){
-  $("sheet").setAttribute("aria-hidden","true");
-}
+function openModal(id){ $(id).setAttribute("aria-hidden","false"); }
+function closeModal(id){ $(id).setAttribute("aria-hidden","true"); }
 
-function openModal(id){
-  $(id).setAttribute("aria-hidden","false");
-}
-function closeModal(id){
-  $(id).setAttribute("aria-hidden","true");
-}
-
-function wireGlobal(){
-  // nav
-  $("navDashboard").addEventListener("click", ()=>setView("dashboard"));
-  $("navAssets").addEventListener("click", ()=>setView("assets"));
-  $("navImport").addEventListener("click", ()=>setView("import"));
-  $("navCashflow").addEventListener("click", ()=>setView("cashflow"));
-  $("navSettings").addEventListener("click", ()=>setView("settings"));
-
-  // FAB + sheet
-  $("btnFAB").addEventListener("click", openSheet);
-  $("sheetBg").addEventListener("click", closeSheet);
-  $("sheetClose").addEventListener("click", closeSheet);
-
-  $("sheetAddAsset").addEventListener("click", ()=>{ closeSheet(); openItemModal("asset"); });
-  $("sheetAddLiab").addEventListener("click", ()=>{ closeSheet(); openItemModal("liab"); });
-  $("sheetAddTx").addEventListener("click", ()=>{ closeSheet(); openTxModal(); });
-  $("sheetSnapshot").addEventListener("click", ()=>{ closeSheet(); snapshot(); });
-
-  // Dashboard buttons
-  $("btnSnapshot").addEventListener("click", snapshot);
-  $("btnClearHistory").addEventListener("click", clearHistory);
-  $("btnDistDetail").addEventListener("click", ()=>{ distShowAll=false; openDistModal(); });
-  $("btnSummaryAll").addEventListener("click", ()=>{ setView("assets"); });
-
-  $("btnSummaryToggle").addEventListener("click", ()=>{ summaryShowAll = !summaryShowAll; renderSummary(); });
-
-  // Assets segment + add
-  $("segAssets").addEventListener("click", ()=>{ itemsShowLiabs=false; updateItemsSeg(); renderItems(); });
-  $("segLiabs").addEventListener("click", ()=>{ itemsShowLiabs=true; updateItemsSeg(); renderItems(); });
-  $("btnAddHere").addEventListener("click", ()=> openItemModal(itemsShowLiabs ? "liab":"asset"));
-
-  // filters
-  $("qSearch").addEventListener("input", renderItems);
-  $("qClass").addEventListener("change", renderItems);
-  $("qSort").addEventListener("change", renderItems);
-
-  // Item modal close
-  document.addEventListener("click", (e)=>{
+function wireModalClosers(){
+  document.body.addEventListener("click", (e)=>{
     const t = e.target;
-    if (t?.dataset?.close === "item") closeModal("itemModal");
-    if (t?.dataset?.close === "tx") closeModal("txModal");
-    if (t?.dataset?.close === "dist") closeModal("distModal");
+    if (!(t instanceof HTMLElement)) return;
+    const close = t.getAttribute("data-close");
+    if (close) closeModal(close);
   });
-
-  // yield hint
-  $("yieldType").addEventListener("change", updateYieldHint);
-
-  // save item
-  $("itemForm").addEventListener("submit", (e)=>{
-    e.preventDefault();
-    saveItem();
-  });
-  $("btnDeleteItem").addEventListener("click", deleteItem);
-
-  // tx modal
-  $("btnAddTx").addEventListener("click", openTxModal);
-  $("txForm").addEventListener("submit", (e)=>{ e.preventDefault(); saveTx(); });
-  $("btnDeleteTx").addEventListener("click", deleteTx);
-
-  // settings
-  $("baseCurrency").addEventListener("change", ()=>{
-    state.settings.currency = $("baseCurrency").value;
-    saveState();
-    renderAll();
-  });
-
-  // Import
-  $("fileInput").addEventListener("change", ()=>{
-    $("btnImportFile").disabled = !$("fileInput").files?.length;
-  });
-  $("btnImportFile").addEventListener("click", importFile);
-  $("btnTemplateCSV").addEventListener("click", downloadTemplateCSV);
-
-  $("jsonInput").addEventListener("change", ()=>{
-    $("btnImportJSON").disabled = !$("jsonInput").files?.length;
-  });
-  $("btnExportJSON").addEventListener("click", exportJSON);
-  $("btnImportJSON").addEventListener("click", importJSON);
-
-  // Reset
-  $("btnReset").addEventListener("click", hardReset);
 }
 
-function updateItemsSeg(){
-  $("segAssets").classList.toggle("seg__btn--active", !itemsShowLiabs);
-  $("segLiabs").classList.toggle("seg__btn--active", itemsShowLiabs);
-  $("assetsTitle").textContent = itemsShowLiabs ? "Passivos" : "Ativos";
-  $("assetsSub").textContent = itemsShowLiabs
-    ? "Créditos, dívidas, cartões… (valor positivo = dívida)"
-    : "Imobiliário, liquidez, ações/ETFs, metais, cripto, fundos, PPR, depósitos…";
+function calcTotals(){
+  const assetsTotal = state.assets.reduce((a,x)=>a + parseNum(x.value), 0);
+  const liabsTotal = state.liabilities.reduce((a,x)=>a + parseNum(x.value), 0);
+  const net = assetsTotal - liabsTotal;
+  const passiveAnnual = state.assets.reduce((a,x)=>a + passiveFromItem(x), 0);
+  return {assetsTotal, liabsTotal, net, passiveAnnual};
 }
 
-function updateYieldHint(){
-  const yt = $("yieldType").value;
-  let msg = "Sem rendimento passivo associado.";
-  if (yt === "yield_pct") msg = "Yield %/ano sobre o valor do ativo.";
-  if (yt === "income_year") msg = "Valor em € por ano.";
-  if (yt === "rent_month") msg = "Renda mensal (a app anualiza).";
-  $("yieldHint").textContent = msg;
-}
-
-function openItemModal(kind, item=null){
-  $("itemKind").value = kind;
-  $("itemId").value = item?.id || "";
-  $("itemModalTitle").textContent = item ? "Editar " + (kind==="asset" ? "ativo":"passivo") : "Adicionar " + (kind==="asset" ? "ativo":"passivo");
-  $("itemClass").value = item?.class || (kind==="asset" ? "Liquidez":"Crédito");
-  // For liabilities, we still use same class list; default "Outros"
-  if (kind==="liab" && !classList().includes($("itemClass").value)) $("itemClass").value="Outros";
-  $("itemName").value = item?.name || "";
-  $("itemValue").value = item?.value ?? "";
-  $("yieldType").value = item?.yieldType || "none";
-  $("yieldValue").value = item?.yieldValue ?? "";
-  $("itemNotes").value = item?.notes || "";
-  updateYieldHint();
-  $("btnDeleteItem").style.display = item ? "inline-flex" : "none";
-  openModal("itemModal");
-}
-
-function saveItem(){
-  const kind = $("itemKind").value;
-  const id = $("itemId").value || uid();
-  const obj = {
-    id,
-    class: $("itemClass").value.trim() || "Outros",
-    name: $("itemName").value.trim(),
-    value: Number($("itemValue").value||0),
-    yieldType: $("yieldType").value,
-    yieldValue: Number($("yieldValue").value||0),
-    notes: $("itemNotes").value.trim()
-  };
-
-  if (kind === "asset"){
-    const idx = state.assets.findIndex(x=>x.id===id);
-    if (idx>=0) state.assets[idx]=obj; else state.assets.unshift(obj);
-  }else{
-    // liabilities do not use yield
-    obj.yieldType = "none"; obj.yieldValue = 0;
-    const idx = state.liabilities.findIndex(x=>x.id===id);
-    if (idx>=0) state.liabilities[idx]=obj; else state.liabilities.unshift(obj);
-  }
-  saveState();
-  closeModal("itemModal");
-  renderAll();
-}
-
-function deleteItem(){
-  const kind = $("itemKind").value;
-  const id = $("itemId").value;
-  if (!id) return;
-  if (!confirm("Eliminar?")) return;
-  if (kind==="asset") state.assets = state.assets.filter(x=>x.id!==id);
-  else state.liabilities = state.liabilities.filter(x=>x.id!==id);
-  saveState();
-  closeModal("itemModal");
-  renderAll();
-}
-
-function openTxModal(tx=null){
-  $("txId").value = tx?.id || "";
-  $("txModalTitle").textContent = tx ? "Editar movimento" : "Adicionar movimento";
-  $("txType").value = tx?.type || "in";
-  $("txClass").value = tx?.class || "";
-  $("txValue").value = tx?.value ?? "";
-  $("txDate").value = tx?.date || new Date().toISOString().slice(0,10);
-  $("txNotes").value = tx?.notes || "";
-  $("btnDeleteTx").style.display = tx ? "inline-flex" : "none";
-  openModal("txModal");
-}
-
-function saveTx(){
-  const id = $("txId").value || uid();
-  const obj = {
-    id,
-    type: $("txType").value,
-    class: $("txClass").value.trim(),
-    value: Number($("txValue").value||0),
-    date: $("txDate").value,
-    notes: $("txNotes").value.trim()
-  };
-  const idx = state.transactions.findIndex(t=>t.id===id);
-  if (idx>=0) state.transactions[idx]=obj; else state.transactions.unshift(obj);
-  saveState();
-  closeModal("txModal");
-  renderAll();
-}
-
-function deleteTx(){
-  const id = $("txId").value;
-  if (!id) return;
-  if (!confirm("Eliminar movimento?")) return;
-  state.transactions = state.transactions.filter(t=>t.id!==id);
-  saveState();
-  closeModal("txModal");
-  renderAll();
-}
-
-function snapshot(){
-  // snapshot current month YYYY-MM
-  const ym = new Date().toISOString().slice(0,7);
-  const {net} = totals();
-  const pa = passiveAnnualEstimate();
-  const idx = state.history.findIndex(h=>h.date===ym);
-  const entry = { date: ym, net: Math.round(net), passiveAnnual: Math.round(pa) };
-  if (idx>=0) state.history[idx]=entry; else state.history.push(entry);
-  state.history.sort((a,b)=>a.date.localeCompare(b.date));
-  saveState();
-  renderDashboard();
-}
-
-function clearHistory(){
-  if (!confirm("Limpar histórico?")) return;
-  state.history = [];
-  saveState();
-  renderDashboard();
+function passiveFromItem(it){
+  const v = parseNum(it.value);
+  const yv = parseNum(it.yieldValue);
+  const yt = it.yieldType || "none";
+  if (yt === "yield_pct") return v * (yv/100);
+  if (yt === "yield_eur_year") return yv;
+  if (yt === "rent_month") return yv * 12;
+  return 0;
 }
 
 function renderDashboard(){
-  const t = totals();
-  $("kpiNet").textContent = fmtMoney(t.net);
-  $("kpiAP").textContent = `Ativos ${fmtMoney(t.assets)} | Passivos ${fmtMoney(t.liabs)}`;
-
-  const pa = passiveAnnualEstimate();
-  $("kpiPassiveAnnual").textContent = fmtMoney(pa);
-  $("kpiPassiveMonthly").textContent = fmtMoney(pa/12);
+  const t = calcTotals();
+  $("kpiNet").textContent = fmtEUR(t.net);
+  $("kpiAP").textContent = `Ativos ${fmtEUR(t.assetsTotal)} | Passivos ${fmtEUR(t.liabsTotal)}`;
+  $("kpiPassiveAnnual").textContent = fmtEUR(t.passiveAnnual);
+  $("kpiPassiveMonthly").textContent = fmtEUR(t.passiveAnnual/12);
 
   renderSummary();
   renderDistChart();
@@ -391,552 +146,770 @@ function renderDashboard(){
 
 function renderSummary(){
   const list = $("summaryList");
-  const btn = $("btnSummaryToggle");
-
-  const items = [...state.assets].sort((a,b)=>(Number(b.value)||0)-(Number(a.value)||0));
-  const topN = 10;
-  const show = summaryShowAll ? items : items.slice(0, topN);
-
   list.innerHTML = "";
+  const items = [...state.assets].sort((a,b)=>parseNum(b.value)-parseNum(a.value));
   if (items.length === 0){
-    list.innerHTML = `<div class="note">Sem ativos. Usa o botão <b>+</b> para adicionar.</div>`;
-    btn.style.display="none";
+    const empty = document.createElement("div");
+    empty.className = "item";
+    empty.innerHTML = `<div class="item__l"><div class="item__t">Sem ativos</div><div class="item__s">Usa o botão + para adicionar.</div></div><div class="item__v">—</div>`;
+    list.appendChild(empty);
+    $("btnSummaryToggle").style.display = "none";
     return;
   }
-
-  for (const x of show){
-    const el = document.createElement("div");
-    el.className = "item";
-    el.innerHTML = `
-      <div class="item__left">
-        <div class="item__name">${escapeHtml(x.name)}</div>
-        <div class="item__meta">${escapeHtml(x.class)}</div>
-      </div>
-      <div class="item__val">${fmtMoney(x.value)}</div>
-    `;
-    el.addEventListener("click", ()=>{ setView("assets"); itemsShowLiabs=false; updateItemsSeg(); renderItems(); });
-    list.appendChild(el);
+  const shown = summaryExpanded ? items : items.slice(0,10);
+  for (const it of shown){
+    list.appendChild(renderRow(it.name, it.class, parseNum(it.value)));
   }
-
-  if (items.length > topN){
-    btn.style.display="inline-flex";
-    btn.textContent = summaryShowAll ? "Mostrar menos" : "Ver o resto";
-  }else{
-    btn.style.display="none";
-  }
+  $("btnSummaryToggle").style.display = (items.length > 10) ? "inline-flex" : "none";
+  $("btnSummaryToggle").textContent = summaryExpanded ? "Ver menos" : "Ver o resto";
 }
 
-function distData(){
-  const by = new Map();
-  for (const x of state.assets){
-    const c = x.class || "Outros";
-    by.set(c, (by.get(c)||0) + (Number(x.value)||0));
-  }
-  const labels = Array.from(by.keys());
-  const values = labels.map(k=>by.get(k)||0);
-  // sort desc
-  const idx = labels.map((_,i)=>i).sort((i,j)=>values[j]-values[i]);
-  const L = idx.map(i=>labels[i]);
-  const V = idx.map(i=>values[i]);
-  return {labels:L, values:V};
+function renderRow(title, subtitle, value){
+  const d = document.createElement("div");
+  d.className = "item";
+  d.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(title||"—")}</div><div class="item__s">${escapeHtml(subtitle||"")}</div></div><div class="item__v">${fmtEUR(value)}</div>`;
+  return d;
 }
 
-function colorsFor(n){
-  const palette = ["#34d399","#a78bfa","#94a3b8","#22c55e","#60a5fa","#f59e0b","#f472b6","#38bdf8","#cbd5e1","#10b981","#818cf8","#e879f9"];
-  return Array.from({length:n}, (_,i)=>palette[i%palette.length]);
+function escapeHtml(s){
+  return String(s||"").replace(/[&<>"']/g, (c)=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }
 
 function renderDistChart(){
-  const {labels, values} = distData();
+  const by = {};
+  for (const a of state.assets){
+    const k = a.class || "Outros";
+    by[k] = (by[k]||0) + parseNum(a.value);
+  }
+  const labels = Object.keys(by);
+  const values = labels.map(k=>by[k]);
+
   const ctx = $("distChart").getContext("2d");
-  const cols = colorsFor(labels.length);
   if (distChart) distChart.destroy();
-  distChart = new Chart(ctx, {
-    type: "doughnut",
-    data: { labels, datasets:[{ data: values, backgroundColor: cols, borderWidth: 0 }] },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      cutout: "68%",
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: {
-          label: (c)=> `${c.label}: ${fmtMoney(c.parsed)}`
-        }}
-      }
-    }
-  });
 
-  // dist modal list
-  renderDistList(labels, values, cols);
-}
-
-function openDistModal(){
-  distShowAll = false;
-  renderDistModal();
-  openModal("distModal");
-}
-function renderDistModal(){
-  const {labels, values} = distData();
-  const cols = colorsFor(labels.length);
-  renderDistList(labels, values, cols);
-}
-function renderDistList(labels, values, cols){
-  const list = $("distList");
-  const btn = $("btnDistToggle");
-  const total = values.reduce((a,x)=>a+(Number(x)||0),0);
-  const items = labels.map((name,i)=>{
-    const v = Number(values[i])||0;
-    return { name, v, p: total>0 ? (v/total) : 0, color: cols[i] };
-  }).filter(x=>x.v>0);
-
-  const topN = 10;
-  const show = distShowAll ? items : items.slice(0, topN);
-  list.innerHTML = "";
-
-  if (items.length === 0){
-    list.innerHTML = `<div class="note">Sem ativos para calcular distribuição.</div>`;
-    btn.style.display="none";
+  if (labels.length === 0){
+    distChart = new Chart(ctx, {
+      type:"doughnut",
+      data:{ labels:["Sem dados"], datasets:[{ data:[1] }] },
+      options:{ plugins:{ legend:{ display:false } }, cutout:"70%" }
+    });
     return;
   }
 
-  for (const it of show){
-    const el = document.createElement("div");
-    el.className = "item";
-    el.innerHTML = `
-      <div class="item__left">
-        <div class="item__name"><span class="badge" style="margin-right:8px"><span style="width:10px;height:10px;border-radius:999px;background:${it.color};display:inline-block"></span></span>${escapeHtml(it.name)}</div>
-        <div class="item__meta">${fmtPct(it.p*100)} • ${fmtMoney(it.v)}</div>
-      </div>
-      <div class="item__val">${fmtMoney(it.v)}</div>
-    `;
-    list.appendChild(el);
-  }
-
-  if (items.length > topN){
-    btn.style.display="inline-flex";
-    btn.textContent = distShowAll ? "Mostrar menos" : "Ver o resto";
-    btn.onclick = ()=>{ distShowAll = !distShowAll; renderDistList(labels, values, cols); };
-  }else{
-    btn.style.display="none";
-  }
+  distChart = new Chart(ctx,{
+    type:"doughnut",
+    data:{ labels, datasets:[{ data: values, borderWidth:0 }] },
+    options:{
+      plugins:{
+        legend:{ display:false },
+        tooltip:{ callbacks:{ label:(c)=> `${c.label}: ${fmtEUR(c.raw)}` } }
+      },
+      cutout:"70%"
+    }
+  });
 }
 
 function renderTrendChart(){
   const ctx = $("trendChart").getContext("2d");
-  const labels = state.history.map(h=>h.date);
-  const values = state.history.map(h=>Number(h.net)||0);
-
   if (trendChart) trendChart.destroy();
-  trendChart = new Chart(ctx, {
-    type:"line",
-    data:{ labels, datasets:[{ data: values, tension:.25, borderWidth:2, pointRadius:3 }]},
-    options:{
-      responsive:true,
-      maintainAspectRatio:false,
-      plugins:{ legend:{display:false}},
-      scales:{
-        x:{ ticks:{ color:"rgba(226,232,240,.65)"}, grid:{ color:"rgba(255,255,255,.06)"} },
-        y:{ ticks:{ color:"rgba(226,232,240,.65)"}, grid:{ color:"rgba(255,255,255,.06)"} }
+
+  const h = state.history.slice().sort((a,b)=>String(a.dateISO).localeCompare(String(b.dateISO)));
+  if (h.length === 0){
+    $("historyHint").style.display = "block";
+    trendChart = new Chart(ctx, {
+      type:"line",
+      data:{ labels:["—"], datasets:[{ data:[0], tension:.35, pointRadius:0 }] },
+      options:{
+        plugins:{ legend:{ display:false } },
+        scales:{ x:{ display:false }, y:{ display:false } }
       }
+    });
+    return;
+  }
+  $("historyHint").style.display = "none";
+  const labels = h.map(x=>x.dateISO.slice(0,7));
+  const data = h.map(x=>parseNum(x.net));
+
+  trendChart = new Chart(ctx,{
+    type:"line",
+    data:{ labels, datasets:[{ data, tension:.35, pointRadius:3 }] },
+    options:{
+      plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label:(c)=>fmtEUR(c.raw) } } },
+      scales:{ y:{ ticks:{ callback:(v)=>fmtEUR(v) } } }
     }
   });
+}
 
-  $("historyHint").textContent = state.history.length ? `${state.history.length} ponto(s) no histórico.` : "Sem histórico.";
+function snapshotMonth(){
+  const t = calcTotals();
+  const now = new Date();
+  const dateISO = now.toISOString().slice(0,10);
+  state.history.push({ dateISO, net: t.net, assets: t.assetsTotal, liabilities: t.liabsTotal, passiveAnnual: t.passiveAnnual });
+  saveState();
+  renderDashboard();
+  alert("Snapshot registado.");
+}
+
+/* ITEMS view */
+function setModeLiabs(on){
+  showingLiabs = !!on;
+  $("segLiabs").classList.toggle("seg__btn--active", showingLiabs);
+  $("segAssets").classList.toggle("seg__btn--active", !showingLiabs);
+  $("itemsTitle").textContent = showingLiabs ? "Passivos" : "Ativos";
+  $("itemsSub").textContent = showingLiabs ? "Créditos, dívidas, cartões… (valor positivo = dívida)" : "Imobiliário, liquidez, ações/ETFs, metais, cripto, fundos, PPR, depósitos…";
+  $("btnAddItem").textContent = "Adicionar";
+  rebuildClassFilter();
+  renderItems();
+}
+
+function rebuildClassFilter(){
+  const sel = $("qClass");
+  const current = sel.value;
+  sel.innerHTML = `<option value="">Todas as classes</option>`;
+  const src = showingLiabs ? state.liabilities : state.assets;
+  const classes = Array.from(new Set(src.map(x=>x.class).filter(Boolean))).sort((a,b)=>String(a).localeCompare(String(b),"pt"));
+  for (const c of classes){
+    const o = document.createElement("option");
+    o.value = c; o.textContent = c;
+    sel.appendChild(o);
+  }
+  sel.value = current;
 }
 
 function renderItems(){
+  rebuildClassFilter();
   const list = $("itemsList");
-  const q = $("qSearch").value.trim().toLowerCase();
-  const cls = $("qClass").value;
+  list.innerHTML = "";
+  const q = ($("qSearch").value||"").trim().toLowerCase();
+  const cfilter = $("qClass").value || "";
   const sort = $("qSort").value;
 
-  let arr = itemsShowLiabs ? [...state.liabilities] : [...state.assets];
-
-  if (q){
-    arr = arr.filter(x=>(x.name||"").toLowerCase().includes(q) || (x.class||"").toLowerCase().includes(q));
-  }
-  if (cls){
-    arr = arr.filter(x=>(x.class||"")===cls);
-  }
-  if (sort==="value_desc") arr.sort((a,b)=>(Number(b.value)||0)-(Number(a.value)||0));
-  if (sort==="value_asc") arr.sort((a,b)=>(Number(a.value)||0)-(Number(b.value)||0));
-  if (sort==="name_asc") arr.sort((a,b)=>(a.name||"").localeCompare(b.name||""));
-
-  list.innerHTML = "";
-  if (!arr.length){
-    list.innerHTML = `<div class="note">Sem ${itemsShowLiabs?"passivos":"ativos"} (ou filtros demasiado restritos).</div>`;
-    return;
-  }
-
-  for (const x of arr){
-    const el = document.createElement("div");
-    el.className="item";
-    el.innerHTML = `
-      <div class="item__left">
-        <div class="item__name">${escapeHtml(x.name)}</div>
-        <div class="item__meta">${escapeHtml(x.class)}${x.notes ? " • "+escapeHtml(x.notes) : ""}</div>
-      </div>
-      <div class="item__val">${fmtMoney(x.value)}</div>
-    `;
-    el.addEventListener("click", ()=> openItemModal(itemsShowLiabs ? "liab":"asset", x));
-    list.appendChild(el);
-  }
-}
-
-function monthKey(d){
-  if (!d) return "";
-  return String(d).slice(0,7);
-}
-function yearKey(d){
-  if (!d) return "";
-  return String(d).slice(0,4);
-}
-
-function renderCashflow(){
-  // populate selectors
-  const months = Array.from(new Set(state.transactions.map(t=>monthKey(t.date)).filter(Boolean))).sort().reverse();
-  const years = Array.from(new Set(state.transactions.map(t=>yearKey(t.date)).filter(Boolean))).sort().reverse();
-
-  const msel = $("cfMonth");
-  const ysel = $("cfYear");
-
-  if (!months.length){
-    msel.innerHTML = `<option value="">—</option>`;
-  }else{
-    msel.innerHTML = months.map(m=>`<option value="${m}">${m}</option>`).join("");
-  }
-  if (!years.length){
-    ysel.innerHTML = `<option value="">—</option>`;
-  }else{
-    ysel.innerHTML = years.map(y=>`<option value="${y}">${y}</option>`).join("");
-  }
-
-  const curM = msel.value || months[0] || "";
-  if (curM && msel.value!==curM) msel.value=curM;
-  const curY = ysel.value || years[0] || "";
-  if (curY && ysel.value!==curY) ysel.value=curY;
-
-  const filtered = state.transactions.filter(t=>{
-    const mk = monthKey(t.date);
-    const yk = yearKey(t.date);
-    if (curM) return mk===curM;
-    if (curY) return yk===curY;
+  let src = showingLiabs ? [...state.liabilities] : [...state.assets];
+  src = src.filter(it=>{
+    const hay = `${it.name||""} ${it.class||""}`.toLowerCase();
+    if (q && !hay.includes(q)) return false;
+    if (cfilter && (it.class||"") !== cfilter) return false;
     return true;
   });
 
-  let ins=0, outs=0;
-  for (const t of filtered){
-    const v = Number(t.value)||0;
-    if (t.type==="in") ins += v; else outs += v;
-  }
-  const net = ins - outs;
-  const rate = ins>0 ? (net/ins)*100 : 0;
+  if (sort === "value_desc") src.sort((a,b)=>parseNum(b.value)-parseNum(a.value));
+  if (sort === "value_asc") src.sort((a,b)=>parseNum(a.value)-parseNum(b.value));
+  if (sort === "name_asc") src.sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""),"pt"));
 
-  $("cfIn").textContent = fmtMoney(ins);
-  $("cfOut").textContent = fmtMoney(outs);
-  $("cfNet").textContent = fmtMoney(net);
-  $("cfRate").textContent = (isFinite(rate)? rate:0).toFixed(0) + "%";
-
-  // render list
-  const list = $("txList");
-  list.innerHTML = "";
-  if (!filtered.length){
-    list.innerHTML = `<div class="note">Sem movimentos. Usa “Adicionar movimento”.</div>`;
+  if (src.length === 0){
+    const empty = document.createElement("div");
+    empty.className = "item";
+    empty.innerHTML = `<div class="item__l"><div class="item__t">Sem ${showingLiabs ? "passivos" : "ativos"}</div><div class="item__s">Usa “Adicionar”.</div></div><div class="item__v">—</div>`;
+    list.appendChild(empty);
     return;
   }
-  for (const t of filtered.sort((a,b)=>(b.date||"").localeCompare(a.date||""))){
-    const el = document.createElement("div");
-    el.className="item";
-    const sign = t.type==="in" ? "+" : "−";
-    const meta = `${escapeHtml(t.class)} • ${escapeHtml(t.date)}${t.notes ? " • "+escapeHtml(t.notes):""}`;
-    el.innerHTML = `
-      <div class="item__left">
-        <div class="item__name">${sign} ${escapeHtml(t.class)}</div>
-        <div class="item__meta">${meta}</div>
-      </div>
-      <div class="item__val">${fmtMoney(t.value)}</div>
-    `;
-    el.addEventListener("click", ()=> openTxModal(t));
-    list.appendChild(el);
-  }
 
-  // wire selector changes once
-  if (!msel.dataset.wired){
-    msel.dataset.wired="1";
-    ysel.dataset.wired="1";
-    msel.addEventListener("change", renderCashflow);
-    ysel.addEventListener("change", renderCashflow);
+  for (const it of src){
+    const row = document.createElement("div");
+    row.className = "item";
+    row.innerHTML = `<div class="item__l">
+      <div class="item__t">${escapeHtml(it.name||"—")}</div>
+      <div class="item__s">${escapeHtml(it.class||"")}${showingLiabs ? "" : yieldBadge(it)}</div>
+    </div>
+    <div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
+    row.addEventListener("click", ()=>editItem(it.id));
+    list.appendChild(row);
   }
 }
 
-function importFile(){
-  const f = $("fileInput").files?.[0];
-  if (!f) return;
-
-  const name = f.name.toLowerCase();
-  if (name.endsWith(".csv")){
-    const reader = new FileReader();
-    reader.onload = ()=>{
-      const text = String(reader.result||"");
-      importCSV(text);
-    };
-    reader.readAsText(f);
-  }else if (name.endsWith(".xlsx") || name.endsWith(".xls")){
-    const reader = new FileReader();
-    reader.onload = ()=>{
-      const data = new Uint8Array(reader.result);
-      const wb = XLSX.read(data, { type:"array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval:"" });
-      importRows(rows);
-    };
-    reader.readAsArrayBuffer(f);
-  }else{
-    alert("Formato não suportado.");
-  }
-}
-
-function getAny(obj, keys){
-  for (const k of keys){
-    if (obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== "") return obj[k];
-  }
+function yieldBadge(it){
+  const yt = it.yieldType || "none";
+  const yv = parseNum(it.yieldValue);
+  if (yt === "yield_pct" && yv>0) return ` · yield ${yv}%`;
+  if (yt === "yield_eur_year" && yv>0) return ` · ${fmtEUR(yv)}/ano`;
+  if (yt === "rent_month" && yv>0) return ` · ${fmtEUR(yv)}/mês`;
   return "";
 }
-function numAny(obj, keys){
-  const v = getAny(obj, keys);
-  if (v === "") return 0;
-  return Number(String(v).replace(/\s/g,"").replace(",", ".").replace(/[^0-9.\-]/g,"")) || 0;
-}
-function strAny(obj, keys){
-  return String(getAny(obj, keys)).trim();
+
+/* modal item */
+const CLASSES_ASSETS = ["Imobiliário","Liquidez","Ações/ETFs","Cripto","Ouro","Prata","Arte","Fundos","PPR","Depósitos","Outros"];
+const CLASSES_LIABS  = ["Crédito habitação","Crédito pessoal","Cartão de crédito","Outros"];
+
+let editingItemId = null;
+
+function openItemModal(kind){
+  editingItemId = null;
+  $("modalItemTitle").textContent = (kind === "liab") ? "Adicionar passivo" : "Adicionar ativo";
+  const sel = $("mClass");
+  sel.innerHTML = "";
+  const classes = (kind === "liab") ? CLASSES_LIABS : CLASSES_ASSETS;
+  for (const c of classes){
+    const o = document.createElement("option");
+    o.value=c; o.textContent=c;
+    sel.appendChild(o);
+  }
+  $("mName").value = "";
+  $("mValue").value = "";
+  $("mYieldType").value = "none";
+  $("mYieldValue").value = "";
+  $("mNotes").value = "";
+  $("mYieldType").disabled = (kind === "liab");
+  $("mYieldValue").disabled = (kind === "liab");
+  $("btnSaveItem").dataset.kind = kind;
+  openModal("modalItem");
 }
 
-function detectHoldingsColumns(headers){
-  const h = new Set(headers.map(x=>String(x||"").toLowerCase().trim()));
-  const holdingSignals = ["ticker","symbol","isin","shares","quantity","units","holding","market value","market_value","value_eur","value","nav","position","asset","coin","crypto"];
-  let score = 0;
-  for (const s of holdingSignals){
-    for (const k of h){
-      if (k.includes(s.replace(" ","_")) || k.includes(s)) { score++; break; }
+function editItem(id){
+  const src = showingLiabs ? state.liabilities : state.assets;
+  const it = src.find(x=>x.id===id);
+  if (!it) return;
+
+  editingItemId = id;
+  const kind = showingLiabs ? "liab" : "asset";
+  $("modalItemTitle").textContent = showingLiabs ? "Editar passivo" : "Editar ativo";
+  const sel = $("mClass");
+  sel.innerHTML = "";
+  const classes = (kind === "liab") ? CLASSES_LIABS : CLASSES_ASSETS;
+  for (const c of classes){
+    const o=document.createElement("option"); o.value=c; o.textContent=c; sel.appendChild(o);
+  }
+  sel.value = it.class || classes[0];
+  $("mName").value = it.name || "";
+  $("mValue").value = String(parseNum(it.value) || "");
+  $("mNotes").value = it.notes || "";
+  $("mYieldType").disabled = showingLiabs;
+  $("mYieldValue").disabled = showingLiabs;
+  if (!showingLiabs){
+    $("mYieldType").value = it.yieldType || "none";
+    $("mYieldValue").value = (it.yieldValue!==undefined && it.yieldValue!==null) ? String(it.yieldValue) : "";
+  }else{
+    $("mYieldType").value = "none";
+    $("mYieldValue").value = "";
+  }
+  $("btnSaveItem").dataset.kind = kind;
+  openModal("modalItem");
+}
+
+function saveItemFromModal(){
+  const kind = $("btnSaveItem").dataset.kind;
+  const isLiab = (kind === "liab");
+  const obj = {
+    id: editingItemId || uid(),
+    class: $("mClass").value || (isLiab ? "Outros" : "Outros"),
+    name: ($("mName").value||"").trim(),
+    value: parseNum($("mValue").value),
+    notes: ($("mNotes").value||"").trim()
+  };
+
+  if (!obj.name){
+    alert("Nome é obrigatório.");
+    return;
+  }
+  if (!isLiab){
+    obj.yieldType = $("mYieldType").value || "none";
+    obj.yieldValue = parseNum($("mYieldValue").value);
+  }
+
+  if (isLiab){
+    const ix = state.liabilities.findIndex(x=>x.id===obj.id);
+    if (ix>=0) state.liabilities[ix] = obj; else state.liabilities.push(obj);
+  }else{
+    const ix = state.assets.findIndex(x=>x.id===obj.id);
+    if (ix>=0) state.assets[ix] = obj; else state.assets.push(obj);
+  }
+
+  saveState();
+  closeModal("modalItem");
+  renderDashboard();
+  renderItems();
+}
+
+/* CASHFLOW */
+function ensureMonthYearOptions(){
+  const now = new Date();
+  const yearNow = now.getFullYear();
+  const years = [];
+  for (let y=yearNow-3; y<=yearNow+1; y++) years.push(y);
+  $("cfYear").innerHTML = years.map(y=>`<option value="${y}">${y}</option>`).join("");
+  $("cfMonth").innerHTML = Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}">${String(m).padStart(2,"0")}</option>`).join("");
+  $("cfYear").value = String(yearNow);
+  $("cfMonth").value = String(now.getMonth()+1);
+
+  // default date in modal
+  $("tDate").value = now.toISOString().slice(0,10);
+}
+
+function monthKeyFromDateISO(d){
+  const s = String(d||"");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  return s.slice(0,7);
+}
+
+function renderCashflow(){
+  ensureMonthYearOptions();
+
+  const y = $("cfYear").value;
+  const m = String($("cfMonth").value).padStart(2,"0");
+  const key = `${y}-${m}`;
+
+  const tx = expandRecurring(state.transactions).filter(t=>monthKeyFromDateISO(t.date)===key);
+  const totalIn = tx.filter(t=>t.type==="in").reduce((a,t)=>a+parseNum(t.amount),0);
+  const totalOut = tx.filter(t=>t.type==="out").reduce((a,t)=>a+parseNum(t.amount),0);
+  const net = totalIn - totalOut;
+  const rate = totalIn>0 ? (net/totalIn)*100 : 0;
+
+  $("cfIn").textContent = fmtEUR(totalIn);
+  $("cfOut").textContent = fmtEUR(totalOut);
+  $("cfNet").textContent = fmtEUR(net);
+  $("cfRate").textContent = `${Math.round(rate)}%`;
+
+  renderTxList();
+}
+
+function expandRecurring(tx){
+  // Recorrentes contam para o mês selecionado e meses futuros; isto é uma aproximação.
+  // Mantemos também o item original para o mês da data.
+  const out = [];
+  const now = new Date();
+  const yearNow = now.getFullYear();
+  const monthNow = now.getMonth()+1;
+  for (const t of tx){
+    out.push(t);
+    const rec = t.recurring || "none";
+    if (rec === "none") continue;
+    const d0 = new Date(t.date+"T00:00:00");
+    if (isNaN(d0.getTime())) continue;
+    for (let i=1;i<=24;i++){ // expand up to 24 months
+      const d = new Date(d0);
+      if (rec === "monthly") d.setMonth(d.getMonth()+i);
+      if (rec === "yearly") d.setFullYear(d.getFullYear()+i);
+      if (d.getFullYear()>yearNow+2) break;
+      out.push({ ...t, id: t.id + "_r" + i, date: d.toISOString().slice(0,10) });
     }
   }
-  return score >= 3; // heuristic
-}
-function hasExplicitTxType(headers){
-  const h = new Set(headers.map(x=>String(x||"").toLowerCase().trim()));
-  return h.has("tipo") || h.has("type") || h.has("transaction_type") || h.has("tx_type");
+  return out;
 }
 
-function normalizeHeader(h){
-  return String(h||"").trim().toLowerCase()
-    .replace(/\s+/g,"_")
-    .replace(/[^a-z0-9_]/g,"");
+function openTxModal(){
+  $("tType").value = "in";
+  $("tCat").value = "";
+  $("tAmt").value = "";
+  $("tRec").value = "none";
+  $("tDate").value = new Date().toISOString().slice(0,10);
+  openModal("modalTx");
 }
 
-function parseCSV(text){
-  // minimal CSV parser (handles quoted commas)
-  const lines = text.replace(/\r/g,"").split("\n").filter(l=>l.trim().length);
+function saveTxFromModal(){
+  const type = $("tType").value;
+  const category = ($("tCat").value||"").trim() || "Outros";
+  const amount = parseNum($("tAmt").value);
+  const date = $("tDate").value;
+  const recurring = $("tRec").value || "none";
+
+  if (!amount || amount <= 0){
+    alert("Valor tem de ser > 0.");
+    return;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)){
+    alert("Data inválida.");
+    return;
+  }
+
+  state.transactions.push({ id: uid(), type, category, amount, date, recurring });
+  saveState();
+  closeModal("modalTx");
+  renderCashflow();
+}
+
+function renderTxList(){
+  const wrap = $("txList");
+  wrap.innerHTML = "";
+  const tx = expandRecurring(state.transactions)
+    .filter(t=>parseNum(t.amount) > 0)
+    .slice()
+    .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+
+  if (tx.length === 0){
+    const empty = document.createElement("div");
+    empty.className = "item";
+    empty.innerHTML = `<div class="item__l"><div class="item__t">Sem movimentos</div><div class="item__s">Adiciona entradas/saídas para calcular o balanço.</div></div><div class="item__v">—</div>`;
+    wrap.appendChild(empty);
+    $("btnTxToggle").style.display = "none";
+    return;
+  }
+
+  const shown = txExpanded ? tx : tx.slice(0, TX_PREVIEW_COUNT);
+  for (const t of shown){
+    const sign = (t.type==="in") ? "+" : "−";
+    const row = document.createElement("div");
+    row.className = "item";
+    row.innerHTML = `<div class="item__l">
+      <div class="item__t">${sign} ${escapeHtml(t.category)}</div>
+      <div class="item__s">${escapeHtml(t.type==="in" ? "Entrada" : "Saída")} · ${escapeHtml(t.date)}</div>
+    </div>
+    <div class="item__v">${fmtEUR(parseNum(t.amount))}</div>`;
+    wrap.appendChild(row);
+  }
+
+  if (tx.length > TX_PREVIEW_COUNT){
+    $("btnTxToggle").style.display = "inline";
+    $("btnTxToggle").textContent = txExpanded ? "Ver menos" : "Ver todos";
+  }else{
+    $("btnTxToggle").style.display = "none";
+  }
+}
+
+/* IMPORT */
+function fileToRows(file){
+  return new Promise((resolve,reject)=>{
+    const name = file.name.toLowerCase();
+    const reader = new FileReader();
+    reader.onerror = ()=>reject(new Error("Erro a ler ficheiro."));
+    reader.onload = ()=>{
+      try{
+        const data = reader.result;
+        let rows = [];
+        if (name.endsWith(".csv")){
+          const text = data;
+          rows = csvToObjects(text);
+        }else{
+          const wb = XLSX.read(data, { type:"array" });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          rows = XLSX.utils.sheet_to_json(ws, { defval:"" });
+        }
+        resolve(rows);
+      }catch(e){
+        reject(e);
+      }
+    };
+    if (name.endsWith(".csv")) reader.readAsText(file);
+    else reader.readAsArrayBuffer(file);
+  });
+}
+
+function csvToObjects(text){
+  // robust CSV parsing for simple exports (comma/semicolon)
+  const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
   if (!lines.length) return [];
-  const head = splitCSVLine(lines[0]).map(normalizeHeader);
+  const delim = (lines[0].includes(";") && !lines[0].includes(",")) ? ";" : ",";
+  const header = splitCSVLine(lines[0], delim).map(h=>h.trim());
   const out = [];
   for (let i=1;i<lines.length;i++){
-    const cols = splitCSVLine(lines[i]);
+    const cols = splitCSVLine(lines[i], delim);
+    if (!cols.length) continue;
     const obj = {};
-    head.forEach((h,idx)=> obj[h]=cols[idx] ?? "");
+    for (let j=0;j<header.length;j++){
+      obj[header[j]] = (cols[j]!==undefined) ? cols[j] : "";
+    }
     out.push(obj);
   }
   return out;
 }
-function splitCSVLine(line){
-  const out=[];
-  let cur="", inQ=false;
+
+function splitCSVLine(line, delim){
+  const out=[]; let cur=""; let q=false;
   for (let i=0;i<line.length;i++){
     const ch=line[i];
-    if (ch === '"' ){
-      if (inQ && line[i+1] === '"'){ cur+='"'; i++; }
-      else inQ = !inQ;
-    }else if (ch === ',' && !inQ){
-      out.push(cur); cur="";
-    }else{
-      cur+=ch;
-    }
+    if (ch === '"'){ q = !q; continue; }
+    if (!q && ch===delim){ out.push(cur); cur=""; continue; }
+    cur += ch;
   }
   out.push(cur);
-  return out.map(s=>String(s).trim());
+  return out;
 }
 
-function importCSV(text){
-  const rows = parseCSV(text);
-  importRows(rows);
+function normKey(k){
+  return String(k||"").trim().toLowerCase().replace(/\s+/g,"_");
+}
+
+function detectSchema(rows){
+  if (!rows.length) return "empty";
+  const keys = Object.keys(rows[0]||{}).map(normKey);
+  if (keys.includes("tipo")) return "template";
+  if (keys.includes("type") && keys.includes("class") && keys.includes("name")) return "template";
+  // holdings
+  const hasSymbol = keys.some(k=>["ticker","symbol","isin"].includes(k));
+  const hasQty = keys.some(k=>["shares","qty","quantity","units"].includes(k));
+  const hasValue = keys.some(k=>["valor","value","market_value","current_value","currentvalue","total_value","position_value"].includes(k) || k.includes("value"));
+  if (hasSymbol && (hasValue || hasQty)) return "holdings";
+  return "unknown";
+}
+
+function pick(obj, candidates){
+  for (const c of candidates){
+    const v = obj[c];
+    if (v!==undefined && v!==null && String(v).trim()!=="") return v;
+  }
+  return "";
 }
 
 function importRows(rows){
-  // expected keys: tipo, kind, classe, class, nome, name, valor, value, yield_tipo, yield_valor, data, date, tx_tipo, tx_valor
-  let added=0;
-  for (const r of rows){
-    const tipo = (r.tipo || r.kind || r.type || "").toString().trim().toLowerCase();
-    const classe = (r.classe || r.class || "").toString().trim() || "Outros";
-    const nome = (r.nome || r.name || "").toString().trim();
-    const valorRaw = (r.valor ?? r.value ?? "").toString().replace(",", ".");
-    const valor = Number(valorRaw||0);
+  const schema = detectSchema(rows);
+  let addedA=0, addedL=0, addedT=0;
 
-    if (tipo === "ativo" || tipo === "asset"){
-      const yt = (r.yield_tipo || r.yieldtype || "none").toString().trim().toLowerCase();
-      const yv = Number(((r.yield_valor ?? r.yieldvalue ?? "0").toString().replace(",","."))||0);
-      state.assets.push({ id: uid(), class: classe, name: nome || classe, value: valor, yieldType: yt || "none", yieldValue: yv, notes:"" });
-      added++;
-    }else if (tipo === "passivo" || tipo === "liab" || tipo === "liability"){
-      state.liabilities.push({ id: uid(), class: classe, name: nome || classe, value: valor, yieldType:"none", yieldValue:0, notes:"" });
-      added++;
-    }else if (tipo === "movimento" || tipo === "tx" || tipo === "transacao" || tipo === "transação"){
-      const ttype = (r.tx_tipo || r.txtype || r.mov_tipo || r.movtype || r.tipo_mov || r.direction || "in").toString().trim().toLowerCase();
-      const tval = Number(((r.tx_valor ?? r.txvalue ?? r.valor ?? r.value ?? "0").toString().replace(",","."))||0);
-      const date = (r.data || r.date || "").toString().trim() || new Date().toISOString().slice(0,10);
-      state.transactions.push({ id: uid(), type: (ttype==="out"||ttype==="saida"||ttype==="saída") ? "out" : "in", class: classe || nome || "Movimento", value: tval, date, notes:"" });
-      added++;
-    }else{
-      // if tipo empty, try infer: if has date -> tx; else asset
-      const date = (r.data || r.date || "").toString().trim();
-      if (date){
-        const tval = Number(((r.tx_valor ?? r.txvalue ?? r.valor ?? r.value ?? "0").toString().replace(",","."))||0);
-        state.transactions.push({ id: uid(), type: "in", class: classe || nome || "Movimento", value: tval, date, notes:"" });
-        added++;
-      }else if (nome || classe){
-        state.assets.push({ id: uid(), class: classe, name: nome || classe, value: valor, yieldType:"none", yieldValue:0, notes:"" });
-        added++;
+  if (schema === "empty"){
+    alert("Ficheiro vazio.");
+    return;
+  }
+
+  if (schema === "template"){
+    for (const r0 of rows){
+      const r = {};
+      for (const k of Object.keys(r0)) r[normKey(k)] = r0[k];
+      const tipo = String(r.tipo || r.type || "").toLowerCase().trim();
+      if (tipo === "ativo" || tipo === "asset"){
+        state.assets.push({
+          id: uid(),
+          class: String(r.classe||r.class||"Outros").trim() || "Outros",
+          name: String(r.nome||r.name||"").trim(),
+          value: parseNum(r.valor||r.value),
+          yieldType: String(r.yield_tipo||r.yieldtype||"none").trim() || "none",
+          yieldValue: parseNum(r.yield_valor||r.yieldvalue),
+          notes: String(r.notas||r.notes||"").trim()
+        });
+        if (state.assets[state.assets.length-1].name) addedA++; else state.assets.pop();
+      }else if (tipo === "passivo" || tipo === "liability"){
+        state.liabilities.push({
+          id: uid(),
+          class: String(r.classe||r.class||"Outros").trim() || "Outros",
+          name: String(r.nome||r.name||"").trim(),
+          value: parseNum(r.valor||r.value),
+          notes: String(r.notas||r.notes||"").trim()
+        });
+        if (state.liabilities[state.liabilities.length-1].name) addedL++; else state.liabilities.pop();
+      }else if (tipo === "movimento" || tipo === "transaction" || tipo === "tx"){
+        const amount = parseNum(r.valor||r.value||r.amount);
+        if (!(amount>0)) continue;
+        const type = String(r.tx_tipo||r.kind||r.inout||r.mov_tipo||"").toLowerCase().includes("out") ? "out" : (String(r.tx_tipo||r.kind||"").toLowerCase().includes("sa") ? "out" : "in");
+        const date = String(r.data||r.date||"").trim() || new Date().toISOString().slice(0,10);
+        state.transactions.push({
+          id: uid(),
+          type,
+          category: String(r.nome||r.categoria||r.category||"Outros").trim() || "Outros",
+          amount,
+          date: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : new Date().toISOString().slice(0,10),
+          recurring: "none"
+        });
+        addedT++;
       }
     }
+  }else{
+    // holdings-ish import (e.g., DivTracker). We'll create assets only.
+    for (const r0 of rows){
+      const r = {};
+      for (const k of Object.keys(r0)) r[normKey(k)] = r0[k];
+
+      const symbol = String(pick(r, ["ticker","symbol","isin"])).trim();
+      const name = String(pick(r, ["name","company","asset","instrument","security"])).trim() || symbol;
+      const qty = parseNum(pick(r, ["shares","qty","quantity","units"]));
+      const mv  = parseNum(pick(r, ["market_value","current_value","currentvalue","total_value","position_value","valor","value","current_value_(eur)","marketvalue"]));
+      const price = parseNum(pick(r, ["price","last_price","current_price"]));
+      const value = mv>0 ? mv : (qty>0 && price>0 ? qty*price : parseNum(pick(r, ["total","amount"])));
+
+      if (!symbol && !name) continue;
+      if (!(value>0)) continue;
+
+      // detect class
+      let cls = "Ações/ETFs";
+      const symU = symbol.toUpperCase();
+      if (symU.endsWith(".CC") || ["BTC","ETH","SOL","ADA","XRP","DOT","BNB"].includes(symU)) cls = "Cripto";
+      if (["XAU","GOLD"].includes(symU)) cls = "Ouro";
+      if (["XAG","SILVER"].includes(symU)) cls = "Prata";
+
+      // yield if available
+      const yPct = parseNum(pick(r, ["yield","div_yield","dividend_yield","yield_%","yield_percent","yieldpercent"]));
+      const yEurYear = parseNum(pick(r, ["dividend","dividends","dividends_year","annual_dividend","income"]));
+      let yieldType = "none";
+      let yieldValue = 0;
+      if (yPct>0 && yPct<60){ yieldType="yield_pct"; yieldValue=yPct; }
+      else if (yEurYear>0){ yieldType="yield_eur_year"; yieldValue=yEurYear; }
+
+      state.assets.push({
+        id: uid(),
+        class: cls,
+        name: symbol ? symbol : name,
+        value,
+        yieldType,
+        yieldValue,
+        notes: symbol && name && name!==symbol ? name : ""
+      });
+      addedA++;
+    }
   }
-  // keep newest first for lists
-  state.assets.sort((a,b)=>(Number(b.value)||0)-(Number(a.value)||0));
-  state.liabilities.sort((a,b)=>(Number(b.value)||0)-(Number(a.value)||0));
-  state.transactions.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+
+  // de-duplicate basic: by (class+name), keep last
+  const seen = new Map();
+  for (const a of state.assets){
+    const key = (a.class||"") + "||" + (a.name||"");
+    seen.set(key, a);
+  }
+  state.assets = Array.from(seen.values());
+
   saveState();
-  alert(`Importado: ${added} linha(s).`);
-  renderAll();
+  $("importHint").textContent = `Importado com sucesso: ${addedA} ativos, ${addedL} passivos, ${addedT} movimentos.`;
+  renderDashboard();
+  renderItems();
+  renderCashflow();
 }
 
-function downloadTemplateCSV(){
-  const csv = [
-    "tipo,classe,nome,valor,yield_tipo,yield_valor,data,tx_tipo,tx_valor",
-    "ativo,ETFs,VWCE,25000,yield_pct,1.8,,," ,
-    "ativo,Cripto,BTC.CC,87800,none,0,,," ,
-    "passivo,Crédito,Crédito Habitação,180000,none,0,,," ,
-    "movimento,Salário,Salário Pedro,,none,0,2026-01-31,in,3200",
-    "movimento,Habitação,Renda/Prestação,,none,0,2026-01-31,out,900"
-  ].join("\n");
+function downloadTemplate(){
+  const rows = [
+    ["tipo","classe","nome","valor","yield_tipo","yield_valor","data","notas"],
+    ["ativo","Ações/ETFs","VWCE",25000,"yield_pct",1.8,"",""],
+    ["ativo","Imobiliário","Apartamento",280000,"rent_month",700,"",""],
+    ["passivo","Crédito habitação","CH Casa",150000,"","","",""],
+    ["movimento","","Salário Pedro",2500,"","",new Date().toISOString().slice(0,10),""]
+  ];
+  const csv = rows.map(r=>r.map(x=>String(x)).join(";")).join("\n");
   const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = "PF_template.csv";
   a.click();
-  URL.revokeObjectURL(a.href);
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
 }
 
+/* JSON backup */
 function exportJSON(){
-  const blob = new Blob([JSON.stringify(state,null,2)], {type:"application/json"});
+  const blob = new Blob([JSON.stringify(state, null, 2)], {type:"application/json"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = "PF_backup.json";
   a.click();
-  URL.revokeObjectURL(a.href);
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
 }
 
-function importJSON(){
-  const f = $("jsonInput").files?.[0];
-  if (!f) return;
-  const reader = new FileReader();
-  reader.onload = ()=>{
-    try{
-      const obj = JSON.parse(String(reader.result||""));
-      state = {
-        settings: { currency: obj?.settings?.currency || "EUR" },
-        assets: Array.isArray(obj?.assets) ? obj.assets : [],
-        liabilities: Array.isArray(obj?.liabilities) ? obj.liabilities : [],
-        transactions: Array.isArray(obj?.transactions) ? obj.transactions : [],
-        history: Array.isArray(obj?.history) ? obj.history : []
-      };
-      saveState();
-      alert("Importação JSON concluída.");
-      renderAll();
-    }catch{
-      alert("JSON inválido.");
-    }
+async function importJSON(file){
+  const text = await file.text();
+  const parsed = JSON.parse(text);
+  state = {
+    settings: parsed.settings || {currency:"EUR"},
+    assets: Array.isArray(parsed.assets) ? parsed.assets : [],
+    liabilities: Array.isArray(parsed.liabilities) ? parsed.liabilities : [],
+    transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
+    history: Array.isArray(parsed.history) ? parsed.history : []
   };
-  reader.readAsText(f);
+  saveState();
+  renderDashboard();
+  renderItems();
+  renderCashflow();
+  alert("Backup importado.");
 }
 
-function hardReset(){
-  if (!confirm("Reset total? Apaga tudo neste dispositivo.")) return;
-  localStorage.removeItem(STORAGE_KEY);
+/* reset */
+function resetAll(){
+  if (!confirm("Apagar tudo deste dispositivo?")) return;
+  try{ localStorage.removeItem(STORAGE_KEY); }catch{}
   state = structuredClone(DEFAULT_STATE);
   saveState();
-  renderAll();
-  alert("Reset concluído.");
-}
-
-function renderAll(){
-  refreshClassSelects();
-  $("baseCurrency").value = state.settings.currency || "EUR";
-  updateItemsSeg();
-  if (currentView==="dashboard") renderDashboard();
-  if (currentView==="assets") renderItems();
-  if (currentView==="cashflow") renderCashflow();
-  // update charts regardless (safe)
   renderDashboard();
+  renderItems();
+  renderCashflow();
+  alert("Dados apagados.");
 }
 
-function init(){
-  refreshClassSelects();
-  $("baseCurrency").value = state.settings.currency || "EUR";
-  updateItemsSeg();
-  wireGlobal();
-  renderAll();
-  setView("dashboard");
-}
+/* WIRING */
+function wire(){
+  wireModalClosers();
 
-document.addEventListener("DOMContentLoaded", init);
+  // nav
+  $("navDashboard").addEventListener("click", ()=>setView("dashboard"));
+  $("navAssets").addEventListener("click", ()=>setView("assets"));
+  $("navImport").addEventListener("click", ()=>setView("import"));
+  $("navCashflow").addEventListener("click", ()=>setView("cashflow"));
+  $("navSettings").addEventListener("click", ()=>setView("settings"));
 
-function renderTxRow(t){
-  const el = document.createElement("div");
-  el.className = "item";
-  const sign = t.type === "out" ? "−" : "+";
-  const meta = `${t.category || "Movimento"} · ${formatDateShort(t.date)}`;
-  el.innerHTML = `
-    <div class="item__left">
-      <div class="item__name">${escapeHTML(sign + " " + (t.category || "Movimento"))}</div>
-      <div class="item__meta">${escapeHTML(meta)}</div>
-    </div>
-    <div class="item__val">${formatMoney(t.value || 0)}</div>
-  `;
-  el.addEventListener("click", ()=> openTxModal(t.id));
-  return el;
-}
+  // fab
+  $("btnFab").addEventListener("click", ()=>{
+    // open item modal based on current view / mode
+    if (currentView === "cashflow") openTxModal();
+    else if (currentView === "assets") openItemModal(showingLiabs ? "liab" : "asset");
+    else openItemModal("asset");
+  });
 
-function renderTxList(){
-  const card = document.getElementById("txCard");
-  const list = document.getElementById("txList");
-  const btn = document.getElementById("btnTxToggle");
-  if (!card || !list) return;
+  // dashboard buttons
+  $("btnSnapshot").addEventListener("click", snapshotMonth);
+  $("btnClearHistory").addEventListener("click", ()=>{
+    if (!confirm("Limpar histórico de snapshots?")) return;
+    state.history = [];
+    saveState();
+    renderDashboard();
+  });
+  $("btnTrendClear").addEventListener("click", ()=>{
+    if (!confirm("Limpar histórico de snapshots?")) return;
+    state.history = [];
+    saveState();
+    renderDashboard();
+  });
 
-  const tx = (state.transactions || []).slice().sort((a,b)=> (b.date||"").localeCompare(a.date||""));
-  if (tx.length === 0){
-    card.style.display = "none";
-    return;
-  }
-  card.style.display = "";
-  const show = txExpanded ? tx : tx.slice(0, TX_PREVIEW_COUNT);
+  $("btnSummaryAll").addEventListener("click", ()=>setView("assets"));
+  $("btnSummaryToggle").addEventListener("click", ()=>{
+    summaryExpanded = !summaryExpanded;
+    renderSummary();
+  });
 
-  list.innerHTML = "";
-  show.forEach(t => list.appendChild(renderTxRow(t)));
+  // seg
+  $("segAssets").addEventListener("click", ()=>setModeLiabs(false));
+  $("segLiabs").addEventListener("click", ()=>setModeLiabs(true));
 
-  if (btn){
-    if (tx.length > TX_PREVIEW_COUNT){
-      btn.style.display = "";
-      btn.textContent = txExpanded ? "Ver menos" : "Ver todos";
-    } else {
-      btn.style.display = "none";
+  // assets filters
+  $("qSearch").addEventListener("input", renderItems);
+  $("qClass").addEventListener("change", renderItems);
+  $("qSort").addEventListener("change", renderItems);
+  $("btnAddItem").addEventListener("click", ()=>openItemModal(showingLiabs ? "liab" : "asset"));
+
+  // modal item save
+  $("btnSaveItem").addEventListener("click", saveItemFromModal);
+
+  // cashflow
+  $("btnAddTx").addEventListener("click", openTxModal);
+  $("btnSaveTx").addEventListener("click", saveTxFromModal);
+  $("cfMonth").addEventListener("change", renderCashflow);
+  $("cfYear").addEventListener("change", renderCashflow);
+  $("btnTxToggle").addEventListener("click", ()=>{
+    txExpanded = !txExpanded;
+    renderTxList();
+  });
+
+  // import
+  $("fileInput").addEventListener("change", ()=>{
+    $("btnImport").disabled = !$("fileInput").files || !$("fileInput").files.length;
+  });
+  $("btnImport").addEventListener("click", async ()=>{
+    const f = $("fileInput").files && $("fileInput").files[0];
+    if (!f) return;
+    try{
+      const rows = await fileToRows(f);
+      importRows(rows);
+      alert(`Importado: ${rows.length} linha(s).`);
+    }catch(e){
+      alert("Falha no import: " + (e && e.message ? e.message : String(e)));
     }
-  }
+  });
+  $("btnTemplate").addEventListener("click", downloadTemplate);
+
+  // json backup
+  $("btnExportJSON").addEventListener("click", exportJSON);
+  $("jsonInput").addEventListener("change", ()=>{
+    $("btnImportJSON").disabled = !$("jsonInput").files || !$("jsonInput").files.length;
+  });
+  $("btnImportJSON").addEventListener("click", async ()=>{
+    const f = $("jsonInput").files && $("jsonInput").files[0];
+    if (!f) return;
+    try{ await importJSON(f); }catch(e){ alert("Erro a importar JSON."); }
+  });
+
+  $("btnReset").addEventListener("click", resetAll);
+
+  // settings
+  $("baseCurrency").value = state.settings.currency || "EUR";
+  $("baseCurrency").addEventListener("change", ()=>{
+    state.settings.currency = $("baseCurrency").value;
+    saveState();
+    renderDashboard();
+    renderItems();
+    renderCashflow();
+  });
+
+  // init
+  setModeLiabs(false);
+  setView("dashboard");
+  renderCashflow();
 }
+
+document.addEventListener("DOMContentLoaded", wire);
