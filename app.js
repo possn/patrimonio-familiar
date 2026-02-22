@@ -2,6 +2,8 @@
 // Libs: Chart.js (alloc + trend) | SheetJS (XLSX/CSV import)
 
 const STORAGE_KEY = "PF_STATE_V1";
+const STORAGE_KEY_ENC = "PF_STATE_V1_ENC";
+const STORAGE_META = "PF_SEC_META_V1";
 
 function showToast(msg, ms=2200){
   const t = document.getElementById('toast');
@@ -26,6 +28,83 @@ function closeSheet(){
   document.body.style.overflow = '';
 }
 
+
+// ===== Local encryption (AES-GCM + PBKDF2) =====
+function b64u(bytes){
+  const bin = String.fromCharCode(...new Uint8Array(bytes));
+  return btoa(bin).replaceAll("+","-").replaceAll("/","_").replaceAll("=","");
+}
+function ub64u(str){
+  str = str.replaceAll("-","+").replaceAll("_","/");
+  while (str.length % 4) str += "=";
+  const bin = atob(str);
+  const bytes = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+async function deriveKey(pass, salt){
+  const enc = new TextEncoder();
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(pass),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 250000, hash: "SHA-256" },
+    baseKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt","decrypt"]
+  );
+}
+async function encryptJson(pass, obj){
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(pass, salt);
+  const enc = new TextEncoder();
+  const pt = enc.encode(JSON.stringify(obj));
+  const ct = await crypto.subtle.encrypt({name:"AES-GCM", iv}, key, pt);
+  return {
+    v: 1,
+    alg: "AES-GCM",
+    kdf: "PBKDF2-SHA256",
+    it: 250000,
+    salt: b64u(salt),
+    iv: b64u(iv),
+    ct: b64u(ct)
+  };
+}
+async function decryptJson(pass, payload){
+  const salt = ub64u(payload.salt);
+  const iv = ub64u(payload.iv);
+  const ct = ub64u(payload.ct);
+  const key = await deriveKey(pass, salt);
+  const pt = await crypto.subtle.decrypt({name:"AES-GCM", iv}, key, ct);
+  const dec = new TextDecoder();
+  return JSON.parse(dec.decode(new Uint8Array(pt)));
+}
+function secMeta(){
+  try{ return JSON.parse(localStorage.getItem(STORAGE_META) || "{}"); }catch{ return {}; }
+}
+function setSecMeta(m){
+  localStorage.setItem(STORAGE_META, JSON.stringify(m || {}));
+}
+function isEncryptedEnabled(){
+  const m = secMeta();
+  return !!m.enabled;
+}
+function lockApp(){
+  const m = secMeta();
+  m.locked = true;
+  setSecMeta(m);
+}
+function unlockApp(){
+  const m = secMeta();
+  m.locked = false;
+  setSecMeta(m);
+}
 function tryVibrate(ms=12){
   try{ if (navigator.vibrate) navigator.vibrate(ms); } catch {}
 }
@@ -69,6 +148,57 @@ function uid(){
 
 function deepClone(x){ return JSON.parse(JSON.stringify(x)); }
 
+
+async function bootState(){
+  // If encryption enabled, state is stored encrypted in localStorage under STORAGE_KEY_ENC.
+  if (!isEncryptedEnabled()){
+    // state loaded via bootState()
+    return;
+  }
+  const m = secMeta();
+  const payloadStr = localStorage.getItem(STORAGE_KEY_ENC);
+  if (!payloadStr){
+    // enabled but missing payload: fall back to empty
+    state = defaultState();
+    return;
+  }
+  const payload = JSON.parse(payloadStr);
+  // Ask for password if locked OR no cached session.
+  let pass = sessionStorage.getItem("PF_SEC_PASS") || "";
+  if (m.locked || !pass){
+    pass = prompt("Password para desbloquear Património Familiar:");
+    if (!pass){ throw new Error("locked"); }
+  }
+  try{
+    const obj = await decryptJson(pass, payload);
+    state = obj;
+    // normalize
+    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [] };
+    state.settings.txTemplates = Array.isArray(state.settings.txTemplates) ? state.settings.txTemplates : [];
+    state.assets = Array.isArray(state.assets) ? state.assets : [];
+    state.liabilities = Array.isArray(state.liabilities) ? state.liabilities : [];
+    state.history = Array.isArray(state.history) ? state.history : [];
+    state.transactions = Array.isArray(state.transactions) ? state.transactions : [];
+    sessionStorage.setItem("PF_SEC_PASS", pass);
+    unlockApp();
+  }catch(e){
+    sessionStorage.removeItem("PF_SEC_PASS");
+    lockApp();
+    alert("Password inválida. A app mantém-se bloqueada.");
+    throw e;
+  }
+}
+
+function defaultState(){
+  return {
+    assets: [],
+    liabilities: [],
+    history: [],
+    transactions: [],
+    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [] }
+  };
+}
+
 function loadState(){
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw){
@@ -78,7 +208,8 @@ function loadState(){
       s.assets = Array.isArray(s.assets) ? s.assets : [];
       s.liabilities = Array.isArray(s.liabilities) ? s.liabilities : [];
       s.history = Array.isArray(s.history) ? s.history : [];
-      s.settings = s.settings || { baseCurrency:"EUR", taxRate: 0 };
+      s.settings = s.settings || { baseCurrency:"EUR", taxRate: 0, txTemplates: [] };
+      s.settings.txTemplates = Array.isArray(s.settings.txTemplates) ? s.settings.txTemplates : [];
       s.transactions = Array.isArray(s.transactions) ? s.transactions : [];
       return s;
     }catch{}
@@ -95,13 +226,31 @@ function loadState(){
     ],
     history: [],
     transactions: [],
-    settings: { baseCurrency: "EUR", taxRate: 0 },
+    settings: { baseCurrency: "EUR", taxRate: 0, txTemplates: [] },
   };
 }
 
-function saveState(){
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+async function saveStateSecure(){
+  if (!isEncryptedEnabled()){
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    return;
+  }
+  const pass = sessionStorage.getItem("PF_SEC_PASS") || "";
+  if (!pass){
+    // locked - do not write
+    return;
+  }
+  const payload = await encryptJson(pass, state);
+  localStorage.setItem(STORAGE_KEY_ENC, JSON.stringify(payload));
+  // remove plaintext
+  localStorage.removeItem(STORAGE_KEY);
 }
+
+function saveState(){
+  // keep API but async-save in background
+  saveStateSecure();
+}
+
 
 function getClassColor(cls){
   const found = DEFAULT_CLASSES.find(c => c.key === cls);
@@ -169,18 +318,31 @@ function computePassiveAnnualGross(){
   return sum;
 }
 
-function allocationByClass(){
+function allocationByClassFull(){
   const map = new Map();
   for (const a of state.assets){
     const cls = a.class || "Outros";
     const v = Number(a.value) || 0;
+    if (v <= 0) continue;
     map.set(cls, (map.get(cls) || 0) + v);
   }
-  // sort desc
-  return Array.from(map.entries()).sort((x,y) => y[1]-x[1]).map(([cls,val]) => ({
+  return Array.from(map.entries()).sort((x,y)=>y[1]-x[1]).map(([cls,val])=>({
     cls, val, color: getClassColor(cls)
   }));
 }
+
+function allocationByClass(limit=6){
+  const arr = allocationByClassFull();
+  if (arr.length <= limit) return arr;
+  const head = arr.slice(0, limit);
+  const tail = arr.slice(limit);
+  const other = tail.reduce((a,x)=>a+x.val,0);
+  if (other > 0){
+    head.push({ cls:"Outros", val: other, color: getClassColor("Outros") });
+  }
+  return head;
+}
+
 
 function topAssets(n=6){
   return deepClone(state.assets)
@@ -250,14 +412,15 @@ function renderTopAssets(){
 }
 
 function renderAllocationChart(){
-  const alloc = allocationByClass();
-  const total = alloc.reduce((a,x)=>a+x.val,0) || 1;
+  const compact = allocationByClass(6);
+  const full = allocationByClassFull();
+  const totalFull = full.reduce((a,x)=>a+x.val,0) || 1;
+  const total = compact.reduce((a,x)=>a+x.val,0) || 1;
 
-  // vertical bar segments
   const bar = el("distBar");
   bar.innerHTML = "";
-  for (const seg of alloc){
-    const h = Math.max(1, Math.round((seg.val/total)*1000)/10); // one decimal
+  for (const seg of compact){
+    const h = Math.max(2, Math.round((seg.val/total)*1000)/10);
     const s = document.createElement("div");
     s.className = "dist__seg";
     s.style.height = `${h}%`;
@@ -265,11 +428,11 @@ function renderAllocationChart(){
     bar.appendChild(s);
   }
 
-  // legend pills
   const legend = el("allocLegend");
   legend.innerHTML = "";
-  for (const seg of alloc){
-    const pct = (seg.val/total)*100;
+  for (const seg of compact){
+    const pct = (seg.val/totalFull)*100;
+    if (seg.cls !== "Outros" && pct < 1) continue;
     const item = document.createElement("div");
     item.className = "legend__item";
     item.innerHTML = `<span class="legend__dot" style="background:${seg.color}"></span>
@@ -278,11 +441,10 @@ function renderAllocationChart(){
     legend.appendChild(item);
   }
 
-  // donut chart
   const ctx = el("chartAlloc");
-  const labels = alloc.map(x => x.cls);
-  const data = alloc.map(x => x.val);
-  const colors = alloc.map(x => x.color);
+  const labels = compact.map(x => x.cls);
+  const data = compact.map(x => x.val);
+  const colors = compact.map(x => x.color);
 
   if (chartAlloc) chartAlloc.destroy();
   chartAlloc = new Chart(ctx, {
@@ -290,16 +452,15 @@ function renderAllocationChart(){
     data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 0 }]},
     options: {
       responsive: true,
+      cutout: "72%",
       plugins: {
         legend: { display: false },
-        tooltip: {
-          callbacks: { label: (c) => ` ${c.label}: ${fmtMoney(c.raw)} ` }
-        }
-      },
-      cutout: "68%"
+        tooltip: { callbacks: { label: (c) => ` ${c.label}: ${fmtMoney(c.raw)} ` } }
+      }
     }
   });
 }
+
 
 function renderNetWorthChart(){
   // If no history, Chart.js will show empty axes; we keep it but also guide user.
@@ -317,8 +478,16 @@ function renderNetWorthChart(){
     noteEl.style.marginTop = "10px";
     ctx.parentElement.appendChild(noteEl);
   }
-  noteEl.textContent = points.length === 0 ? "Sem histórico. Clica em ‘Registar mês’ para criar um ponto." : "";
+  noteEl.innerHTML = points.length === 0 ? `Sem histórico. <button class="btn btn--primary btn--mini" id="btnMakeFirstSnapshot">Criar ponto hoje</button> <span style="opacity:.8">ou</span> clica em ‘Registar mês’.` : "";
   noteEl.style.display = points.length === 0 ? "block" : "none";
+  if (points.length === 0){
+    if (chartNW){ try{ chartNW.destroy(); }catch{} chartNW=null; }
+    setTimeout(()=>{
+      const b = document.getElementById("btnMakeFirstSnapshot");
+      if (b) b.onclick = ()=> document.getElementById("btnAddSnapshot")?.click();
+    }, 0);
+    return;
+  }
 
   const data = points.map(p => Number(p.netWorth)||0);
 
@@ -397,7 +566,54 @@ function renderPassiveChart(){
 }
 
 
+function toggleFav(id){
+  const a = (state.assets||[]).find(x=>x.id===id);
+  if (!a) return;
+  a.fav = !a.fav;
+  saveState();
+  showToast(a.fav ? "Adicionado aos favoritos." : "Removido dos favoritos.");
+  renderAssets();
+}
+
+function renderAssetsTop10(){
+  const box = document.getElementById("assetsTop10");
+  if (!box) return;
+  const onlyFav = document.getElementById("onlyFav")?.checked;
+  let items = (state.assets||[]).slice().filter(a=> (Number(a.value)||0) > 0);
+  if (onlyFav) items = items.filter(a=>!!a.fav);
+  items.sort((a,b)=> (Number(b.value)||0)-(Number(a.value)||0));
+  const top = items.slice(0,10);
+
+  box.innerHTML = "";
+  if (top.length===0){
+    box.innerHTML = `<div class="note">Sem itens. Marca favoritos ⭐ ou adiciona valores.</div>`;
+    return;
+  }
+  for (const x of top){
+    const div = document.createElement("div");
+    div.className = "item";
+    div.innerHTML = `
+      <div class="item__left">
+        <div class="item__name">${escapeHtml(x.name||"—")}</div>
+        <div class="item__meta">${escapeHtml(x.class||"—")}</div>
+      </div>
+      <div class="item__right" style="display:flex; align-items:center; gap:10px">
+        <div style="text-align:right">
+          <div class="item__value">${fmtMoney(Number(x.value)||0)}</div>
+          <div class="badge">${pct(Number(x.value)||0, totals().assetsTotal)}</div>
+        </div>
+        <button class="star ${x.fav ? "star--on":""}" aria-label="Favorito" title="Favorito">★</button>
+      </div>
+    `;
+    div.querySelector(".star").addEventListener("click", (e)=>{ e.stopPropagation(); toggleFav(x.id); });
+    div.addEventListener("click", ()=> openEdit("asset", x.id));
+    box.appendChild(div);
+  }
+}
+
 function renderAssets(){
+  renderAssetsTop10();
+  document.getElementById('onlyFav')?.addEventListener('change', renderAssetsTop10);
   // fill class filter
   const classes = Array.from(new Set(state.assets.map(a => a.class).filter(Boolean))).sort();
   const sel = el("fClass");
@@ -422,6 +638,7 @@ function drawLists(){
   const listA = el("assetsList");
   listA.innerHTML = "";
   const sortMode = (document.getElementById('sortAssets')?.value) || state.settings.sortAssets || 'value_desc';
+  const onlyFav = document.getElementById('onlyFav')?.checked;
   const items = state.assets.filter(a => {
     const hit = (a.name||"").toLowerCase().includes(q) || (a.class||"").toLowerCase().includes(q);
     const ok = !f || a.class === f;
@@ -491,6 +708,20 @@ function renderRow(item, kind){
   `;
   div.addEventListener("click", () => openEdit(item.id, kind));
   return div;
+}
+
+function seedTemplates(){
+  if (!state.settings) state.settings = { baseCurrency:"EUR", taxRate:0, txTemplates: [] };
+  if (!Array.isArray(state.settings.txTemplates)) state.settings.txTemplates = [];
+  if (state.settings.txTemplates.length) return;
+  state.settings.txTemplates = [
+    { id:"tpl_sal_pedro", kind:"income", class:"Salário", name:"Salário Pedro", amount:null },
+    { id:"tpl_sal_maria", kind:"income", class:"Salário", name:"Salário (esposa)", amount:null },
+    { id:"tpl_renda", kind:"income", class:"Rendas", name:"Renda (imóvel)", amount:null },
+    { id:"tpl_hab", kind:"expense", class:"Habitação", name:"Habitação (prestação/renda)", amount:null },
+    { id:"tpl_escola", kind:"expense", class:"Educação", name:"Escola", amount:null },
+    { id:"tpl_alim", kind:"expense", class:"Alimentação", name:"Supermercado", amount:null }
+  ];
 }
 
 function txClasses(){
@@ -675,6 +906,14 @@ function setupButtons(){
     saveState();
     renderDashboard();
   });
+
+  // security
+  document.getElementById('secEnable')?.addEventListener('click', enableEncryption);
+  document.getElementById('secDisable')?.addEventListener('click', disableEncryption);
+  document.getElementById('secLockNow')?.addEventListener('click', ()=>{ lockApp(); sessionStorage.removeItem('PF_SEC_PASS'); showToast('Bloqueado.'); updateSecurityUI(); });
+  document.getElementById('secExportEnc')?.addEventListener('click', exportEncryptedBackup);
+  document.getElementById('secImportEnc')?.addEventListener('click', ()=> document.getElementById('secImportFile')?.click());
+  document.getElementById('secImportFile')?.addEventListener('change', (e)=>{ const f=e.target.files?.[0]; if(f) importEncryptedBackupFile(f); e.target.value=''; });
 
   // cashflow
   document.getElementById('btnAddTx')?.addEventListener('click', openTxCreate);
@@ -1055,6 +1294,31 @@ function setupSW(){
   }
 }
 
+function renderTemplates(){
+  const box = document.getElementById("txTemplates");
+  if (!box) return;
+  const tpls = (state.settings?.txTemplates) || [];
+  box.innerHTML = "";
+  for (const t of tpls){
+    const b = document.createElement("button");
+    b.className = "tpl";
+    const sub = t.kind === "income" ? "Entrada" : "Saída";
+    b.innerHTML = `<span>${escapeHtml(t.name)}</span> <span class="tpl__sub">${escapeHtml(sub)}</span>`;
+    b.addEventListener("click", ()=> applyTemplate(t));
+    box.appendChild(b);
+  }
+}
+
+function applyTemplate(t){
+  openTxModal({ title: "Adicionar movimento", item: null });
+  document.getElementById("txKind").value = t.kind;
+  document.getElementById("txClass").value = t.class;
+  document.getElementById("txName").value = t.name;
+  if (t.amount != null) document.getElementById("txAmount").value = t.amount;
+  // default date = today; user can change month/day
+  tryVibrate(8);
+}
+
 function renderCashflow(){
   // fill month filter options from existing data
   const months = Array.from(new Set((state.transactions||[]).map(t=>monthKey(t.date)).filter(Boolean))).sort().reverse();
@@ -1367,9 +1631,144 @@ function exportTxCsv(){
   showToast("CSV exportado.");
 }
 
+function openAllocModal(){
+  const modal = document.getElementById("allocModal");
+  if (!modal) return;
+  const list = document.getElementById("allocDetailList");
+  const full = allocationByClassFull();
+  const total = full.reduce((a,x)=>a+x.val,0) || 1;
+  list.innerHTML = "";
+  if (!full.length){
+    list.innerHTML = `<div class="note">Sem ativos com valor.</div>`;
+  } else {
+    for (const seg of full){
+      const pct = (seg.val/total)*100;
+      const div = document.createElement("div");
+      div.className = "item";
+      div.innerHTML = `
+        <div class="item__left">
+          <div class="item__name">${escapeHtml(seg.cls)}</div>
+          <div class="item__meta">${pct.toFixed(1)}%</div>
+        </div>
+        <div class="item__right">
+          <div class="item__value">${fmtMoney(seg.val)}</div>
+          <div class="badge"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${seg.color}"></span>${escapeHtml(seg.cls)}</div>
+        </div>
+      `;
+      list.appendChild(div);
+    }
+  }
+  modal.setAttribute("aria-hidden","false");
+  document.body.style.overflow="hidden";
+}
+function closeAllocModal(){
+  const modal = document.getElementById("allocModal");
+  if (!modal) return;
+  modal.setAttribute("aria-hidden","true");
+  document.body.style.overflow="";
+}
+
+
+async function exportEncryptedBackup(){
+  let pass = sessionStorage.getItem("PF_SEC_PASS") || "";
+  if (!pass){
+    pass = prompt("Password para encriptar o backup:");
+    if (!pass) return;
+  }
+  const payload = await encryptJson(pass, state);
+  const blob = new Blob([JSON.stringify(payload)], {type:"application/octet-stream"});
+  downloadBlob(blob, "patrimonio_familiar_backup.pfenc");
+  showToast("Backup encriptado exportado.");
+}
+
+async function importEncryptedBackupFile(file){
+  const txt = await file.text();
+  let payload;
+  try{ payload = JSON.parse(txt); }catch{ alert("Ficheiro inválido."); return; }
+  const pass = prompt("Password para desencriptar o backup:");
+  if (!pass) return;
+  try{
+    const obj = await decryptJson(pass, payload);
+    state = obj;
+    // normalize
+    state.settings = state.settings || { baseCurrency:"EUR", taxRate:0, txTemplates: [] };
+    state.settings.txTemplates = Array.isArray(state.settings.txTemplates) ? state.settings.txTemplates : [];
+    state.assets = Array.isArray(state.assets) ? state.assets : [];
+    state.liabilities = Array.isArray(state.liabilities) ? state.liabilities : [];
+    state.history = Array.isArray(state.history) ? state.history : [];
+    state.transactions = Array.isArray(state.transactions) ? state.transactions : [];
+    sessionStorage.setItem("PF_SEC_PASS", pass);
+    unlockApp();
+    // store encrypted if enabled
+    if (isEncryptedEnabled()){
+      await saveStateSecure();
+    } else {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+    renderAll();
+    showToast("Backup encriptado importado.");
+  }catch(e){
+    alert("Password incorreta ou ficheiro corrompido.");
+  }
+}
+
+async function enableEncryption(){
+  const pass = (document.getElementById("secPass").value || "").trim();
+  if (pass.length < 8){
+    alert("Password demasiado curta. Usa 12+ caracteres.");
+    return;
+  }
+  // Encrypt current plaintext state and store
+  sessionStorage.setItem("PF_SEC_PASS", pass);
+  const payload = await encryptJson(pass, state);
+  localStorage.setItem(STORAGE_KEY_ENC, JSON.stringify(payload));
+  localStorage.removeItem(STORAGE_KEY);
+  setSecMeta({ enabled:true, locked:false, ts: Date.now() });
+  showToast("Encriptação ativada.");
+  updateSecurityUI();
+}
+
+async function disableEncryption(){
+  if (!confirm("Desativar encriptação? Os dados voltarão a ficar em claro no dispositivo.")) return;
+  const pass = sessionStorage.getItem("PF_SEC_PASS") || prompt("Password atual:");
+  if (!pass) return;
+  const payloadStr = localStorage.getItem(STORAGE_KEY_ENC);
+  if (!payloadStr){ alert("Sem dados encriptados."); return; }
+  try{
+    const obj = await decryptJson(pass, JSON.parse(payloadStr));
+    state = obj;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.removeItem(STORAGE_KEY_ENC);
+    setSecMeta({ enabled:false, locked:false, ts: Date.now() });
+    sessionStorage.removeItem("PF_SEC_PASS");
+    showToast("Encriptação desativada.");
+    updateSecurityUI();
+    renderAll();
+  }catch(e){
+    alert("Password incorreta.");
+  }
+}
+
+function updateSecurityUI(){
+  const elStatus = document.getElementById("secStatus");
+  if (!elStatus) return;
+  const enabled = isEncryptedEnabled();
+  const m = secMeta();
+  const locked = !!m.locked;
+  elStatus.innerHTML = `Estado: <b>${enabled ? (locked ? "Encriptado (bloqueado)" : "Encriptado (ativo)") : "Sem encriptação"}</b>.`;
+}
+
 // ===== Init =====
+async function renderAll(){
+  renderDashboard();
+  renderAssets();
+  renderImport();
+  renderCashflow();
+  renderSettings();
+}
+
 function init(){
-  document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape'){ closeModal(); closeTxModal(); closeSheet(); } });
+  document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape'){ closeModal(); closeTxModal(); closeAllocModal(); closeSheet(); } });
 
   setupNav();
   setupButtons();

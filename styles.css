@@ -25,10 +25,7 @@ html, body{ height:100%; }
 body{
   margin:0;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
-  background: radial-gradient(1200px 500px at 50% -10%, rgba(167,139,250,.20), transparent 60%),
-              radial-gradient(900px 450px at 10% 0%, rgba(34,211,238,.14), transparent 55%),
-              radial-gradient(900px 450px at 90% 10%, rgba(251,113,133,.12), transparent 55%),
-              var(--bg);
+  background: var(--bg);
   color: var(--text);
   overflow-x:hidden;
   overscroll-behavior-x: none;
@@ -568,3 +565,61 @@ code{ background: rgba(255,255,255,.06); padding:.12rem .35rem; border-radius:10
 .coverage--mini{
   padding: 10px 12px;
 }
+
+.btn--mini{ padding:8px 10px; border-radius:14px; font-size:12.5px; }
+
+
+/* Toggle */
+.toggle{ display:flex; align-items:center; gap:10px; user-select:none; }
+.toggle input{ display:none; }
+.toggle__ui{
+  width: 44px; height: 26px; border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(255,255,255,.06);
+  position: relative;
+}
+.toggle__ui::after{
+  content:"";
+  position:absolute; top:3px; left:3px;
+  width: 20px; height: 20px; border-radius: 999px;
+  background: rgba(238,242,255,.9);
+  transition: transform .18s ease;
+}
+.toggle input:checked + .toggle__ui{ background: rgba(34,211,238,.20); border-color: rgba(34,211,238,.35); }
+.toggle input:checked + .toggle__ui::after{ transform: translateX(18px); }
+.toggle__txt{ color: var(--muted); font-weight: 750; font-size: 12.5px; }
+
+/* Templates */
+.templates{
+  display:flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+.tpl{
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.03);
+  color: rgba(238,242,255,.92);
+  border-radius: 999px;
+  padding: 9px 12px;
+  font-weight: 800;
+  cursor:pointer;
+  display:inline-flex;
+  align-items:center;
+  gap: 8px;
+}
+.tpl__sub{ color: var(--muted); font-weight: 700; font-size: 12px; }
+.tpl:active{ transform: translateY(1px); }
+
+/* Favorite star */
+.star{
+  width: 30px; height: 30px;
+  border-radius: 12px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.03);
+  cursor:pointer;
+}
+.star--on{ background: rgba(167,139,250,.18); border-color: rgba(167,139,250,.35); }
