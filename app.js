@@ -37,6 +37,40 @@ function fmtEUR(n){
   }
 }
 
+// Generic number formatter (for quantities, prices, etc.)
+function fmt(n, maxFrac = 6){
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "0";
+  return new Intl.NumberFormat("pt-PT", {
+    maximumFractionDigits: maxFrac,
+    minimumFractionDigits: 0
+  }).format(v);
+}
+
+// Money formatter for arbitrary currencies (fallbacks to EUR)
+function fmtMoney(n, currency){
+  const v = Number(n);
+  const cur = (currency || (state.settings && state.settings.currency) || "EUR");
+  try{
+    return new Intl.NumberFormat("pt-PT", {
+      style: "currency",
+      currency: cur,
+      maximumFractionDigits: 2
+    }).format(Number.isFinite(v) ? v : 0);
+  }catch{
+    // Some brokers export non-ISO codes; fallback.
+    try{
+      return new Intl.NumberFormat("pt-PT", {
+        style: "currency",
+        currency: "EUR",
+        maximumFractionDigits: 2
+      }).format(Number.isFinite(v) ? v : 0);
+    }catch{
+      return (Number.isFinite(v) ? v.toFixed(2) : "0.00") + " " + cur;
+    }
+  }
+}
+
 function parseNum(x){
   if (x === null || x === undefined) return 0;
   if (typeof x === "number") return Number.isFinite(x) ? x : 0;
