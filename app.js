@@ -39,25 +39,47 @@ function fmtEUR(n){
 
 function parseNum(x){
   if (x === null || x === undefined) return 0;
-  if (typeof x === "number") return isFinite(x) ? x : 0;
+  if (typeof x === "number") return Number.isFinite(x) ? x : 0;
+
   let s = String(x).trim();
   if (!s) return 0;
-  // accept "12 345,67" or "12,345.67"
-  s = s.replace(/\s+/g,"");
-  // if has both separators, assume last is decimal
-  const hasComma = s.includes(",");
-  const hasDot = s.includes(".");
+
+  // Normalise whitespace and strip common noise (€, $, USD, etc.).
+  s = s.replace(/\u00A0/g, " ").replace(/\s+/g, " ");
+
+  // Parentheses indicate negative values: (1 234,56)
+  let neg = false;
+  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+
+  // Keep only digits, separators, minus and spaces.
+  let t = s.replace(/[^0-9,\.\- ]+/g, "");
+  t = t.replace(/\s/g, "");
+
+  const hasComma = t.includes(",");
+  const hasDot = t.includes(".");
+
   if (hasComma && hasDot){
-    if (s.lastIndexOf(",") > s.lastIndexOf(".")){
-      s = s.replace(/\./g,"").replace(",",".");
+    // Last separator decides decimal.
+    if (t.lastIndexOf(",") > t.lastIndexOf(".")){
+      // 1.234,56
+      t = t.replace(/\./g, "").replace(/,/g, ".");
     }else{
-      s = s.replace(/,/g,"");
+      // 1,234.56
+      t = t.replace(/,/g, "");
     }
   }else if (hasComma && !hasDot){
-    s = s.replace(",",".");
+    // Comma only: decimal if ends with ,d or ,dd; otherwise thousands.
+    if (/,[0-9]{1,2}$/.test(t)) t = t.replace(/,/g, ".");
+    else t = t.replace(/,/g, "");
+  }else if (!hasComma && hasDot){
+    // Dot only: if multiple dots and doesn't look like a decimal, strip dots.
+    const parts = t.split(".");
+    if (parts.length > 2 && !/\.[0-9]{1,2}$/.test(t)) t = t.replace(/\./g, "");
   }
-  const n = Number(s);
-  return isFinite(n) ? n : 0;
+
+  const n = Number(t);
+  const out = Number.isFinite(n) ? n : 0;
+  return neg ? -out : out;
 }
 
 function loadState(){
@@ -876,7 +898,9 @@ function wire(){
     try{
       const rows = await fileToRows(f);
       importRows(rows);
-      alert(`Importado: ${rows.length} linha(s).`);
+      const hint = $("importHint").textContent || "Importado.";
+      const n = Math.max(0, (rows.length||0) - 1);
+      alert(`${hint}  (linhas: ${n})`);
     }catch(e){
       alert("Falha no import: " + (e && e.message ? e.message : String(e)));
     }
