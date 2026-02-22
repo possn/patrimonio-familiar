@@ -91,10 +91,7 @@ function secMeta(){
 function setSecMeta(m){
   localStorage.setItem(STORAGE_META, JSON.stringify(m || {}));
 }
-function isEncryptedEnabled(){
-  const m = secMeta();
-  return !!m.enabled;
-}
+function isEncryptedEnabled(){ return false; }
 function lockApp(){
   const m = secMeta();
   m.locked = true;
@@ -217,7 +214,7 @@ function loadState(){
   // seed with minimal examples (edit/delete as you wish)
   return {
     assets: [
-      { id: uid(), class: "Liquidez", name: "Conta à ordem", value: 12000, incomeType: "none", incomeValue: 0, notes:"" },
+      { id: uid(), class: inferAssetClass(row), name: "Conta à ordem", value: 12000, incomeType: "none", incomeValue: 0, notes:"" },
       { id: uid(), class: "ETFs", name: "VWCE", value: 25000, incomeType: "div_yield", incomeValue: 1.8, notes:"yield %/ano (aprox.)" },
       { id: uid(), class: "Imobiliário", name: "Casa (valor estimado)", value: 280000, incomeType: "rent", incomeValue: 0, notes:"se for arrendada, inserir renda mensal" },
     ],
@@ -384,6 +381,120 @@ function renderDashboard(){
   renderTopAssets();
 }
 
+
+function renderAllocationChart(){
+  const canvas = document.getElementById("chartAlloc");
+  const legend = document.getElementById("allocLegend");
+  const bar = document.getElementById("distBar");
+  if (!canvas || !legend) return;
+
+  const full = allocationByClassFull(); // sorted desc
+  const data = allocationByClass();     // top6 + outros
+  const total = full.reduce((a,x)=>a+(x.val||0),0) || 0;
+
+  // Build doughnut
+  const labels = data.map(x=>x.cls);
+  const values = data.map(x=>x.val);
+  const colors = data.map(x=>x.color);
+
+  if (window.Chart){
+    if (chartAlloc) { try{ chartAlloc.destroy(); }catch{} }
+    chartAlloc = new Chart(canvas, {
+      type: "doughnut",
+      data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 0 }] },
+      options: {
+        responsive:true,
+        cutout: "70%",
+        plugins:{
+          legend:{ display:false },
+          tooltip:{ callbacks:{ label:(c)=> ` ${c.label}: ${fmtMoney(c.raw)} ` } }
+        }
+      }
+    });
+  }
+
+  // Stacked bar (simple)
+  if (bar){
+    bar.innerHTML = "";
+    for (const x of data){
+      const seg = document.createElement("div");
+      seg.className = "dist__seg";
+      const pct = total>0 ? (x.val/total*100) : 0;
+      seg.style.width = pct.toFixed(2)+"%";
+      seg.style.background = x.color;
+      bar.appendChild(seg);
+    }
+  }
+
+  // Legend: show top 10 classes max (never infinite) + "Ver tudo"
+  legend.innerHTML = "";
+  const show = full.slice(0,10);
+  for (const x of show){
+    const pct = total>0 ? Math.round((x.val/total)*100) : 0;
+    const row = document.createElement("div");
+    row.className = "legend__row";
+    row.innerHTML = `
+      <span class="dot" style="background:${x.color}"></span>
+      <span class="legend__name">${escapeHtml(x.cls)}</span>
+      <span class="legend__pct">${pct}%</span>
+      <span class="legend__val">${fmtMoney(x.val)}</span>
+    `;
+    legend.appendChild(row);
+  }
+  if (full.length>10){
+    const more = document.createElement("button");
+    more.className = "btn btn--text";
+    more.type = "button";
+    more.textContent = "Ver o resto";
+    more.addEventListener("click", ()=> openAllocModal());
+    legend.appendChild(more);
+  }
+}
+
+function renderNetWorthChart(){
+  const canvas = document.getElementById("chartNetWorth");
+  if (!canvas || !window.Chart) return;
+  const hist = (state.history||[]).slice().sort((a,b)=>(a.ts||0)-(b.ts||0));
+  const labels = hist.map(h=>h.date || "");
+  const values = hist.map(h=>Number(h.netWorth)||0);
+
+  if (chartNW) { try{ chartNW.destroy(); }catch{} }
+  chartNW = new Chart(canvas, {
+    type:"line",
+    data:{ labels, datasets:[{ data: values, borderWidth:2, pointRadius:2, tension:0.25 }] },
+    options:{
+      responsive:true,
+      plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label:(c)=>` ${fmtMoney(c.raw)} ` } } },
+      scales:{
+        x:{ ticks:{ color:"rgba(168,179,207,.9)" }, grid:{ color:"rgba(255,255,255,.06)" } },
+        y:{ ticks:{ color:"rgba(168,179,207,.9)" }, grid:{ color:"rgba(255,255,255,.06)" } }
+      }
+    }
+  });
+}
+
+function renderPassiveChart(){
+  const canvas = document.getElementById("chartPassive");
+  if (!canvas || !window.Chart) return;
+  const hist = (state.history||[]).slice().sort((a,b)=>(a.ts||0)-(b.ts||0));
+  const labels = hist.map(h=>h.date || "");
+  const values = hist.map(h=>Number(h.passiveNet)||0);
+
+  if (chartPassive) { try{ chartPassive.destroy(); }catch{} }
+  chartPassive = new Chart(canvas, {
+    type:"bar",
+    data:{ labels, datasets:[{ data: values, borderWidth:0 }] },
+    options:{
+      responsive:true,
+      plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label:(c)=>` ${fmtMoney(c.raw)} /ano` } } },
+      scales:{
+        x:{ ticks:{ color:"rgba(168,179,207,.9)" }, grid:{ color:"rgba(255,255,255,.06)" } },
+        y:{ ticks:{ color:"rgba(168,179,207,.9)" }, grid:{ color:"rgba(255,255,255,.06)" } }
+      }
+    }
+  });
+}
+
 function renderTopAssets(){
   const list = el("topAssets");
   const btn = document.getElementById("btnTopAssetsMore");
@@ -464,6 +575,8 @@ function setupButtons(){
   el("btnAddAsset").addEventListener("click", () => { closeSheet(); openCreate("asset"); });
   el("btnAddLiab").addEventListener("click", () => { closeSheet(); openCreate("liability"); });
   el("btnAddQuick").addEventListener("click", () => { closeSheet(); openCreate("asset"); });
+
+  document.getElementById('btnAllocDetail')?.addEventListener('click', ()=> openAllocModal());
 
   el("btnAddSnapshot").addEventListener("click", () => {
     const t = computeTotals();
@@ -728,6 +841,30 @@ function downloadTemplate(){
   downloadBlob(new Blob([csv], {type:"text/csv;charset=utf-8"}), "template_patrimonio.csv");
 }
 
+
+function inferAssetClass(row){
+  const s = (x)=>String(x??"").trim();
+  const clsRaw = s(row.class||row.classe||row.asset_class||row.tipo||row.category);
+  const sym = s(row.symbol||row.ticker||row.isin||row.code);
+  const name = s(row.name||row.nome||row.asset||row.ativo);
+
+  const u = (clsRaw||name||sym).toUpperCase();
+
+  // explicit
+  if (clsRaw) return clsRaw;
+
+  // crypto heuristics
+  if (sym.endsWith(".CC") || ["BTC","ETH","SOL","ADA","XRP","DOT","BNB"].includes(sym.toUpperCase())) return "Cripto";
+
+  // ETFs heuristics
+  if (u.includes("ETF") || ["VWCE","VWRL","CSPX","IWDA","EMIM","EUNL","SPY","VOO","QQQ"].includes(sym.toUpperCase())) return "ETFs";
+
+  // stocks heuristics
+  if (sym && sym.length<=6) return "Ações";
+
+  return "Outros";
+}
+
 async function importFile(){
   const file = el("fileInput").files?.[0];
   if (!file){
@@ -942,13 +1079,6 @@ function escapeAttr(s){
 }
 
 // ===== Service worker =====
-function setupSW(){
-  if ("serviceWorker" in navigator){
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./service-worker.js").catch(()=>{});
-    });
-  }
-}
 
 function renderTemplates(){
   const box = document.getElementById("txTemplates");
@@ -1450,7 +1580,7 @@ function init(){
   setupButtons();
   setupModal();
   setupTxModal();
-  setupSW();
+  // setupSW removed (core stable)
   setActiveView("Dashboard");
 }
 

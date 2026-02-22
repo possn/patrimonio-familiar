@@ -81,7 +81,7 @@ background: #0b1220;
 }
 
 .card{
-  background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
+  background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
@@ -120,7 +120,7 @@ background: #0b1220;
   padding: 10px 12px;
   border-radius: 16px;
   border: 1px solid rgba(255,255,255,.10);
-  background: linear-gradient(90deg, rgba(167,139,250,.18), rgba(34,211,238,.10));
+  background: var(--bg);
 }
 .pill--ghost{
   background: rgba(255,255,255,.03);
@@ -140,13 +140,13 @@ background: #0b1220;
 .btn:active{ transform: translateY(1px); }
 .btn--primary{
   border: none;
-  background: linear-gradient(90deg, rgba(167,139,250,1), rgba(34,211,238,1));
-  color: #071025;
+  background: var(--bg);
+color: #071025;
 }
 .btn--danger{
   border: none;
-  background: linear-gradient(90deg, rgba(251,113,133,1), rgba(251,191,36,1));
-  color: #071025;
+  background: var(--bg);
+color: #071025;
 }
 .btn--text{
   background: transparent;
@@ -254,8 +254,8 @@ z-index: 30;
 .tab__text{ font-size: 12px; color: var(--muted); }
 .tab--active{
   border: none;
-  background: linear-gradient(90deg, rgba(167,139,250,.95), rgba(34,211,238,.95));
-  color: #071025;
+  background: var(--bg);
+color: #071025;
 }
 .tab--active .tab__text{ color: rgba(7,16,37,.82); font-weight: 750; }
 
@@ -362,8 +362,8 @@ z-index: 30;
   height: 56px;
   border-radius: 18px;
   border: none;
-  background: linear-gradient(90deg, rgba(167,139,250,1), rgba(34,211,238,1));
-  color: #071025;
+  background: var(--bg);
+color: #071025;
   font-size: 28px;
   font-weight: 900;
   box-shadow: 0 18px 34px rgba(0,0,0,.48);
@@ -555,7 +555,7 @@ z-index: 30;
   height: 100%;
   width: 0%;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(167,139,250,1), rgba(34,211,238,1));
+  background: var(--bg);
 }
 .coverage__pct{
   font-weight: 900;
@@ -644,6 +644,6 @@ z-index: 30;
   cursor:pointer;
 }
 .seg__btn--on{
-  background: linear-gradient(135deg, rgba(34,211,238,.28), rgba(167,139,250,.22));
-  border-color: rgba(34,211,238,.35);
+  background: var(--bg);
+border-color: rgba(34,211,238,.35);
 }
