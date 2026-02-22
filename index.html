@@ -51,6 +51,7 @@
         </div>
       </div>
 
+      <div id="paneSettings">
       <div class="card">
         <div class="card__head">
           <div>
@@ -206,14 +207,10 @@
 
     <!-- SETTINGS -->
     <section class="view" data-view="settings" id="viewSettings" hidden>
-
-      <div class="seg" style="grid-template-columns:1fr 1fr">
+      <div class="seg">
         <button class="seg__btn seg__btn--active" id="segSettings">Definições</button>
-        <button class="seg__btn" id="segProjection">Projeção</button>
+        <button class="seg__btn" id="segFire">Projeção</button>
       </div>
-
-      <div id="panelSettings">
-
       <div class="card">
         <div class="card__head">
           <div>
@@ -241,53 +238,54 @@
           <li><b>Imobiliário</b>: renda mensal (a app anualiza).</li>
         </ul>
       </div>
-    
+    </div><!-- /paneSettings -->
+
+<div id="paneFire" style="display:none">
+  <div class="card">
+    <div class="card__head">
+      <div>
+        <div class="card__title">Projeção FIRE</div>
+        <div class="card__muted">3 cenários · critério conservador (Capital e Passivo ≥ Despesas)</div>
       </div>
+    </div>
 
-      <div id="panelProjection" hidden>
-        <div class="card">
-          <div class="card__head">
-            <div>
-              <div class="card__title">Projeção FIRE</div>
-              <div class="card__muted">Conservador: FIRE só quando Capital e Passivo ≥ Despesas</div>
-            </div>
-          </div>
+    <div class="row row--wrap" style="margin-top:12px">
+      <label class="lbl" style="margin:0">Janela cashflow</label>
+      <select class="input" id="fireWindow" style="max-width:180px">
+        <option value="3">3 meses</option>
+        <option value="6" selected>6 meses</option>
+        <option value="12">12 meses</option>
+      </select>
+      <label class="lbl" style="margin:0">Horizonte</label>
+      <select class="input" id="fireHorizon" style="max-width:180px">
+        <option value="20">20 anos</option>
+        <option value="30" selected>30 anos</option>
+        <option value="40">40 anos</option>
+      </select>
+      <button class="btn btn--primary" id="btnRecalcFire">Recalcular</button>
+    </div>
 
-          <div class="filters" style="grid-template-columns:1fr 1fr">
-            <select class="input" id="fireWindow">
-              <option value="3">Janela: 3 meses</option>
-              <option value="6" selected>Janela: 6 meses</option>
-              <option value="12">Janela: 12 meses</option>
-            </select>
-            <select class="input" id="fireHorizon">
-              <option value="20">Horizonte: 20 anos</option>
-              <option value="30" selected>Horizonte: 30 anos</option>
-              <option value="40">Horizonte: 40 anos</option>
-            </select>
-          </div>
+    <div class="kpiRow" style="margin-top:12px">
+      <div class="kpi"><div class="kpi__k">Capital investível</div><div class="kpi__v" id="fireCap">—</div></div>
+      <div class="kpi"><div class="kpi__k">Despesas anuais (base)</div><div class="kpi__v" id="fireExp">—</div></div>
+      <div class="kpi"><div class="kpi__k">Passivo anual (base)</div><div class="kpi__v" id="firePass">—</div></div>
+    </div>
+  </div>
 
-          <div class="kpiRow">
-            <div class="kpi"><div class="kpi__k">Capital investível</div><div class="kpi__v" id="fireCapitalNow">—</div><div class="kpi__s">Exclui “Casa” por defeito</div></div>
-            <div class="kpi kpi--out"><div class="kpi__k">Despesas anuais (base)</div><div class="kpi__v" id="fireExpensesNow">—</div><div class="kpi__s" id="fireWindowInfo">—</div></div>
-            <div class="kpi kpi--in"><div class="kpi__k">Passivo anual (base)</div><div class="kpi__v" id="firePassiveNow">—</div><div class="kpi__s">Yield implícito</div></div>
-          </div>
-
-          <div class="note" id="fireNote">O simulador usa médias reais do teu balanço (entradas/saídas) e do teu rendimento passivo. Não usa APIs nem “adivinha” dividendos.</div>
-        </div>
-
-        <div class="card">
-          <div class="card__head">
-            <div>
-              <div class="card__title">Cenários</div>
-              <div class="card__muted">Conservador · Base · Otimista</div>
-            </div>
-          </div>
-          <div id="fireScenarios" class="list"></div>
-          <div class="chartWrap" style="margin-top:12px"><canvas id="fireChart" height="240"></canvas></div>
-        </div>
+  <div class="card">
+    <div class="card__head">
+      <div>
+        <div class="card__title">Resultados</div>
+        <div class="card__muted">Conservador / Base / Otimista</div>
       </div>
-
-    </section>
+    </div>
+    <div id="fireResults" class="list"></div>
+    <div class="chartWrap" style="margin-top:12px">
+      <canvas id="fireChart" height="240"></canvas>
+    </div>
+  </div>
+</div><!-- /paneFire -->
+</section>
   </main>
 
   <nav class="bottomnav" aria-label="Navegação">
@@ -308,6 +306,8 @@
       </div>
 
       <div class="form">
+        <input type="hidden" id="mId">
+        <input type="hidden" id="mKind">
         <label class="lbl">Classe</label>
         <select class="input" id="mClass"></select>
 
@@ -380,21 +380,23 @@
     </div>
   </div>
 
-  <!-- MODAL: Distribuição (Detalhe) -->
-  <div class="modal" id="modalDist" aria-hidden="true">
-    <div class="modal__bg" data-close="modalDist"></div>
-    <div class="modal__panel">
-      <div class="modal__head">
-        <div class="modal__title">Distribuição — detalhe</div>
-        <button class="modal__close" data-close="modalDist">Fechar</button>
+<!-- MODAL: Distribution Detail -->
+<div class="modal" id="modalDist" aria-hidden="true">
+  <div class="modal__bg" data-close="modalDist"></div>
+  <div class="modal__panel">
+    <div class="modal__head">
+      <div class="modal__title">Distribuição (Ativos)</div>
+      <button class="modal__close" data-close="modalDist">Fechar</button>
+    </div>
+    <div class="form">
+      <div id="distDetailList" class="list" style="margin-top:0"></div>
+      <div class="row row--wrap" style="margin-top:12px">
+        <button class="btn" id="btnDistToggle" style="display:none">Ver o resto</button>
+        <button class="btn" data-close="modalDist">Fechar</button>
       </div>
-      <div class="hint">Toca numa classe para filtrar os ativos. Top 10 por valor (podes expandir).</div>
-      <div class="row row--center" style="margin:10px 0 6px">
-        <button class="btn btn--ghost" id="btnDistToggle" style="display:none">Ver o resto</button>
-      </div>
-      <div id="distList" class="list"></div>
     </div>
   </div>
+</div>
 
 </body>
 </html>

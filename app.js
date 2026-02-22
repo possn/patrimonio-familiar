@@ -1,5 +1,11 @@
-/* Património Familiar — REBUILD percento-ish v6 (fix nav+import+tx) */
+/* Património Familiar — REBUILD percento-ish v5 (fix nav+import+tx) */
 "use strict";
+
+function safeClone(obj){
+  try{ if (typeof structuredClone === "function") return structuredClone(obj); }catch(_){ }
+  return JSON.parse(JSON.stringify(obj));
+}
+
 
 // =======================
 // Persistence (iOS-safe)
@@ -7,7 +13,7 @@
 // iOS in-app browsers / Private Mode can drop localStorage between sessions.
 // Use IndexedDB as primary storage with localStorage fallback.
 
-const STORAGE_KEY = "PF_STATE_PERCENTO_V6"; // keep for backwards-compat
+const STORAGE_KEY = "PF_STATE_PERCENTO_V5"; // keep for backwards-compat
 
 const DB_NAME = "pf_percento";
 const DB_STORE = "kv";
@@ -113,17 +119,17 @@ const DEFAULT_STATE = {
   history: []       // {dateISO, net, assets, liabilities, passiveAnnual}
 };
 
-let state = structuredClone(DEFAULT_STATE);
+let state = safeClone(DEFAULT_STATE);
 let currentView = "dashboard";
 let showingLiabs = false;
 let summaryExpanded = false;
 let txExpanded = false;
-let distExpanded = false;
-let settingsPanel = 'settings'; // 'settings' | 'projection'
 
 let distChart = null;
-let trendChart = null;
+let distDetailExpanded = false;
 let fireChart = null;
+
+let trendChart = null;
 
 function $(id){ return document.getElementById(id); }
 
@@ -138,29 +144,6 @@ function fmtEUR(n){
     return new Intl.NumberFormat("pt-PT", { style:"currency", currency: cur, maximumFractionDigits:0 }).format(v);
   }catch{
     return (Math.round(v)).toString() + " " + cur;
-  }
-}
-
-function toast(msg){
-  try{
-    const d = document.createElement("div");
-    d.textContent = String(msg||"");
-    d.style.position = "fixed";
-    d.style.left = "50%";
-    d.style.transform = "translateX(-50%)";
-    d.style.bottom = "90px";
-    d.style.zIndex = "9999";
-    d.style.background = "rgba(15,23,42,.92)";
-    d.style.color = "#fff";
-    d.style.padding = "10px 14px";
-    d.style.borderRadius = "999px";
-    d.style.fontWeight = "800";
-    d.style.maxWidth = "92vw";
-    d.style.boxShadow = "0 18px 60px rgba(16,24,40,.25)";
-    document.body.appendChild(d);
-    setTimeout(()=>{ try{ d.remove(); }catch{} }, 3200);
-  }catch{
-    try{ alert(String(msg||"")); }catch{}
   }
 }
 
@@ -246,7 +229,7 @@ function parseNum(x){
 async function loadStateAsync(){
   try{
     const raw = await storageGet();
-    if (!raw) return structuredClone(DEFAULT_STATE);
+    if (!raw) return safeClone(DEFAULT_STATE);
     const parsed = JSON.parse(raw);
     return {
       settings: parsed.settings || {currency:"EUR"},
@@ -256,7 +239,7 @@ async function loadStateAsync(){
       history: Array.isArray(parsed.history) ? parsed.history : []
     };
   }catch{
-    return structuredClone(DEFAULT_STATE);
+    return safeClone(DEFAULT_STATE);
   }
 }
 
@@ -294,7 +277,6 @@ function setView(view){
   if (view === "dashboard") renderDashboard();
   if (view === "assets") renderItems();
   if (view === "cashflow") renderCashflow();
-  if (view === "settings" && settingsPanel === "projection") renderFire();
   // ensure top of main content on switch (avoid manual scroll)
   window.scrollTo({ top: 0, behavior: "instant" });
 }
@@ -339,12 +321,6 @@ function renderDashboard(){
   renderSummary();
   renderDistChart();
   renderTrendChart();
-}
-
-function renderAll(){
-  renderDashboard();
-  renderItems();
-  renderCashflow();
 }
 
 function renderSummary(){
@@ -411,54 +387,6 @@ function renderDistChart(){
     }
   });
 }
-
-
-function renderDistDetail(){
-  const list = $("distList");
-  if (!list) return;
-  list.innerHTML = "";
-
-  // aggregate assets by class
-  const by = {};
-  for (const a of state.assets){
-    const k = a.class || "Outros";
-    by[k] = (by[k]||0) + parseNum(a.value);
-  }
-  const rows = Object.keys(by).map(k=>({k, v: by[k]})).sort((a,b)=>b.v-a.v);
-  const shown = distExpanded ? rows : rows.slice(0,10);
-
-  if (rows.length === 0){
-    const empty = document.createElement("div");
-    empty.className = "item";
-    empty.innerHTML = `<div class="item__l"><div class="item__t">Sem ativos</div><div class="item__s">Adiciona ativos para ver distribuição.</div></div><div class="item__v">—</div>`;
-    list.appendChild(empty);
-    const t = $("btnDistToggle"); if (t) t.style.display="none";
-    return;
-  }
-
-  for (const r of shown){
-    const row = document.createElement("div");
-    row.className = "item";
-    row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(r.k)}</div><div class="item__s">Filtrar ativos desta classe</div></div><div class="item__v">${fmtEUR(r.v)}</div>`;
-    row.addEventListener("click", ()=>{
-      // jump to assets + filter
-      setView("assets");
-      setModeLiabs(false);
-      $("qSearch").value = "";
-      $("qClass").value = r.k;
-      renderItems();
-      closeModal("modalDist");
-    });
-    list.appendChild(row);
-  }
-
-  const btn = $("btnDistToggle");
-  if (btn){
-    btn.style.display = (rows.length>10) ? "inline-flex" : "none";
-    btn.textContent = distExpanded ? "Ver menos" : "Ver o resto";
-  }
-}
-
 
 function renderTrendChart(){
   const ctx = $("trendChart").getContext("2d");
@@ -582,10 +510,13 @@ const CLASSES_ASSETS = ["Imobiliário","Liquidez","Ações/ETFs","Cripto","Ouro"
 const CLASSES_LIABS  = ["Crédito habitação","Crédito pessoal","Cartão de crédito","Outros"];
 
 let editingItemId = null;
-let editingItemIsLiab = false;
 
 function openItemModal(kind){
   editingItemId = null;
+  $("mId").value = "";
+  $("mKind").value = kind;
+  const delBtn = document.getElementById("btnDeleteItem");
+  if (delBtn) delBtn.style.display = "none";
   $("modalItemTitle").textContent = (kind === "liab") ? "Adicionar passivo" : "Adicionar ativo";
   const sel = $("mClass");
   sel.innerHTML = "";
@@ -603,8 +534,6 @@ function openItemModal(kind){
   $("mYieldType").disabled = (kind === "liab");
   $("mYieldValue").disabled = (kind === "liab");
   $("btnSaveItem").dataset.kind = kind;
-    const delBtn = $("btnDeleteItem");
-  if (delBtn) delBtn.style.display = "none";
   openModal("modalItem");
 }
 
@@ -615,6 +544,10 @@ function editItem(id){
 
   editingItemId = id;
   const kind = showingLiabs ? "liab" : "asset";
+  $("mId").value = id;
+  $("mKind").value = kind;
+  const delBtn = document.getElementById("btnDeleteItem");
+  if (delBtn) delBtn.style.display = "";
   $("modalItemTitle").textContent = showingLiabs ? "Editar passivo" : "Editar ativo";
   const sel = $("mClass");
   sel.innerHTML = "";
@@ -636,8 +569,6 @@ function editItem(id){
     $("mYieldValue").value = "";
   }
   $("btnSaveItem").dataset.kind = kind;
-    const delBtn = $("btnDeleteItem");
-  if (delBtn) delBtn.style.display = "none";
   openModal("modalItem");
 }
 
@@ -674,27 +605,8 @@ function saveItemFromModal(){
   renderDashboard();
   renderItems();
 }
-}
 
-function deleteEditingItem(){
-  if (!editingItemId) return;
-  const isLiab = editingItemIsLiab;
-  const name = isLiab ? (state.liabilities.find(x=>x.id===editingItemId)?.name) : (state.assets.find(x=>x.id===editingItemId)?.name);
-  if (!confirm(`Apagar "${name||'item'}"?`)) return;
-
-  if (isLiab){
-    state.liabilities = state.liabilities.filter(x=>x.id!==editingItemId);
-  }else{
-    state.assets = state.assets.filter(x=>x.id!==editingItemId);
-  }
-  editingItemId = null;
-  saveState();
-  closeModal("modalItem");
-  renderDashboard();
-  renderItems();
-}
-
- /* CASHFLOW */
+/* CASHFLOW */
 function ensureMonthYearOptions(){
   const now = new Date();
   const yearNow = now.getFullYear();
@@ -1257,169 +1169,12 @@ async function importJSON(file){
 function resetAll(){
   if (!confirm("Apagar tudo deste dispositivo?")) return;
   void storageClear();
-  state = structuredClone(DEFAULT_STATE);
+  state = safeClone(DEFAULT_STATE);
   saveState();
   renderDashboard();
   renderItems();
   renderCashflow();
   alert("Dados apagados.");
-}
-
-
-/* FIRE (Projeção) */
-function setSettingsPanel(which){
-  settingsPanel = which;
-  const btnS = $("segSettings");
-  const btnP = $("segProjection");
-  const panelS = $("panelSettings");
-  const panelP = $("panelProjection");
-  if (btnS) btnS.classList.toggle("seg__btn--active", which==="settings");
-  if (btnP) btnP.classList.toggle("seg__btn--active", which==="projection");
-  if (panelS) panelS.hidden = which!=="settings";
-  if (panelP) panelP.hidden = which!=="projection";
-  if (which==="projection") renderFire();
-}
-
-function isHomeAsset(a){
-  const cls = String(a.class||"").toLowerCase();
-  const name = String(a.name||"").toLowerCase();
-  if (!cls.includes("imobili")) return false;
-  return name.includes("casa") || name.includes("habita") || name.includes("home");
-}
-
-function getMonthlySeries(windowMonths){
-  // returns last N months keys and aggregates IN/OUT + passive income (heuristics)
-  const tx = expandRecurring(state.transactions)
-    .filter(t=>/^\d{4}-\d{2}-\d{2}$/.test(String(t.date||"")))
-    .slice()
-    .sort((a,b)=>String(a.date).localeCompare(String(b.date)));
-
-  const by = new Map(); // ym -> {in,out,pass}
-  for (const t of tx){
-    const ym = String(t.date).slice(0,7);
-    const cur = by.get(ym) || {in:0,out:0,pass:0};
-    const amt = parseNum(t.amount);
-    if (t.type === "out") cur.out += amt;
-    else cur.in += amt;
-
-    // heuristic: passive categories
-    const cat = String(t.category||"").toLowerCase();
-    if (t.type !== "out" && (cat.includes("div") || cat.includes("juros") || cat.includes("renda") || cat.includes("passiv") || cat.includes("reit"))){
-      cur.pass += amt;
-    }
-    by.set(ym, cur);
-  }
-
-  const months = Array.from(by.keys()).sort();
-  const last = months.slice(-windowMonths);
-  const avg = (key)=>{
-    if (!last.length) return 0;
-    let s=0;
-    for (const m of last) s += (by.get(m)?.[key]||0);
-    return s/last.length;
-  };
-  return {
-    months: last,
-    inM: avg("in"),
-    outM: avg("out"),
-    passM: avg("pass")
-  };
-}
-
-function renderFire(){
-  const capEl = $("fireCapitalNow");
-  const expEl = $("fireExpensesNow");
-  const pasEl = $("firePassiveNow");
-  const infoEl = $("fireWindowInfo");
-  const listEl = $("fireScenarios");
-  const canvas = $("fireChart");
-  if (!capEl || !expEl || !pasEl || !listEl || !canvas) return;
-
-  const W = parseInt($("fireWindow")?.value || "6", 10);
-  const H = parseInt($("fireHorizon")?.value || "30", 10);
-
-  const assetsInvest = state.assets.filter(a => !isHomeAsset(a)).reduce((s,a)=> s + parseNum(a.value), 0);
-  const debt = state.liabilities.reduce((s,a)=> s + parseNum(a.value), 0);
-  const capital0 = assetsInvest - debt;
-
-  const ms = getMonthlySeries(W);
-  const expenses0 = ms.outM * 12;
-
-  // Base passive from assets yields:
-  const passiveFromAssets = state.assets.reduce((s,a)=> s + passiveFromItem(a), 0);
-  // Passive from transactions (manual):
-  const passiveFromTx = ms.passM * 12;
-
-  // choose MAX to avoid undercount if user uses either method
-  const passive0 = Math.max(passiveFromAssets, passiveFromTx);
-
-  const saveM = Math.max(0, ms.inM - ms.outM);
-  const saveAnnual = saveM * 12;
-
-  // yield implied (conservative if capital <=0)
-  const y = (capital0>0 && passive0>0) ? (passive0/capital0) : 0;
-
-  capEl.textContent = fmtEUR(capital0);
-  expEl.textContent = fmtEUR(expenses0);
-  pasEl.textContent = fmtEUR(passive0);
-  if (infoEl){
-    infoEl.textContent = ms.months.length ? `Média ${ms.months.length}m (poupança ~ ${fmtEUR(saveM)}/mês)` : "Sem movimentos suficientes";
-  }
-
-  const scenarios = [
-    {name:"Conservador", r:0.04, inf:0.03, swr:0.0325},
-    {name:"Base",        r:0.06, inf:0.025, swr:0.0375},
-    {name:"Otimista",    r:0.08, inf:0.02, swr:0.04},
-  ];
-
-  function solve(sc){
-    let cap = capital0;
-    let exp = expenses0;
-    for (let t=0; t<=H; t++){
-      const pass = y * cap; // grows only if cap grows
-      const fireNum = sc.swr>0 ? (exp/sc.swr) : Infinity;
-      if (cap>=fireNum && pass>=exp) return {t, cap, exp, pass, fireNum};
-      cap = cap*(1+sc.r) + saveAnnual;
-      exp = exp*(1+sc.inf);
-    }
-    return null;
-  }
-
-  listEl.innerHTML = "";
-  for (const sc of scenarios){
-    const res = solve(sc);
-    const row = document.createElement("div");
-    row.className = "item";
-    row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(sc.name)}</div><div class="item__s">r ${(sc.r*100).toFixed(1)}% · inflação ${(sc.inf*100).toFixed(1)}% · SWR ${(sc.swr*100).toFixed(2)}%</div></div><div class="item__v">${res ? ("FIRE +" + res.t + "a") : "—"}</div>`;
-    listEl.appendChild(row);
-  }
-
-  // Chart (Base): capital vs fire#
-  const base = scenarios[1];
-  let cap = capital0;
-  let exp = expenses0;
-  const labels=[], capS=[], fireS=[];
-  for (let t=0; t<=H; t++){
-    labels.push("+"+t+"a");
-    capS.push(cap);
-    fireS.push(base.swr>0 ? (exp/base.swr) : null);
-    cap = cap*(1+base.r) + saveAnnual;
-    exp = exp*(1+base.inf);
-  }
-
-  const ctx = canvas.getContext("2d");
-  if (fireChart) fireChart.destroy();
-  fireChart = new Chart(ctx,{
-    type:"line",
-    data:{ labels, datasets:[
-      { label:"Capital (Base)", data:capS, tension:.3, pointRadius:0 },
-      { label:"FIRE # (Base)", data:fireS, tension:.3, pointRadius:0 },
-    ]},
-    options:{
-      plugins:{ legend:{ display:true } },
-      scales:{ y:{ ticks:{ callback:(v)=>fmtEUR(v) } } }
-    }
-  });
 }
 
 /* WIRING */
@@ -1441,7 +1196,40 @@ function wire(){
     else openItemModal("asset");
   });
 
-  // dashboard buttons
+
+// distribuição detalhe
+const distBtn = document.getElementById("btnDistDetail");
+if (distBtn){
+  distBtn.addEventListener("click", ()=>{ distDetailExpanded = false; openDistDetail(); });
+}
+const distTog = document.getElementById("btnDistToggle");
+if (distTog){
+  distTog.addEventListener("click", ()=>{ distDetailExpanded = !distDetailExpanded; openDistDetail(true); });
+}
+
+// apagar item (ativo/passivo)
+const delBtn = document.getElementById("btnDeleteItem");
+if (delBtn){
+  delBtn.addEventListener("click", ()=>deleteCurrentItem());
+}
+
+// settings segmented: Definições vs Projeção
+const segS = document.getElementById("segSettings");
+const segF = document.getElementById("segFire");
+if (segS && segF){
+  segS.addEventListener("click", ()=>setSettingsPane("settings"));
+  segF.addEventListener("click", ()=>setSettingsPane("fire"));
+}
+const recalc = document.getElementById("btnRecalcFire");
+if (recalc){
+  recalc.addEventListener("click", ()=>renderFire());
+}
+const fw = document.getElementById("fireWindow");
+const fh = document.getElementById("fireHorizon");
+if (fw) fw.addEventListener("change", ()=>renderFire());
+if (fh) fh.addEventListener("change", ()=>renderFire());
+
+  // dashboard buttons  // dashboard buttons
   $("btnSnapshot").addEventListener("click", snapshotMonth);
   $("btnClearHistory").addEventListener("click", ()=>{
     if (!confirm("Limpar histórico de snapshots?")) return;
@@ -1462,17 +1250,6 @@ function wire(){
     renderSummary();
   });
 
-  // distribuição (detalhe)
-  $("btnDistDetail").addEventListener("click", ()=>{
-    distExpanded = false;
-    renderDistDetail();
-    openModal("modalDist");
-  });
-  $("btnDistToggle").addEventListener("click", ()=>{
-    distExpanded = !distExpanded;
-    renderDistDetail();
-  });
-
   // seg
   $("segAssets").addEventListener("click", ()=>setModeLiabs(false));
   $("segLiabs").addEventListener("click", ()=>setModeLiabs(true));
@@ -1485,7 +1262,6 @@ function wire(){
 
   // modal item save
   $("btnSaveItem").addEventListener("click", saveItemFromModal);
-  $("btnDeleteItem").addEventListener("click", deleteEditingItem);
 
   // cashflow
   $("btnAddTx").addEventListener("click", openTxModal);
@@ -1531,13 +1307,6 @@ function wire(){
 
   // settings
   $("baseCurrency").value = state.settings.currency || "EUR";
-  // settings panels
-  if ($("segSettings") && $("segProjection")){
-    $("segSettings").addEventListener("click", ()=>setSettingsPanel("settings"));
-    $("segProjection").addEventListener("click", ()=>setSettingsPanel("projection"));
-  }
-  if ($("fireWindow")) $("fireWindow").addEventListener("change", renderFire);
-  if ($("fireHorizon")) $("fireHorizon").addEventListener("change", renderFire);
   $("baseCurrency").addEventListener("change", ()=>{
     state.settings.currency = $("baseCurrency").value;
     saveState();
@@ -1548,7 +1317,6 @@ function wire(){
 
   // init
   setModeLiabs(false);
-  setSettingsPanel("settings");
   setView("dashboard");
   renderCashflow();
 }
@@ -1559,3 +1327,199 @@ document.addEventListener("DOMContentLoaded", async () => {
   wire();
   renderAll();
 });
+
+
+function openDistDetail(keepOpen=false){
+  // build class distribution list (assets)
+  const by = {};
+  for (const a of state.assets){
+    const k = a.class || "Outros";
+    by[k] = (by[k]||0) + parseNum(a.value);
+  }
+  const entries = Object.entries(by).sort((a,b)=>b[1]-a[1]);
+  const list = document.getElementById("distDetailList");
+  const tog = document.getElementById("btnDistToggle");
+  if (!list) return;
+
+  list.innerHTML = "";
+  if (entries.length === 0){
+    const row = document.createElement("div");
+    row.className="item";
+    row.innerHTML = `<div class="item__l"><div class="item__t">Sem dados</div><div class="item__s">Adiciona ativos para ver a distribuição.</div></div><div class="item__v">—</div>`;
+    list.appendChild(row);
+  } else {
+    const shown = distDetailExpanded ? entries : entries.slice(0,10);
+    for (const [cls,val] of shown){
+      const row = document.createElement("div");
+      row.className="item";
+      row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(cls)}</div><div class="item__s">Tocar para filtrar</div></div><div class="item__v">${fmtEUR(val)}</div>`;
+      row.addEventListener("click", ()=>{
+        // switch to assets and filter by class
+        setView("assets");
+        $("qClass").value = cls;
+        renderItems();
+        closeModal("modalDist");
+      });
+      list.appendChild(row);
+    }
+  }
+
+  if (tog){
+    if (entries.length > 10){
+      tog.style.display = "";
+      tog.textContent = distDetailExpanded ? "Ver menos" : "Ver o resto";
+    } else {
+      tog.style.display = "none";
+    }
+  }
+  if (!keepOpen) openModal("modalDist");
+}
+
+function deleteCurrentItem(){
+  if (!editingItemId) return;
+  const kind = $("mKind").value || $("btnSaveItem").dataset.kind || (showingLiabs ? "liab" : "asset");
+  const ok = confirm("Apagar este item? Esta ação não pode ser anulada.");
+  if (!ok) return;
+  if (kind === "liab"){
+    state.liabilities = state.liabilities.filter(x=>x.id!==editingItemId);
+  } else {
+    state.assets = state.assets.filter(x=>x.id!==editingItemId);
+  }
+  editingItemId = null;
+  saveStateAsync();
+  closeModal("modalItem");
+  renderAll();
+}
+
+function setSettingsPane(which){
+  const ps = document.getElementById("paneSettings");
+  const pf = document.getElementById("paneFire");
+  const bs = document.getElementById("segSettings");
+  const bf = document.getElementById("segFire");
+  if (!ps || !pf || !bs || !bf) return;
+
+  const isFire = which === "fire";
+  ps.style.display = isFire ? "none" : "";
+  pf.style.display = isFire ? "" : "none";
+  bs.classList.toggle("seg__btn--active", !isFire);
+  bf.classList.toggle("seg__btn--active", isFire);
+
+  if (isFire) renderFire();
+}
+
+function renderFire(){
+  const capEl = document.getElementById("fireCap");
+  const expEl = document.getElementById("fireExp");
+  const пасEl = document.getElementById("firePass");
+  const list = document.getElementById("fireResults");
+  const canvas = document.getElementById("fireChart");
+  if (!capEl || !expEl || !пасEl || !list || !canvas) return;
+
+  const W = parseInt(document.getElementById("fireWindow")?.value || "6",10);
+  const H = parseInt(document.getElementById("fireHorizon")?.value || "30",10);
+
+  // Capital investível: exclui casa própria (classe Imobiliário + nome com casa/habitação/home)
+  const isHome = (a)=>{
+    const name = (a.name||"").toLowerCase();
+    const cls = (a.class||"").toLowerCase();
+    return cls.includes("imob") && (name.includes("casa") || name.includes("habita") || name.includes("home"));
+  };
+  const investible = state.assets.filter(a=>!isHome(a)).reduce((s,a)=>s+parseNum(a.value),0);
+  const debt = state.liabilities.reduce((s,a)=>s+Math.abs(parseNum(a.value)),0);
+  const cap0 = investible - debt;
+
+  // Cashflow mensal médio (últimos W meses) + passivo mensal médio (heurística)
+  const byMonth = new Map();
+  for (const t of (state.transactions||[])){
+    const d = t.date || "";
+    if (d.length < 7) continue;
+    const ym = d.slice(0,7);
+    const cur = byMonth.get(ym) || {inc:0, out:0, pass:0};
+    const v = parseNum(t.value);
+    const type = t.type || (v<0 ? "out":"in");
+    const abs = Math.abs(v);
+    if (type === "out") cur.out += abs;
+    else cur.inc += abs;
+
+    const cat = (t.category||"").toLowerCase();
+    if (type !== "out" && (cat.includes("div") || cat.includes("juros") || cat.includes("reit") || cat.includes("renda") || cat.includes("passiv"))){
+      cur.pass += abs;
+    }
+    byMonth.set(ym, cur);
+  }
+  const months = Array.from(byMonth.keys()).sort();
+  const last = months.slice(-W);
+  const avg = (key)=>{
+    if (last.length===0) return 0;
+    return last.reduce((s,m)=>s+(byMonth.get(m)?.[key]||0),0)/last.length;
+  };
+  const incM = avg("inc");
+  const outM = avg("out");
+  const passM = avg("pass");
+  const saveM = Math.max(0, incM - outM);
+
+  const exp0 = outM*12;
+  const pass0 = passM*12;
+
+  const y = (cap0>0 && pass0>0) ? (pass0/cap0) : 0;
+
+  capEl.textContent = fmtEUR(cap0);
+  expEl.textContent = fmtEUR(exp0);
+  пасEl.textContent = fmtEUR(pass0);
+
+  const scenarios = [
+    {name:"Conservador", r:0.04, inf:0.03, swr:0.0325},
+    {name:"Base", r:0.06, inf:0.025, swr:0.0375},
+    {name:"Otimista", r:0.08, inf:0.02, swr:0.04}
+  ];
+
+  const results = [];
+  for (const sc of scenarios){
+    let cap = cap0, exp = exp0;
+    let hit = null;
+    for (let t=0; t<=H; t++){
+      const pass = y*cap;
+      const fireNum = sc.swr>0 ? (exp/sc.swr) : Infinity;
+      if (cap >= fireNum && pass >= exp){ hit = {t, cap, exp, pass, fireNum}; break; }
+      cap = cap*(1+sc.r) + saveM*12;
+      exp = exp*(1+sc.inf);
+    }
+    results.push({sc, hit});
+  }
+
+  list.innerHTML = "";
+  for (const r of results){
+    const row = document.createElement("div");
+    row.className = "item";
+    const right = r.hit ? `FIRE em ${r.hit.t}a` : "Sem FIRE";
+    row.innerHTML = `<div class="item__l"><div class="item__t">${r.sc.name}</div><div class="item__s">r ${(r.sc.r*100).toFixed(1)}% · inflação ${(r.sc.inf*100).toFixed(1)}% · SWR ${(r.sc.swr*100).toFixed(2)}%</div></div><div class="item__v">${right}</div>`;
+    list.appendChild(row);
+  }
+
+  // chart: base scenario capital vs fire number
+  const base = scenarios[1];
+  let cap=cap0, exp=exp0;
+  const labels=[], capS=[], fireS=[];
+  for (let t=0; t<=H; t++){
+    labels.push("+"+t+"a");
+    capS.push(cap);
+    fireS.push(base.swr>0 ? (exp/base.swr) : null);
+    cap = cap*(1+base.r) + saveM*12;
+    exp = exp*(1+base.inf);
+  }
+
+  const ctx = canvas.getContext("2d");
+  if (fireChart) fireChart.destroy();
+  fireChart = new Chart(ctx,{
+    type:"line",
+    data:{labels, datasets:[
+      {label:"Capital (Base)", data:capS, tension:.25, borderWidth:2, pointRadius:0},
+      {label:"FIRE # (Base)", data:fireS, tension:.25, borderWidth:2, pointRadius:0},
+    ]},
+    options:{
+      responsive:true,
+      plugins:{ legend:{ display:true } },
+      scales:{ y:{ ticks:{ callback:(v)=>fmtEUR(v) } } }
+    }
+  });
+}

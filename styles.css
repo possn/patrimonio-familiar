@@ -1,4 +1,4 @@
-/* Património Familiar — percento-ish v6 */
+/* Património Familiar — percento-ish v5 */
 :root{
   --bg:#eef1f6;
   --card:#ffffff;
@@ -281,7 +281,3 @@ textarea.input{resize:vertical}
   .navlbl{display:none}
   .bottomnav{grid-template-columns: repeat(5, 1fr)}
 }
-
-
-.bullets{margin:0; padding-left:18px; color:var(--text); font-weight:700}
-.bullets li{margin:8px 0}
