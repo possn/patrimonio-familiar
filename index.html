@@ -8,10 +8,10 @@
 
   <link rel="icon" href="assets/icon-192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="assets/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=13">
+  <link rel="stylesheet" href="styles.css?v=5">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script defer src="app.js?v=13"></script>
+  <script defer src="app.js?v=5"></script>
 </head>
 <body>
   <header class="topbar">
@@ -204,146 +204,44 @@
       </div>
     </section>
 
-    <!-- PROJECTION -->
-<section class="view" data-view="projection" id="viewProjection" hidden>
-  <div class="card">
-    <div class="card__head">
-      <div>
-        <div class="card__title">Projeção & FIRE</div>
-        <div class="card__muted">Condição conservadora: <b>Capital ≥ Despesas/SWR</b> <i>e</i> <b>Passivo ≥ Despesas</b>.</div>
-      </div>
-      <button class="chip chip--ghost" id="btnProjReset">Defaults</button>
-    </div>
-
-    <div class="filters" style="grid-template-columns:1fr 1fr">
-      <div class="field" style="margin-top:0">
-        <label>Janela para médias (meses)</label>
-        <select class="input" id="projMonths">
-          <option value="3">3</option>
-          <option value="6" selected>6</option>
-          <option value="12">12</option>
+    <!-- SETTINGS -->
+    <section class="view" data-view="settings" id="viewSettings" hidden>
+      <div class="card">
+        <div class="card__head">
+          <div>
+            <div class="card__title">Definições</div>
+            <div class="card__muted">Preferências básicas.</div>
+          </div>
+        </div>
+        <select class="input" id="baseCurrency">
+          <option value="EUR">EUR</option>
+          <option value="USD">USD</option>
+          <option value="GBP">GBP</option>
         </select>
       </div>
-      <div class="field" style="margin-top:0">
-        <label>Horizonte</label>
-        <select class="input" id="projYears">
-          <option value="20">20 anos</option>
-          <option value="30" selected>30 anos</option>
-          <option value="40">40 anos</option>
-        </select>
-      </div>
-    </div>
 
-    <div class="note" id="projBaseNote">A calcular…</div>
-  </div>
-
-  <div class="grid" style="margin-top:12px">
-    <div class="card">
-      <div class="card__head">
-        <div>
-          <div class="card__title">Conservador</div>
-          <div class="card__muted">r / inflação / SWR</div>
+      <div class="card">
+        <div class="card__head">
+          <div>
+            <div class="card__title">Metodologia</div>
+            <div class="card__muted">Cálculo do rendimento passivo.</div>
+          </div>
         </div>
+        <ul class="bullets">
+          <li><b>Ações/ETFs/Fundos</b>: yield %/ano ou € / ano.</li>
+          <li><b>Depósitos/PPR</b>: taxa %/ano sobre o capital.</li>
+          <li><b>Imobiliário</b>: renda mensal (a app anualiza).</li>
+        </ul>
       </div>
-      <div class="filters" style="grid-template-columns:1fr 1fr 1fr">
-        <input class="input" id="rCons" type="number" step="0.1" value="4.0" title="Retorno %/ano">
-        <input class="input" id="infCons" type="number" step="0.1" value="3.0" title="Inflação %/ano">
-        <input class="input" id="swrCons" type="number" step="0.05" value="3.25" title="SWR %">
-      </div>
-      <div class="kpiRow" style="margin-top:12px">
-        <div class="kpi kpi--net">
-          <div class="kpi__k">Ano FIRE</div>
-          <div class="kpi__v" id="fireCons">—</div>
-          <div class="kpi__s" id="fireConsWhy">—</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card__head">
-        <div>
-          <div class="card__title">Base</div>
-          <div class="card__muted">r / inflação / SWR</div>
-        </div>
-      </div>
-      <div class="filters" style="grid-template-columns:1fr 1fr 1fr">
-        <input class="input" id="rBase" type="number" step="0.1" value="6.0" title="Retorno %/ano">
-        <input class="input" id="infBase" type="number" step="0.1" value="2.5" title="Inflação %/ano">
-        <input class="input" id="swrBase" type="number" step="0.05" value="3.75" title="SWR %">
-      </div>
-      <div class="kpiRow" style="margin-top:12px">
-        <div class="kpi kpi--net">
-          <div class="kpi__k">Ano FIRE</div>
-          <div class="kpi__v" id="fireBase">—</div>
-          <div class="kpi__s" id="fireBaseWhy">—</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card__head">
-        <div>
-          <div class="card__title">Otimista</div>
-          <div class="card__muted">r / inflação / SWR</div>
-        </div>
-      </div>
-      <div class="filters" style="grid-template-columns:1fr 1fr 1fr">
-        <input class="input" id="rOpt" type="number" step="0.1" value="8.0" title="Retorno %/ano">
-        <input class="input" id="infOpt" type="number" step="0.1" value="2.0" title="Inflação %/ano">
-        <input class="input" id="swrOpt" type="number" step="0.05" value="4.0" title="SWR %">
-      </div>
-      <div class="kpiRow" style="margin-top:12px">
-        <div class="kpi kpi--net">
-          <div class="kpi__k">Ano FIRE</div>
-          <div class="kpi__v" id="fireOpt">—</div>
-          <div class="kpi__s" id="fireOptWhy">—</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:12px">
-    <div class="card__head">
-      <div>
-        <div class="card__title">Trajetória</div>
-        <div class="card__muted">Capital investível vs número FIRE e cobertura de despesas.</div>
-      </div>
-    </div>
-    <div class="chartWrap">
-      <canvas id="projChart" height="260"></canvas>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:12px">
-    <div class="card__head">
-      <div>
-        <div class="card__title">Definições</div>
-        <div class="card__muted">Moeda base e notas metodológicas.</div>
-      </div>
-    </div>
-    <div class="filters" style="grid-template-columns:1fr">
-      <select class="input" id="baseCurrency">
-        <option value="EUR">EUR</option>
-        <option value="USD">USD</option>
-        <option value="GBP">GBP</option>
-      </select>
-    </div>
-    <ul class="bullets">
-      <li>O <b>income passivo</b> base é a média dos últimos meses, e cresce apenas se o capital crescer (yield implícito).</li>
-      <li>A <b>casa própria</b> não é considerada capital investível para FIRE.</li>
-    </ul>
-  </div>
-
-  <div class="spacer"></div>
-</section>
-</main>
+    </section>
+  </main>
 
   <nav class="bottomnav" aria-label="Navegação">
     <button class="navbtn navbtn--active" data-view="dashboard" id="navDashboard"><span class="navico">▣</span><span class="navlbl">Dashboard</span></button>
     <button class="navbtn" data-view="assets" id="navAssets"><span class="navico">≡</span><span class="navlbl">Ativos</span></button>
     <button class="navbtn" data-view="import" id="navImport"><span class="navico">⇅</span><span class="navlbl">Importar</span></button>
     <button class="navbtn" data-view="cashflow" id="navCashflow"><span class="navico">€</span><span class="navlbl">Balanço</span></button>
-    <button class="navbtn" data-view="projection" id="navProjection"><span class="navico">◎</span><span class="navlbl">Projeção</span></button>
+    <button class="navbtn" data-view="settings" id="navSettings"><span class="navico">⚙</span><span class="navlbl">Definições</span></button>
   </nav>
 
   <!-- MODAL: Add Item -->
