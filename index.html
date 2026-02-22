@@ -206,6 +206,14 @@
 
     <!-- SETTINGS -->
     <section class="view" data-view="settings" id="viewSettings" hidden>
+
+      <div class="seg" style="grid-template-columns:1fr 1fr">
+        <button class="seg__btn seg__btn--active" id="segSettings">Definições</button>
+        <button class="seg__btn" id="segProjection">Projeção</button>
+      </div>
+
+      <div id="panelSettings">
+
       <div class="card">
         <div class="card__head">
           <div>
@@ -233,6 +241,52 @@
           <li><b>Imobiliário</b>: renda mensal (a app anualiza).</li>
         </ul>
       </div>
+    
+      </div>
+
+      <div id="panelProjection" hidden>
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="card__title">Projeção FIRE</div>
+              <div class="card__muted">Conservador: FIRE só quando Capital e Passivo ≥ Despesas</div>
+            </div>
+          </div>
+
+          <div class="filters" style="grid-template-columns:1fr 1fr">
+            <select class="input" id="fireWindow">
+              <option value="3">Janela: 3 meses</option>
+              <option value="6" selected>Janela: 6 meses</option>
+              <option value="12">Janela: 12 meses</option>
+            </select>
+            <select class="input" id="fireHorizon">
+              <option value="20">Horizonte: 20 anos</option>
+              <option value="30" selected>Horizonte: 30 anos</option>
+              <option value="40">Horizonte: 40 anos</option>
+            </select>
+          </div>
+
+          <div class="kpiRow">
+            <div class="kpi"><div class="kpi__k">Capital investível</div><div class="kpi__v" id="fireCapitalNow">—</div><div class="kpi__s">Exclui “Casa” por defeito</div></div>
+            <div class="kpi kpi--out"><div class="kpi__k">Despesas anuais (base)</div><div class="kpi__v" id="fireExpensesNow">—</div><div class="kpi__s" id="fireWindowInfo">—</div></div>
+            <div class="kpi kpi--in"><div class="kpi__k">Passivo anual (base)</div><div class="kpi__v" id="firePassiveNow">—</div><div class="kpi__s">Yield implícito</div></div>
+          </div>
+
+          <div class="note" id="fireNote">O simulador usa médias reais do teu balanço (entradas/saídas) e do teu rendimento passivo. Não usa APIs nem “adivinha” dividendos.</div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="card__title">Cenários</div>
+              <div class="card__muted">Conservador · Base · Otimista</div>
+            </div>
+          </div>
+          <div id="fireScenarios" class="list"></div>
+          <div class="chartWrap" style="margin-top:12px"><canvas id="fireChart" height="240"></canvas></div>
+        </div>
+      </div>
+
     </section>
   </main>
 
@@ -326,24 +380,21 @@
     </div>
   </div>
 
-
-<!-- MODAL: Distribuição detalhe -->
-<div class="modal" id="modalDist" aria-hidden="true">
-  <div class="modal__bg" data-close="modalDist"></div>
-  <div class="modal__panel">
-    <div class="modal__head">
-      <div class="modal__title">Distribuição (Ativos)</div>
-      <button class="modal__close" data-close="modalDist">Fechar</button>
-    </div>
-    <div class="modal__body">
-      <div class="note" style="margin-top:0">Mostra a distribuição por classe. Toca numa classe para filtrar a lista de ativos.</div>
-      <div id="distDetailList" class="list" style="margin-top:12px"></div>
-      <div class="row row--center" style="margin-top:10px">
-        <button class="btn" id="btnDistToggle" style="display:none">Ver o resto</button>
+  <!-- MODAL: Distribuição (Detalhe) -->
+  <div class="modal" id="modalDist" aria-hidden="true">
+    <div class="modal__bg" data-close="modalDist"></div>
+    <div class="modal__panel">
+      <div class="modal__head">
+        <div class="modal__title">Distribuição — detalhe</div>
+        <button class="modal__close" data-close="modalDist">Fechar</button>
       </div>
+      <div class="hint">Toca numa classe para filtrar os ativos. Top 10 por valor (podes expandir).</div>
+      <div class="row row--center" style="margin:10px 0 6px">
+        <button class="btn btn--ghost" id="btnDistToggle" style="display:none">Ver o resto</button>
+      </div>
+      <div id="distList" class="list"></div>
     </div>
   </div>
-</div>
 
 </body>
 </html>
