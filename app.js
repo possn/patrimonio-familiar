@@ -1594,53 +1594,66 @@ async function extractLinesFromPdf(file){
 }
 
 function parseBankMovementsFromLines(lines){
+  // Robust parser for CGD-style "Lista de Movimentos" PDFs:
+  // - Dates like: "23 fev 2026"
+  // - Optional line "D. valor: ..."
+  // - One or more description lines, ending with VALUE and BALANCE (often glued to €)
   const moves = [];
-  let i=0;
+  const moneyRe = /[−-]?\d[\d\.\s]*,\d{2}\s*€?/g; // PT format (comma decimals) with optional €
 
+  function extractLastTwoMoney(s){
+    const matches = (s.match(moneyRe) || []).map(x=>x.trim());
+    if (matches.length < 2) return null;
+
+    const balRaw = matches[matches.length-1];
+    const valRaw = matches[matches.length-2];
+
+    let rest = s;
+    const idxBal = rest.lastIndexOf(balRaw);
+    if (idxBal >= 0) rest = rest.slice(0, idxBal) + rest.slice(idxBal + balRaw.length);
+
+    const idxVal = rest.lastIndexOf(valRaw);
+    if (idxVal >= 0) rest = rest.slice(0, idxVal) + rest.slice(idxVal + valRaw.length);
+
+    rest = rest.replace(/\s+/g,' ').trim();
+    return { valRaw, balRaw, desc: rest };
+  }
+
+  let i = 0;
   while (i < lines.length){
     const dateIso = parsePtDate(lines[i]);
     if (!dateIso){ i++; continue; }
 
-    let j = i+1;
-    if (j < lines.length && /^d\.\s*valor\s*:/i.test(lines[j])) j++;
+    let j = i + 1;
+    while (j < lines.length && /^D\.?\s*valor\s*:/i.test(lines[j])) j++;
 
-    const descParts = [];
-    let valueLine = null;
+    let buf = "";
 
     while (j < lines.length){
-      const ln = lines[j];
-      if (parsePtDate(ln) && descParts.length>0) break;
+      const line = lines[j];
 
-      const euros = ln.match(/[-−–]?\d{1,3}(?:[\.,\s]\d{3})*(?:[\.,]\d{2})\s*€/g);
-      if (euros && euros.length >= 1){
-        valueLine = ln;
-        break;
-      } else {
-        if (!/^lista de movimentos/i.test(ln) && !/^página\s+\d+/i.test(ln)) descParts.push(ln);
+      if (buf && parsePtDate(line)){
+        break; // next movement block starts
       }
+
+      buf = buf ? (buf + " " + line) : line;
+
+      const ex = extractLastTwoMoney(buf);
+      if (ex){
+        const value = parseNumberSmart(ex.valRaw);
+        const balance = parseNumberSmart(ex.balRaw);
+        if (Number.isFinite(value) && Number.isFinite(balance)){
+          const description = ex.desc || "Movimento";
+          moves.push({ date: dateIso, description, amount: value, balance });
+          buf = "";
+          break; // typical layout: one movement per date block
+        }
+      }
+
       j++;
     }
 
-    if (!valueLine){ i++; continue; }
-
-    const euros = valueLine.match(/[-−–]?\d{1,3}(?:[\.,\s]\d{3})*(?:[\.,]\d{2})\s*€/g) || [];
-    const valueRaw = euros[0] || "";
-    let value = parseEuroNumber(valueRaw);
-    if (Number.isNaN(value)){
-      const m = valueLine.match(/[-−–]?\d+[\.,]\d{2}/);
-      value = parseEuroNumber(m ? m[0] : "");
-    }
-
-    const desc = descParts.join(" ").replace(/\s+/g," ").trim() || "Movimento";
-    const cat = categorizeBankDesc(desc, value);
-    const type = value < 0 ? "out" : "in";
-    const key = `${dateIso}|${type}|${Math.round(value*100)}|${desc.toLowerCase().slice(0,80)}`;
-
-    if (!Number.isNaN(value) && value !== 0){
-      moves.push({_key:key, date:dateIso, type, category:cat, desc, value:Math.round(value*100)/100, source:"bank_pdf"});
-    }
-
-    i = j + 1;
+    i = j;
   }
 
   return moves;
@@ -1708,3 +1721,5 @@ document.addEventListener("DOMContentLoaded", ()=>{
   const btn = document.getElementById("btnImportPDF");
   if (btn) btn.addEventListener("click", handleImportPDF);
 });
+
+// patched
