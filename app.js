@@ -842,33 +842,70 @@ function importBankMovementsAOA(aoa){
   };
 
   const toISODate = (v) => {
-    if (v instanceof Date && !isNaN(v)) {
-      const y=v.getFullYear();
-      const m=String(v.getMonth()+1).padStart(2,"0");
-      const d=String(v.getDate()).padStart(2,"0");
-      return `${y}-${m}-${d}`;
-    }
-    const s = norm(v);
-    if (!s) return null;
-    // try yyyy-mm-dd
-    let m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
-    if (m){
-      const y=m[1], mo=String(m[2]).padStart(2,"0"), d=String(m[3]).padStart(2,"0");
-      return `${y}-${mo}-${d}`;
-    }
-    // try dd-mm-yyyy
-    m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
-    if (m){
-      const d=String(m[1]).padStart(2,"0");
-      const mo=String(m[2]).padStart(2,"0");
-      let y=m[3];
-      if (y.length===2) y = (Number(y)>=70 ? "19"+y : "20"+y);
-      return `${y}-${mo}-${d}`;
-    }
-    return null;
-  };
+      if(v==null) return null;
 
-  const toNumber = (v) => {
+      // excel serial
+      if(typeof v === "number" && isFinite(v)){
+        const excelEpoch = new Date(Date.UTC(1899,11,30));
+        const d = new Date(excelEpoch.getTime() + v*86400000);
+        return d.toISOString().slice(0,10);
+      }
+
+      if(v instanceof Date && !isNaN(v.getTime())){
+        const d = new Date(Date.UTC(v.getFullYear(), v.getMonth(), v.getDate()));
+        return d.toISOString().slice(0,10);
+      }
+
+      const s0 = String(v).trim();
+      if(!s0) return null;
+
+      // dd/mm/yyyy ou dd-mm-yyyy
+      let m = s0.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+      if(m){
+        const dd = String(m[1]).padStart(2,"0");
+        const mm = String(m[2]).padStart(2,"0");
+        const yy = m[3];
+        return `${yy}-${mm}-${dd}`;
+      }
+
+      // yyyy-mm-dd
+      m = s0.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+      if(m){
+        const yy = m[1];
+        const mm = String(m[2]).padStart(2,"0");
+        const dd = String(m[3]).padStart(2,"0");
+        return `${yy}-${mm}-${dd}`;
+      }
+
+      // PT longo: "... 23 de Fevereiro de 2026"
+      const s = s0.toLowerCase();
+      m = s.match(/(\d{1,2})\s+de\s+([a-zçáàâãéêíóôõúü]+)\s+de\s+(\d{4})/i);
+      if(m){
+        const dd = String(m[1]).padStart(2,"0");
+        const monthName = m[2];
+        const yy = m[3];
+        const months = {
+          "janeiro":1,"fevereiro":2,"marco":3,"março":3,"abril":4,"maio":5,"junho":6,
+          "julho":7,"agosto":8,"setembro":9,"outubro":10,"novembro":11,"dezembro":12
+        };
+        const key = monthName.normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+        const mmN = months[monthName] || months[key] || null;
+        if(mmN){
+          const mm = String(mmN).padStart(2,"0");
+          return `${yy}-${mm}-${dd}`;
+        }
+      }
+
+      // fallback Date.parse
+      const d = new Date(s0);
+      if(!isNaN(d.getTime())){
+        const du = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+        return du.toISOString().slice(0,10);
+      }
+      return null;
+    };
+
+    const toNumber = (v) => {
     if (typeof v === "number" && isFinite(v)) return v;
     const s = norm(v);
     if (!s) return NaN;
@@ -886,34 +923,76 @@ function importBankMovementsAOA(aoa){
   // Find header row for Portuguese bank exports (ActivoBank / Santander-like)
   const headerHints = ["data", "operação", "operacao", "descr", "montante", "saldo"];
   let headerRow = -1;
-  for (let i=0;i<Math.min(aoa.length, 30);i++){
-    const row = aoa[i] || [];
-    const joined = row.map(normLower).join(" | ");
-    const hit = headerHints.filter(h => joined.includes(h)).length;
-    if (hit >= 3){
-      headerRow = i;
-      break;
-    }
-  }
-
-  let colDate = 0, colDesc = 2, colAmount = 3;
-  if (headerRow >= 0){
-    const row = aoa[headerRow] || [];
-    const findCol = (pred) => {
-      for (let c=0;c<row.length;c++){
-        if (pred(normLower(row[c]))) return c;
+    for(let r=0;r<Math.min(aoa.length,25);r++){
+      const row = aoa[r].map(x=>String(x??"").trim().toLowerCase());
+      const hits = (k)=>row.some(c=>c===k || c.includes(k));
+      if(hits("data") || hits("date")){
+        if(hits("descr") || hits("mov") || hits("desc") || hits("detalh") || hits("concept")){
+          headerRow = r; break;
+        }
       }
-      return -1;
-    };
-    const cDate = findCol(t => t.includes("data") && (t.includes("op") || t.includes("valor") || t.includes("mov")));
-    const cDesc = findCol(t => t.includes("descr") || t.includes("descrit") || t.includes("mov"));
-    const cAmt  = findCol(t => t.includes("mont") || t.includes("valor") || t.includes("amount"));
-    if (cDate>=0) colDate=cDate;
-    if (cDesc>=0) colDesc=cDesc;
-    if (cAmt>=0)  colAmount=cAmt;
-  }
+    }
 
-  const startRow = headerRow>=0 ? headerRow+1 : 0;
+    // colunas (header ou inferência)
+    let colDate=-1, colDesc=-1, colAmount=-1, colDebit=-1, colCredit=-1;
+
+    if(headerRow>=0){
+      const hdr = aoa[headerRow].map(x=>String(x??"").trim().toLowerCase());
+      const find = (preds)=> hdr.findIndex(h => preds.some(p=>h===p || h.includes(p)));
+      colDate   = find(["data","date","dt"]);
+      colDesc   = find(["descrição","descricao","descr","movimento","descritivo","detalhe","conceito","description","desc"]);
+      colAmount = find(["montante","valor","amount","quantia","importo"]);
+      colDebit  = find(["débito","debito","debit"]);
+      colCredit = find(["crédito","credito","credit"]);
+      if(colAmount<0 && colDebit>=0 && colCredit>=0){
+        // ok: usa débito/crédito
+      }
+    } else {
+      // inferência sem cabeçalho
+      const maxCols = Math.min(12, Math.max(...aoa.map(r=>r.length)));
+      const sampleRows = aoa.slice(0, Math.min(60, aoa.length));
+
+      const dateScore = new Array(maxCols).fill(0);
+      const numScore  = new Array(maxCols).fill(0);
+      const textScore = new Array(maxCols).fill(0);
+
+      for(const row of sampleRows){
+        for(let c=0;c<maxCols;c++){
+          const v = row[c];
+          if(toISODate(v)) dateScore[c] += 1;
+          if(toNumber(v)!=null) numScore[c] += 1;
+          const s = String(v??"").trim();
+          if(s && isNaN(Number(s.replace(/\s+/g,"").replace(",",".")))) textScore[c] += Math.min(20, s.length);
+        }
+      }
+
+      colDate = dateScore.indexOf(Math.max(...dateScore));
+      // descrição: maior texto, exclui data
+      const textScore2 = textScore.map((v,i)=> i===colDate ? -1 : v);
+      colDesc = textScore2.indexOf(Math.max(...textScore2));
+
+      // colunas numéricas: exclui data
+      const numericCols = [];
+      for(let c=0;c<maxCols;c++){
+        if(c===colDate) continue;
+        if(numScore[c] >= 5) numericCols.push(c);
+      }
+      numericCols.sort((a,b)=>a-b);
+
+      if(numericCols.length===1){
+        colAmount = numericCols[0];
+      } else if(numericCols.length>=2){
+        // padrão comum: Débito | Crédito (por ordem)
+        colDebit = numericCols[0];
+        colCredit = numericCols[1];
+      }
+    }
+
+    // fallback final
+    if(colDate<0) colDate = 0;
+    if(colDesc<0) colDesc = 1;
+
+    const startRow = headerRow>=0 ? headerRow+1 : 0;
 
   const existing = (state.transactions||[]).map(t => bankTxSig(t)).filter(Boolean);
   const seen = new Set(existing);
