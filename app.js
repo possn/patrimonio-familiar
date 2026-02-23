@@ -826,74 +826,150 @@ function parseEuroAmount(v){
   return isFinite(num) ? num : null;
 }
 
-function importBankMovementsAOA(aoa){
-  if (!Array.isArray(aoa) || aoa.length===0) throw new Error("Ficheiro vazio ou ilegível.");
-  const headerRowIdx = findHeaderRow(aoa);
+
+function importBankMovementsAOA(rows){
+  // rows: array-of-arrays from SheetJS (header:1). Works with typical PT bank exports (.xls/.xlsx)
+  // Robust parsing: header-based mapping when present; otherwise heuristic per row.
+  let added=0, dup=0, read=0;
+
+  // helper: safe get
+  const cell = (row, i) => (row && i!=null && i>=0 && i<row.length) ? row[i] : null;
+
+  // detect header row (first 15) and map cols
+  const headerIdx = findHeaderRow(rows);
   let startIdx = 0;
-  let colMap = null;
+  let idxDate = 0, idxDesc = 2, idxAmount = 3, idxBalance = 4;
 
-  if (headerRowIdx >= 0){
-    const header = (aoa[headerRowIdx]||[]).map(normStr);
-    startIdx = headerRowIdx + 1;
+  if(headerIdx >= 0){
+    const header = (rows[headerIdx]||[]).map(normStr);
+    startIdx = headerIdx + 1;
 
-    const idxDate = header.findIndex(h => h.includes("data") && (h.includes("opera") || h.includes("mov") || h==="data"));
-    const idxDesc = header.findIndex(h => h.includes("descr") || h.includes("descrit") || h.includes("movimento"));
-    const idxAmt  = header.findIndex(h => h.includes("montante") || h.includes("valor") || h.includes("amount"));
-    colMap = { date: idxDate>=0?idxDate:0, desc: idxDesc>=0?idxDesc:2, amt: idxAmt>=0?idxAmt:3 };
-  }else{
-    // no header: assume [data, data valor, descrição, montante, saldo] like typical PT bank export
-    startIdx = 0;
-    colMap = { date: 0, desc: 2, amt: 3 };
+    // map by keywords
+    header.forEach((h, i)=>{
+      if(!h) return;
+      if((h.includes("data") && (h.includes("oper") || h.includes("ope") || h.includes("mov"))) && idxDate===0) idxDate=i;
+      if((h.includes("data") && (h.includes("valor") || h.includes("val"))) && idxDate===0) idxDate=i; // fallback
+      if(h.includes("descr")) idxDesc=i;
+      if(h.includes("mont") || h.includes("valor") || h.includes("import") || h.includes("quant")) idxAmount=i;
+      if(h.includes("saldo") || h.includes("balan")) idxBalance=i;
+    });
   }
 
-  let read = 0, added = 0, duplicates = 0;
+  // heuristic extractor for weird shapes / shifted columns
+  function extractRow(row){
+    if(!row || row.length===0) return null;
 
-  // build existing hash set
-  const existing = new Set((state.transactions || []).map(t => t.hash).filter(Boolean));
+    // collect non-empty cells
+    const cells = row.map(v=>v).filter(v=>v!==null && v!==undefined && String(v).trim()!=="");
+    if(cells.length===0) return null;
 
-  for (let r=startIdx; r<aoa.length; r++){
-    const row = aoa[r] || [];
-    // stop if row is basically empty
-    const nonEmpty = row.some(c => String(c ?? "").trim() !== "");
-    if (!nonEmpty) continue;
+    // 1) date: prefer mapped idxDate, otherwise scan first 3 cells for something date-like
+    let dateISO = excelDateToISO(cell(row, idxDate));
+    if(!dateISO){
+      for(let j=0;j<Math.min(3,row.length);j++) {
+        dateISO = excelDateToISO(row[j]);
+        if(dateISO) break;
+      }
+    }
 
-    const dateISO = excelDateToISO(row[colMap.date]);
-    const desc = String(row[colMap.desc] ?? "").trim();
-    const amtRaw = parseEuroAmount(row[colMap.amt]);
+    // 2) amount & balance: prefer mapped indices; otherwise infer from numeric-like cells
+    let amount = parseEuro(cell(row, idxAmount));
+    let balance = parseEuro(cell(row, idxBalance));
 
+    if(amount==null){
+      const nums = [];
+      for(const v of row){
+        const n = parseEuro(v);
+        if(n==null) continue;
+        // ignore plausible Excel date serials (very large) if we already have a date from string
+        if(n>20000 && n<60000 && !String(v).includes(",") && !String(v).includes(".") && !String(v).includes("€")) {
+          // could be date serial; keep but low priority
+          nums.push({n, v, isDateSerial:true});
+        } else {
+          nums.push({n, v, isDateSerial:false});
+        }
+      }
+      // Prefer non-date-serial numbers
+      const nums2 = nums.filter(x=>!x.isDateSerial);
+      const pick = (nums2.length?nums2:nums);
+      if(pick.length===1) {
+        amount = pick[0].n;
+      } else if(pick.length>=2) {
+        // common bank export: ... amount, balance as last two numerics
+        amount = pick[pick.length-2].n;
+        balance = (balance==null) ? pick[pick.length-1].n : balance;
+      }
+    }
+
+    // 3) description: prefer mapped idxDesc; otherwise longest string cell that isn't a date
+    let desc = normStr(cell(row, idxDesc));
+    if(!desc){
+      let best="";
+      for(const v of row){
+        if(v===null || v===undefined) continue;
+        const s = normStr(v);
+        if(!s) continue;
+        if(excelDateToISO(v)) continue;
+        if(parseEuro(v)!=null) continue;
+        if(s.length>best.length) best=s;
+      }
+      desc = best;
+    }
+    if(!desc) desc = "Movimento";
+
+    // require date+amount at minimum
+    if(!dateISO || amount==null) return null;
+
+    return { dateISO, desc, amount, balance };
+  }
+
+  for(let i=startIdx;i<rows.length;i++) {
+    const row = rows[i];
+    // skip fully empty
+    if(!row || row.every(v=>v===null || v===undefined || String(v).trim()==="")) continue;
     read++;
 
-    if (!dateISO || !desc || amtRaw == null) continue;
+    const ex = extractRow(row);
+    if(!ex) continue;
 
-    const type = amtRaw < 0 ? "out" : "in";
-    const amount = Math.abs(amtRaw);
+    const amount = ex.amount;
+    const dateISO = ex.dateISO;
+    const desc = ex.desc;
 
-    const hash = `${dateISO}|${type}|${amount.toFixed(2)}|${normStr(desc)}`;
+    const type = amount >= 0 ? "in" : "out";
+    const absAmount = Math.abs(amount);
 
-    if (existing.has(hash)){
-      duplicates++;
+    // duplicate key
+    const key = [dateISO, type, absAmount.toFixed(2), desc.slice(0,80)].join("|");
+    if(state.bankSeenKeys && state.bankSeenKeys[key]) {
+      dup++;
       continue;
     }
 
     const tx = {
-      id: crypto.randomUUID(),
+      id: "m_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8),
       date: dateISO,
       type,
-      amount,
-      category: "Banco",
-      desc,
-      recurring: false,
-      note: "Importado do Excel",
-      hash
+      amount: absAmount,
+      category: "",
+      note: desc,
+      source: "bank"
     };
 
-    state.transactions.unshift(tx);
-    existing.add(hash);
+    state.movements = state.movements || [];
+    state.movements.push(tx);
+
+    state.bankSeenKeys = state.bankSeenKeys || {};
+    state.bankSeenKeys[key] = 1;
+
     added++;
   }
 
+  // persist + rerender
   saveState();
-  return { read, added, duplicates };
+  renderAll();
+
+  alert(`Importação de movimentos concluída.\nNovos: ${added} | Duplicados ignorados: ${dup} | Linhas lidas: ${read}`);
 }
 
 function fileToRows(file){
@@ -1523,13 +1599,11 @@ function openDistDetail(keepOpen=false){
         }
         const file = fileInput.files[0];
         const res = await importBankExcel(file);
-        alert(
-          `Importação concluída:\n` +
-          `• Linhas lidas: ${res.rowsRead}\n` +
-          `• Inseridos: ${res.inserted}\n` +
-          `• Duplicados ignorados: ${res.duplicates}` +
-          (res.errors ? `\n• Erros: ${res.errors}` : "")
-        );
+        alert("Importação concluída:
+• Linhas lidas: " + res.rowsRead + "
+• Inseridos: " + res.inserted + "
+• Duplicados ignorados: " + res.duplicates + (res.errors ? "
+• Erros: " + res.errors : ""));
         fileInput.value = "";
         renderAll();
       } catch (err) {
