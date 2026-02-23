@@ -417,5 +417,15 @@
   </div>
 </div>
 
+<!-- PWA/Offline: cache CDN libs (Chart.js/XLSX/pdf.js) + app shell -->
+<script>
+  (function(){
+    if (!('serviceWorker' in navigator)) return;
+    window.addEventListener('load', function(){
+      navigator.serviceWorker.register('./sw.js').catch(function(){});
+    });
+  })();
+</script>
+
 </body>
 </html>
