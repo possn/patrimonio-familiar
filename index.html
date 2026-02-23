@@ -11,8 +11,8 @@
   <link rel="stylesheet" href="styles.css?v=6">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-<script defer src="app.js?v=6"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.min.js"></script>
+  <script defer src="app.js?v=6"></script>
 </head>
 <body>
   <header class="topbar">
@@ -145,7 +145,25 @@
         <div class="hint" id="importHint">Nenhum ficheiro importado nesta sessão.</div>
       </div>
 
+      
       <div class="card">
+        <div class="card__head">
+          <div>
+            <div class="card__title">Importar PDF (Movimentos bancários)</div>
+            <div class="card__muted">Extrai entradas/saídas do extracto. Lê localmente. Não envia dados.</div>
+          </div>
+        </div>
+
+        <div class="row row--wrap" style="gap:10px">
+          <input id="pdfInput" type="file" class="input" accept="application/pdf,.pdf">
+          <button class="btn btn--primary" id="btnImportPDF" disabled>Importar PDF</button>
+          <button class="btn" id="btnPdfHelp">Como funciona</button>
+        </div>
+
+        <div class="hint" id="pdfHint">Nenhum PDF importado nesta sessão.</div>
+      </div>
+
+<div class="card">
         <div class="card__head">
           <div>
             <div class="card__title">Backup</div>
@@ -170,19 +188,6 @@
         <button class="btn btn--danger" id="btnReset">Reset total</button>
       </div>
     </section>
-<div class="card" style="margin-top:14px">
-  <div class="card__head">
-    <div>
-      <div class="card__title">Extrato bancário (PDF)</div>
-      <div class="card__muted">Importa movimentos e classifica automaticamente (salário, transferências, cartão, serviços, outros). Substitui movimentos PDF no mesmo período.</div>
-    </div>
-  </div>
-  <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap">
-    <input class="input" type="file" id="pdfFile" accept="application/pdf">
-    <button class="btn btn--primary" id="btnImportPDF">Importar PDF</button>
-  </div>
-  <div class="card__muted" style="margin-top:10px">Processamento local no dispositivo (sem upload).</div>
-</div>
 
     <!-- CASHFLOW -->
     <section class="view" data-view="cashflow" id="viewCashflow" hidden>

@@ -776,6 +776,192 @@ function fileToRows(file){
 }
 
 
+// =======================
+// PDF import (Extratos bancários)
+// =======================
+
+const PT_MONTH = {
+  "jan":1,"fev":2,"mar":3,"abr":4,"mai":5,"jun":6,"jul":7,"ago":8,"set":9,"out":10,"nov":11,"dez":12
+};
+
+function ptDateToISO(dd, mon3, yyyy){
+  const m = PT_MONTH[String(mon3||"").toLowerCase().slice(0,3)];
+  if (!m) return "";
+  const d = String(dd).padStart(2,"0");
+  const mm = String(m).padStart(2,"0");
+  return `${yyyy}-${mm}-${d}`;
+}
+
+function parseEuroAmount(s){
+  if (s == null) return NaN;
+  let t = String(s).trim();
+  // normalize unicode minus
+  t = t.replace(/\u2212/g, "-").replace(/−/g, "-");
+  // keep sign if present
+  // remove currency and spaces
+  t = t.replace(/\s/g,"").replace("€","");
+  // remove thousands '.' and convert decimal ',' to '.'
+  t = t.replace(/\./g,"").replace(",",".");
+  // handle leading '+'
+  t = t.replace(/^\+/,"");
+  const n = Number(t);
+  return isFinite(n) ? n : NaN;
+}
+
+async function pdfPageToLines(page){
+  const content = await page.getTextContent({ disableCombineTextItems: false });
+  const items = (content.items || []).map(it=>{
+    const tr = it.transform || [1,0,0,1,0,0];
+    return { str: String(it.str||"").trim(), x: tr[4]||0, y: tr[5]||0 };
+  }).filter(o=>o.str);
+
+  // cluster by y (line)
+  items.sort((a,b)=> (b.y - a.y) || (a.x - b.x));
+  const lines = [];
+  const EPS = 2.0;
+  for (const it of items){
+    let line = lines.find(l=>Math.abs(l.y - it.y) <= EPS);
+    if (!line){
+      line = { y: it.y, parts: [] };
+      lines.push(line);
+    }
+    line.parts.push(it);
+  }
+  lines.sort((a,b)=> b.y - a.y);
+  return lines.map(l=> l.parts.sort((a,b)=>a.x-b.x).map(p=>p.str).join(" ").replace(/\s+/g," ").trim())
+              .filter(Boolean);
+}
+
+function classifyBankMovement(raw){
+  const s = String(raw||"").toLowerCase();
+
+  // entradas
+  if (s.includes("ordenado")) return "Rendimento · Ordenado";
+  if (s.includes("trf. mb way de")) return "Entrada · MB WAY";
+  if (s.includes("transferência de") || s.includes("transferencia de")) return "Entrada · Transferência";
+
+  // saídas frequentes
+  if (s.includes("pagamento de conta cartão") || s.includes("pagamento de conta cartao")) return "Saída · Cartão";
+  if (s.includes("poupanca noutra") || s.includes("poupança noutra")) return "Saída · Poupança/Investimento";
+  if (s.includes("levantamento")) return "Saída · Numerário";
+  if (s.includes("via verde")) return "Saída · Transportes";
+  if (s.includes("lisboagas") || s.includes("lisboa gás")) return "Saída · Casa (Gás)";
+  if (s.includes("ibelectra") || s.includes("edp") || s.includes("electra") || s.includes("elec")) return "Saída · Casa (Electricidade)";
+  if (s.includes("ageas")) return "Saída · Seguros";
+  if (s.includes("comissão") || s.includes("comissao") || s.includes("imposto do selo")) return "Saída · Banco (Comissões/Impostos)";
+  if (s.includes("servicos municip") || s.includes("serviços municip") || s.includes("pagamento municipio")) return "Saída · Município/Taxas";
+  if (s.includes("mesada")) return "Saída · Família (Mesadas)";
+  if (s.includes("trf. mb way para")) return "Saída · MB WAY";
+  if (s.includes("outros pagamentos")) return "Saída · Outros";
+
+  return "Movimento · Por classificar";
+}
+
+function parseBankLinesToMovements(lines){
+  const out = [];
+  let inTable = false;
+  let curISO = "";
+  let descParts = [];
+
+  function flushIfPossible(line){
+    // detect amount + balance like "... -23,00€ 9.346,66€"
+    const m = line.match(/([+\-]?\s*[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}\s*€)\s+([+\-]?\s*[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}\s*€)\s*$/);
+    if (!m) return false;
+    const amount = parseEuroAmount(m[1]);
+    if (!isFinite(amount) || !curISO) return false;
+
+    const rawLeft = line.slice(0, line.lastIndexOf(m[1])).trim();
+    const rawDesc = [...descParts, rawLeft].filter(Boolean).join(" ").replace(/\s+/g," ").trim();
+    const cat = classifyBankMovement(rawDesc);
+
+    out.push({
+      id: uid(),
+      type: amount >= 0 ? "in" : "out",
+      category: cat,
+      amount: Math.abs(amount),
+      date: curISO,
+      recurring: "none",
+      memo: rawDesc,
+      source: "pdf"
+    });
+
+    descParts = [];
+    return true;
+  }
+
+  for (let raw of lines){
+    const line = String(raw||"").replace(/\s+/g," ").trim();
+    if (!line) continue;
+
+    if (line.toLowerCase().includes("data da operação") || line.toLowerCase().includes("data da operacao")){
+      inTable = true;
+      continue;
+    }
+    if (!inTable) continue;
+
+    // new date header: "23 fev 2026"
+    let md = line.match(/^(\d{1,2})\s+([a-zA-ZçÇ]{3})\s+(\d{4})$/);
+    if (md){
+      curISO = ptDateToISO(md[1], md[2], md[3]);
+      descParts = [];
+      continue;
+    }
+
+    // ignore value-date lines
+    if (line.toLowerCase().startsWith("d. valor:")) continue;
+    if (line.toLowerCase().startsWith("documento com data:")) break;
+    if (line.toLowerCase().includes("movimentos da sua conta")) continue;
+    if (line.toLowerCase().includes("saldo disponível") || line.toLowerCase().includes("saldo disponivel")) continue;
+    if (line.toLowerCase().startsWith("titular")) continue;
+    if (line.toLowerCase().startsWith("conta")) continue;
+    if (line.toLowerCase().includes("para pesquisas genéricas")) continue;
+
+    // if line contains amount+balance at end, flush
+    if (flushIfPossible(line)) continue;
+
+    // otherwise, it's description continuation
+    descParts.push(line);
+  }
+  return out;
+}
+
+async function importBankPdfFile(file){
+  if (!window.pdfjsLib) throw new Error("pdf.js não carregou (offline?).");
+  const buf = await file.arrayBuffer();
+  const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+
+  const allLines = [];
+  for (let p = 1; p <= doc.numPages; p++){
+    const page = await doc.getPage(p);
+    const lines = await pdfPageToLines(page);
+    allLines.push(...lines);
+  }
+  const tx = parseBankLinesToMovements(allLines);
+  if (!tx.length) throw new Error("Não consegui detectar movimentos neste PDF.");
+  return tx;
+}
+
+function txFingerprint(t){
+  const d = String(t.date||"");
+  const a = Number(parseNum(t.amount)).toFixed(2);
+  const m = String(t.memo||"").toLowerCase().replace(/\s+/g," ").trim().slice(0,120);
+  return `${d}|${a}|${m}`;
+}
+
+function mergeTransactions(newTx){
+  const existing = new Set((state.transactions||[]).map(txFingerprint));
+  let added = 0;
+  for (const t of (newTx||[])){
+    const fp = txFingerprint(t);
+    if (existing.has(fp)) continue;
+    existing.add(fp);
+    state.transactions.push(t);
+    added++;
+  }
+  return added;
+}
+
+
 function csvToObjects(text){
   // Robust CSV/TSV parser with delimiter + header detection and multi-section support (e.g., "Combined" exports).
   const raw = String(text||"").replace(/^\uFEFF/,""); // strip BOM
@@ -1292,6 +1478,49 @@ if (fh) fh.addEventListener("change", ()=>renderFire());
   });
   $("btnTemplate").addEventListener("click", downloadTemplate);
 
+
+  // import PDF (movimentos bancários)
+  if ($("pdfInput") && $("btnImportPDF")){
+    // pdf.js worker (CDN)
+    try{
+      if (window.pdfjsLib && pdfjsLib.GlobalWorkerOptions){
+        pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.min.js";
+      }
+    }catch(_){}
+
+    $("pdfInput").addEventListener("change", ()=>{
+      $("btnImportPDF").disabled = !($("pdfInput").files && $("pdfInput").files.length);
+    });
+
+    $("btnPdfHelp").addEventListener("click", ()=>{
+      alert(
+        "Este import lê o PDF localmente (no teu dispositivo), extrai o texto e transforma em movimentos.\n\n" +
+        "Notas:\n" +
+        "• Se o PDF mostrar apenas os últimos 40 movimentos, deves importar PDFs adicionais (ou pesquisar períodos diferentes no banco) para cobrir o ano.\n" +
+        "• A classificação é automática por regras (podes corrigir manualmente depois)."
+      );
+    });
+
+    $("btnImportPDF").addEventListener("click", async ()=>{
+      const f = $("pdfInput").files && $("pdfInput").files[0];
+      if (!f) return;
+      try{
+        $("btnImportPDF").disabled = true;
+        $("pdfHint").textContent = "A ler PDF…";
+        const tx = await importBankPdfFile(f);
+        const added = mergeTransactions(tx);
+        await saveStateAsync(state);
+        renderAll();
+        $("pdfHint").textContent = `Importado: ${added} movimentos (PDF).`;
+      }catch(e){
+        $("pdfHint").textContent = "Falha ao importar PDF.";
+        alert("Falha no import PDF: " + (e && e.message ? e.message : String(e)));
+      }finally{
+        $("btnImportPDF").disabled = false;
+      }
+    });
+  }
+
   // json backup
   $("btnExportJSON").addEventListener("click", exportJSON);
   $("jsonInput").addEventListener("change", ()=>{
@@ -1435,7 +1664,7 @@ function renderFire(){
     if (d.length < 7) continue;
     const ym = d.slice(0,7);
     const cur = byMonth.get(ym) || {inc:0, out:0, pass:0};
-    const v = parseNum(t.value);
+    const v = parseNum((t.amount!=null)?t.amount:t.value);
     const type = t.type || (v<0 ? "out":"in");
     const abs = Math.abs(v);
     if (type === "out") cur.out += abs;
@@ -1458,8 +1687,15 @@ function renderFire(){
   const passM = avg("pass");
   const saveM = Math.max(0, incM - outM);
 
-  const exp0 = outM*12;
-  const pass0 = passM*12;
+  // Totais anuais (últimos 12 meses disponíveis)
+  const last12 = months.slice(-12);
+  const sum = (key)=> last12.reduce((s,m)=>s+(byMonth.get(m)?.[key]||0),0);
+  const incY = sum("inc");
+  const outY = sum("out");
+  const passY = sum("pass");
+
+  const exp0 = outY;
+  const pass0 = passY;
 
   const y = (cap0>0 && pass0>0) ? (pass0/cap0) : 0;
 
@@ -1523,203 +1759,3 @@ function renderFire(){
     }
   });
 }
-
-
-// === PDF BANK STATEMENT IMPORT (LOCAL) ===
-const PT_MONTHS = {"jan":"01","fev":"02","mar":"03","abr":"04","mai":"05","jun":"06","jul":"07","ago":"08","set":"09","out":"10","nov":"11","dez":"12"};
-
-function parseEuroNumber(str){
-  if (!str) return NaN;
-  let s = String(str).trim().replace(/[−–]/g,"-");
-  s = s.replace(/€/g,"").replace(/\s/g,"");
-  const negParen = /^\(.*\)$/.test(s);
-  if (negParen) s = s.slice(1,-1);
-  if (s.includes(",") && s.lastIndexOf(",") > s.lastIndexOf(".")) {
-    s = s.replace(/\./g,"").replace(/,/g,".");
-  } else {
-    s = s.replace(/,/g,"");
-  }
-  let v = Number(s);
-  if (negParen) v = -v;
-  return v;
-}
-
-function parsePtDate(line){
-  const m = String(line).trim().toLowerCase().match(/^(\d{1,2})\s+([a-zç]{3})\s+(\d{4})$/i);
-  if (!m) return null;
-  const dd = m[1].padStart(2,"0");
-  const mm = PT_MONTHS[m[2]];
-  const yyyy = m[3];
-  if (!mm) return null;
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function categorizeBankDesc(desc, value){
-  const d = (desc||"").toLowerCase();
-  if (d.includes("ordenado") || d.includes("salário") || d.includes("salario") || d.includes("unidade local de saude") || d.includes("uls")) return "Salário";
-  if (d.includes("pagamento de conta cartão") || d.includes("pagamento de conta cartao") || d.includes("cartão") || d.includes("cartao")) return "Cartão";
-  if (d.includes("mb way") || d.includes("transfer") || d.includes("trf.") || d.includes("trf ") || d.includes("sepa")) return value >= 0 ? "Transferência (entrada)" : "Transferência (saída)";
-  if (d.includes("levantamento") || d.includes("numerário") || d.includes("numerario") || d.includes("atm")) return "Numerário";
-  if (d.includes("via verde") || d.includes("portagens") || d.includes("lisboagas") || d.includes("ibelectra") || d.includes("edp") || d.includes("aguas") || d.includes("municip") || d.includes("imposto") || d.includes("comissão") || d.includes("comissao")) return "Serviços";
-  return "Outros";
-}
-
-async function extractLinesFromPdf(file){
-  if (typeof pdfjsLib === "undefined") throw new Error("pdf.js não carregou.");
-  const ab = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({data: ab}).promise;
-  const out = [];
-  const yTol = 2.0;
-
-  for (let p=1; p<=pdf.numPages; p++){
-    const page = await pdf.getPage(p);
-    const tc = await page.getTextContent();
-    const items = tc.items.map(it => ({str: it.str, x: it.transform[4], y: it.transform[5]}))
-      .filter(it => it.str && it.str.trim() !== "");
-    items.sort((a,b)=> (b.y - a.y) || (a.x - b.x));
-
-    let current = null;
-    for (const it of items){
-      if (!current || Math.abs(it.y - current.y) > yTol){
-        current = {y: it.y, parts: [it]};
-        out.push(current);
-      } else current.parts.push(it);
-    }
-  }
-
-  return out.map(l=>{
-    l.parts.sort((a,b)=>a.x-b.x);
-    return l.parts.map(p=>p.str).join(" ").replace(/\s+/g," ").trim();
-  }).filter(Boolean);
-}
-
-function parseBankMovementsFromLines(lines){
-  // Robust parser for CGD-style "Lista de Movimentos" PDFs:
-  // - Dates like: "23 fev 2026"
-  // - Optional line "D. valor: ..."
-  // - One or more description lines, ending with VALUE and BALANCE (often glued to €)
-  const moves = [];
-  const moneyRe = /[−-]?\d[\d\.\s]*,\d{2}\s*€?/g; // PT format (comma decimals) with optional €
-
-  function extractLastTwoMoney(s){
-    const matches = (s.match(moneyRe) || []).map(x=>x.trim());
-    if (matches.length < 2) return null;
-
-    const balRaw = matches[matches.length-1];
-    const valRaw = matches[matches.length-2];
-
-    let rest = s;
-    const idxBal = rest.lastIndexOf(balRaw);
-    if (idxBal >= 0) rest = rest.slice(0, idxBal) + rest.slice(idxBal + balRaw.length);
-
-    const idxVal = rest.lastIndexOf(valRaw);
-    if (idxVal >= 0) rest = rest.slice(0, idxVal) + rest.slice(idxVal + valRaw.length);
-
-    rest = rest.replace(/\s+/g,' ').trim();
-    return { valRaw, balRaw, desc: rest };
-  }
-
-  let i = 0;
-  while (i < lines.length){
-    const dateIso = parsePtDate(lines[i]);
-    if (!dateIso){ i++; continue; }
-
-    let j = i + 1;
-    while (j < lines.length && /^D\.?\s*valor\s*:/i.test(lines[j])) j++;
-
-    let buf = "";
-
-    while (j < lines.length){
-      const line = lines[j];
-
-      if (buf && parsePtDate(line)){
-        break; // next movement block starts
-      }
-
-      buf = buf ? (buf + " " + line) : line;
-
-      const ex = extractLastTwoMoney(buf);
-      if (ex){
-        const value = parseNumberSmart(ex.valRaw);
-        const balance = parseNumberSmart(ex.balRaw);
-        if (Number.isFinite(value) && Number.isFinite(balance)){
-          const description = ex.desc || "Movimento";
-          moves.push({ date: dateIso, description, amount: value, balance });
-          buf = "";
-          break; // typical layout: one movement per date block
-        }
-      }
-
-      j++;
-    }
-
-    i = j;
-  }
-
-  return moves;
-}
-
-function applyPdfMovementsImport(moves){
-  if (!moves || moves.length === 0) return {added:0, removed:0};
-
-  const dates = moves.map(m=>m.date).sort();
-  const minDate = dates[0], maxDate = dates[dates.length-1];
-
-  const before = (state.transactions||[]).length;
-  state.transactions = (state.transactions||[]).filter(t=>{
-    if (t.source !== "bank_pdf") return true;
-    if (!t.date) return true;
-    return !(t.date >= minDate && t.date <= maxDate);
-  });
-  const removed = before - state.transactions.length;
-
-  const existingKeys = new Set((state.transactions||[]).map(t=>{
-    const desc = (t.desc||t.description||"").toLowerCase().slice(0,80);
-    const type = t.type || ((Number(t.value)||0) < 0 ? "out" : "in");
-    const date = t.date || "";
-    const value = Number(t.value)||0;
-    return `${date}|${type}|${Math.round(value*100)}|${desc}`;
-  }));
-
-  let added = 0;
-  for (const m of moves){
-    if (existingKeys.has(m._key)) continue;
-    const id = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : ("tx_" + Date.now() + "_" + Math.random().toString(16).slice(2));
-    state.transactions.push({id, date:m.date, type:m.type, category:m.category, desc:m.desc, value:m.value, source:"bank_pdf"});
-    existingKeys.add(m._key);
-    added++;
-  }
-
-  saveState();
-  try{ renderAll(); }catch{}
-  try{ renderTxList(); }catch{}
-  return {added, removed, minDate, maxDate};
-}
-
-async function handleImportPDF(){
-  const inp = document.getElementById("pdfFile");
-  const file = inp && inp.files && inp.files[0];
-  if (!file){ alert("Seleciona um PDF primeiro."); return; }
-
-  try{
-    const lines = await extractLinesFromPdf(file);
-    const moves = parseBankMovementsFromLines(lines);
-    if (moves.length === 0){
-      alert("Não encontrei movimentos. Confirma se o PDF tem texto (não digitalizado).");
-      return;
-    }
-    const res = applyPdfMovementsImport(moves);
-    alert(`Importação concluída. Adicionados: ${res.added}. Substituídos no período: ${res.removed}. (${res.minDate} → ${res.maxDate})`);
-    inp.value = "";
-  }catch(err){
-    console.error(err);
-    alert("Falha a importar PDF: " + (err?.message || String(err)));
-  }
-}
-
-document.addEventListener("DOMContentLoaded", ()=>{
-  const btn = document.getElementById("btnImportPDF");
-  if (btn) btn.addEventListener("click", handleImportPDF);
-});
-
-// patched
