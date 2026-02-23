@@ -1523,3 +1523,188 @@ function renderFire(){
     }
   });
 }
+
+
+// === PDF BANK STATEMENT IMPORT (LOCAL) ===
+const PT_MONTHS = {"jan":"01","fev":"02","mar":"03","abr":"04","mai":"05","jun":"06","jul":"07","ago":"08","set":"09","out":"10","nov":"11","dez":"12"};
+
+function parseEuroNumber(str){
+  if (!str) return NaN;
+  let s = String(str).trim().replace(/[−–]/g,"-");
+  s = s.replace(/€/g,"").replace(/\s/g,"");
+  const negParen = /^\(.*\)$/.test(s);
+  if (negParen) s = s.slice(1,-1);
+  if (s.includes(",") && s.lastIndexOf(",") > s.lastIndexOf(".")) {
+    s = s.replace(/\./g,"").replace(/,/g,".");
+  } else {
+    s = s.replace(/,/g,"");
+  }
+  let v = Number(s);
+  if (negParen) v = -v;
+  return v;
+}
+
+function parsePtDate(line){
+  const m = String(line).trim().toLowerCase().match(/^(\d{1,2})\s+([a-zç]{3})\s+(\d{4})$/i);
+  if (!m) return null;
+  const dd = m[1].padStart(2,"0");
+  const mm = PT_MONTHS[m[2]];
+  const yyyy = m[3];
+  if (!mm) return null;
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function categorizeBankDesc(desc, value){
+  const d = (desc||"").toLowerCase();
+  if (d.includes("ordenado") || d.includes("salário") || d.includes("salario") || d.includes("unidade local de saude") || d.includes("uls")) return "Salário";
+  if (d.includes("pagamento de conta cartão") || d.includes("pagamento de conta cartao") || d.includes("cartão") || d.includes("cartao")) return "Cartão";
+  if (d.includes("mb way") || d.includes("transfer") || d.includes("trf.") || d.includes("trf ") || d.includes("sepa")) return value >= 0 ? "Transferência (entrada)" : "Transferência (saída)";
+  if (d.includes("levantamento") || d.includes("numerário") || d.includes("numerario") || d.includes("atm")) return "Numerário";
+  if (d.includes("via verde") || d.includes("portagens") || d.includes("lisboagas") || d.includes("ibelectra") || d.includes("edp") || d.includes("aguas") || d.includes("municip") || d.includes("imposto") || d.includes("comissão") || d.includes("comissao")) return "Serviços";
+  return "Outros";
+}
+
+async function extractLinesFromPdf(file){
+  if (typeof pdfjsLib === "undefined") throw new Error("pdf.js não carregou.");
+  const ab = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: ab}).promise;
+  const out = [];
+  const yTol = 2.0;
+
+  for (let p=1; p<=pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    const tc = await page.getTextContent();
+    const items = tc.items.map(it => ({str: it.str, x: it.transform[4], y: it.transform[5]}))
+      .filter(it => it.str && it.str.trim() !== "");
+    items.sort((a,b)=> (b.y - a.y) || (a.x - b.x));
+
+    let current = null;
+    for (const it of items){
+      if (!current || Math.abs(it.y - current.y) > yTol){
+        current = {y: it.y, parts: [it]};
+        out.push(current);
+      } else current.parts.push(it);
+    }
+  }
+
+  return out.map(l=>{
+    l.parts.sort((a,b)=>a.x-b.x);
+    return l.parts.map(p=>p.str).join(" ").replace(/\s+/g," ").trim();
+  }).filter(Boolean);
+}
+
+function parseBankMovementsFromLines(lines){
+  const moves = [];
+  let i=0;
+
+  while (i < lines.length){
+    const dateIso = parsePtDate(lines[i]);
+    if (!dateIso){ i++; continue; }
+
+    let j = i+1;
+    if (j < lines.length && /^d\.\s*valor\s*:/i.test(lines[j])) j++;
+
+    const descParts = [];
+    let valueLine = null;
+
+    while (j < lines.length){
+      const ln = lines[j];
+      if (parsePtDate(ln) && descParts.length>0) break;
+
+      const euros = ln.match(/[-−–]?\d{1,3}(?:[\.,\s]\d{3})*(?:[\.,]\d{2})\s*€/g);
+      if (euros && euros.length >= 1){
+        valueLine = ln;
+        break;
+      } else {
+        if (!/^lista de movimentos/i.test(ln) && !/^página\s+\d+/i.test(ln)) descParts.push(ln);
+      }
+      j++;
+    }
+
+    if (!valueLine){ i++; continue; }
+
+    const euros = valueLine.match(/[-−–]?\d{1,3}(?:[\.,\s]\d{3})*(?:[\.,]\d{2})\s*€/g) || [];
+    const valueRaw = euros[0] || "";
+    let value = parseEuroNumber(valueRaw);
+    if (Number.isNaN(value)){
+      const m = valueLine.match(/[-−–]?\d+[\.,]\d{2}/);
+      value = parseEuroNumber(m ? m[0] : "");
+    }
+
+    const desc = descParts.join(" ").replace(/\s+/g," ").trim() || "Movimento";
+    const cat = categorizeBankDesc(desc, value);
+    const type = value < 0 ? "out" : "in";
+    const key = `${dateIso}|${type}|${Math.round(value*100)}|${desc.toLowerCase().slice(0,80)}`;
+
+    if (!Number.isNaN(value) && value !== 0){
+      moves.push({_key:key, date:dateIso, type, category:cat, desc, value:Math.round(value*100)/100, source:"bank_pdf"});
+    }
+
+    i = j + 1;
+  }
+
+  return moves;
+}
+
+function applyPdfMovementsImport(moves){
+  if (!moves || moves.length === 0) return {added:0, removed:0};
+
+  const dates = moves.map(m=>m.date).sort();
+  const minDate = dates[0], maxDate = dates[dates.length-1];
+
+  const before = (state.transactions||[]).length;
+  state.transactions = (state.transactions||[]).filter(t=>{
+    if (t.source !== "bank_pdf") return true;
+    if (!t.date) return true;
+    return !(t.date >= minDate && t.date <= maxDate);
+  });
+  const removed = before - state.transactions.length;
+
+  const existingKeys = new Set((state.transactions||[]).map(t=>{
+    const desc = (t.desc||t.description||"").toLowerCase().slice(0,80);
+    const type = t.type || ((Number(t.value)||0) < 0 ? "out" : "in");
+    const date = t.date || "";
+    const value = Number(t.value)||0;
+    return `${date}|${type}|${Math.round(value*100)}|${desc}`;
+  }));
+
+  let added = 0;
+  for (const m of moves){
+    if (existingKeys.has(m._key)) continue;
+    const id = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : ("tx_" + Date.now() + "_" + Math.random().toString(16).slice(2));
+    state.transactions.push({id, date:m.date, type:m.type, category:m.category, desc:m.desc, value:m.value, source:"bank_pdf"});
+    existingKeys.add(m._key);
+    added++;
+  }
+
+  saveState();
+  try{ renderAll(); }catch{}
+  try{ renderTxList(); }catch{}
+  return {added, removed, minDate, maxDate};
+}
+
+async function handleImportPDF(){
+  const inp = document.getElementById("pdfFile");
+  const file = inp && inp.files && inp.files[0];
+  if (!file){ alert("Seleciona um PDF primeiro."); return; }
+
+  try{
+    const lines = await extractLinesFromPdf(file);
+    const moves = parseBankMovementsFromLines(lines);
+    if (moves.length === 0){
+      alert("Não encontrei movimentos. Confirma se o PDF tem texto (não digitalizado).");
+      return;
+    }
+    const res = applyPdfMovementsImport(moves);
+    alert(`Importação concluída. Adicionados: ${res.added}. Substituídos no período: ${res.removed}. (${res.minDate} → ${res.maxDate})`);
+    inp.value = "";
+  }catch(err){
+    console.error(err);
+    alert("Falha a importar PDF: " + (err?.message || String(err)));
+  }
+}
+
+document.addEventListener("DOMContentLoaded", ()=>{
+  const btn = document.getElementById("btnImportPDF");
+  if (btn) btn.addEventListener("click", handleImportPDF);
+});
