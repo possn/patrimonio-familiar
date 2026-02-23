@@ -18,6 +18,8 @@ const PRECACHE_URLS = [
   './index.html',
   './styles.css',
   './app.js',
+  './vendor/pdfjs/pdf.min.js',
+  './vendor/pdfjs/pdf.worker.min.js',
   // libs externas (CDN) — essenciais p/ a app
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js',
   'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',

@@ -1,3 +1,22 @@
+
+// === PDF.js LOCAL LOADER (PWA SAFE) ===
+async function loadPdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  const libUrl = './vendor/pdfjs/pdf.min.js';
+  const workerUrl = './vendor/pdfjs/pdf.worker.min.js';
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = libUrl;
+    s.async = true;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Falha a carregar PDF.js local: ' + libUrl));
+    document.head.appendChild(s);
+  });
+  if (!window.pdfjsLib) throw new Error('PDF.js carregou mas pdfjsLib não está disponível.');
+  try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl; } catch (e) {}
+  return window.pdfjsLib;
+}
+
 /* Património Familiar — REBUILD percento-ish v5 (fix nav+import+tx) */
 "use strict";
 
