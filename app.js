@@ -732,7 +732,7 @@ function renderTxList(){
     const row = document.createElement("div");
     row.className = "item";
     row.innerHTML = `<div class="item__l">
-      <div class="item__t">${sign} ${escapeHtml(t.category)}</div>
+      <div class="item__t">${sign} ${escapeHtml(t.desc || t.category)}</div>
       <div class="item__s">${escapeHtml(t.type==="in" ? "Entrada" : "Saída")} · ${escapeHtml(t.date)}</div>
     </div>
     <div class="item__v">${fmtEUR(parseNum(t.amount))}</div>`;
@@ -826,150 +826,147 @@ function parseEuroAmount(v){
   return isFinite(num) ? num : null;
 }
 
+function importBankMovementsAOA(aoa){
+  // aoa: Array of Arrays (rows) from XLS/XLSX first sheet
+  if (!Array.isArray(aoa) || aoa.length===0) throw new Error("Ficheiro vazio ou ilegível.");
 
-function importBankMovementsAOA(rows){
-  // rows: array-of-arrays from SheetJS (header:1). Works with typical PT bank exports (.xls/.xlsx)
-  // Robust parsing: header-based mapping when present; otherwise heuristic per row.
-  let added=0, dup=0, read=0;
+  const norm = (v) => (v==null ? "" : String(v)).trim();
+  const normLower = (v) => norm(v).toLowerCase();
 
-  // helper: safe get
-  const cell = (row, i) => (row && i!=null && i>=0 && i<row.length) ? row[i] : null;
+  const isDateLike = (v) => {
+    if (v instanceof Date && !isNaN(v)) return true;
+    const s = norm(v);
+    if (!s) return false;
+    // dd-mm-yyyy, dd/mm/yyyy, yyyy-mm-dd
+    return /^(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|\d{4}[\/\-.]\d{1,2}[\/\-.]\d{1,2})$/.test(s);
+  };
 
-  // detect header row (first 15) and map cols
-  const headerIdx = findHeaderRow(rows);
-  let startIdx = 0;
-  let idxDate = 0, idxDesc = 2, idxAmount = 3, idxBalance = 4;
+  const toISODate = (v) => {
+    if (v instanceof Date && !isNaN(v)) {
+      const y=v.getFullYear();
+      const m=String(v.getMonth()+1).padStart(2,"0");
+      const d=String(v.getDate()).padStart(2,"0");
+      return `${y}-${m}-${d}`;
+    }
+    const s = norm(v);
+    if (!s) return null;
+    // try yyyy-mm-dd
+    let m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+    if (m){
+      const y=m[1], mo=String(m[2]).padStart(2,"0"), d=String(m[3]).padStart(2,"0");
+      return `${y}-${mo}-${d}`;
+    }
+    // try dd-mm-yyyy
+    m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+    if (m){
+      const d=String(m[1]).padStart(2,"0");
+      const mo=String(m[2]).padStart(2,"0");
+      let y=m[3];
+      if (y.length===2) y = (Number(y)>=70 ? "19"+y : "20"+y);
+      return `${y}-${mo}-${d}`;
+    }
+    return null;
+  };
 
-  if(headerIdx >= 0){
-    const header = (rows[headerIdx]||[]).map(normStr);
-    startIdx = headerIdx + 1;
+  const toNumber = (v) => {
+    if (typeof v === "number" && isFinite(v)) return v;
+    const s = norm(v);
+    if (!s) return NaN;
+    // handle 1.234,56  or 1,234.56 or -23,00
+    const cleaned = s
+      .replace(/\s+/g,"")
+      .replace(/€|eur/gi,"")
+      .replace(/\.(?=\d{3}(\D|$))/g,"")  // thousands dot
+      .replace(/,(?=\d{2}(\D|$))/g,".")  // decimal comma
+      .replace(/,/g,"");                 // remaining commas
+    const n = Number(cleaned);
+    return isFinite(n) ? n : NaN;
+  };
 
-    // map by keywords
-    header.forEach((h, i)=>{
-      if(!h) return;
-      if((h.includes("data") && (h.includes("oper") || h.includes("ope") || h.includes("mov"))) && idxDate===0) idxDate=i;
-      if((h.includes("data") && (h.includes("valor") || h.includes("val"))) && idxDate===0) idxDate=i; // fallback
-      if(h.includes("descr")) idxDesc=i;
-      if(h.includes("mont") || h.includes("valor") || h.includes("import") || h.includes("quant")) idxAmount=i;
-      if(h.includes("saldo") || h.includes("balan")) idxBalance=i;
-    });
+  // Find header row for Portuguese bank exports (ActivoBank / Santander-like)
+  const headerHints = ["data", "operação", "operacao", "descr", "montante", "saldo"];
+  let headerRow = -1;
+  for (let i=0;i<Math.min(aoa.length, 30);i++){
+    const row = aoa[i] || [];
+    const joined = row.map(normLower).join(" | ");
+    const hit = headerHints.filter(h => joined.includes(h)).length;
+    if (hit >= 3){
+      headerRow = i;
+      break;
+    }
   }
 
-  // heuristic extractor for weird shapes / shifted columns
-  function extractRow(row){
-    if(!row || row.length===0) return null;
-
-    // collect non-empty cells
-    const cells = row.map(v=>v).filter(v=>v!==null && v!==undefined && String(v).trim()!=="");
-    if(cells.length===0) return null;
-
-    // 1) date: prefer mapped idxDate, otherwise scan first 3 cells for something date-like
-    let dateISO = excelDateToISO(cell(row, idxDate));
-    if(!dateISO){
-      for(let j=0;j<Math.min(3,row.length);j++) {
-        dateISO = excelDateToISO(row[j]);
-        if(dateISO) break;
+  let colDate = 0, colDesc = 2, colAmount = 3;
+  if (headerRow >= 0){
+    const row = aoa[headerRow] || [];
+    const findCol = (pred) => {
+      for (let c=0;c<row.length;c++){
+        if (pred(normLower(row[c]))) return c;
       }
-    }
-
-    // 2) amount & balance: prefer mapped indices; otherwise infer from numeric-like cells
-    let amount = parseEuro(cell(row, idxAmount));
-    let balance = parseEuro(cell(row, idxBalance));
-
-    if(amount==null){
-      const nums = [];
-      for(const v of row){
-        const n = parseEuro(v);
-        if(n==null) continue;
-        // ignore plausible Excel date serials (very large) if we already have a date from string
-        if(n>20000 && n<60000 && !String(v).includes(",") && !String(v).includes(".") && !String(v).includes("€")) {
-          // could be date serial; keep but low priority
-          nums.push({n, v, isDateSerial:true});
-        } else {
-          nums.push({n, v, isDateSerial:false});
-        }
-      }
-      // Prefer non-date-serial numbers
-      const nums2 = nums.filter(x=>!x.isDateSerial);
-      const pick = (nums2.length?nums2:nums);
-      if(pick.length===1) {
-        amount = pick[0].n;
-      } else if(pick.length>=2) {
-        // common bank export: ... amount, balance as last two numerics
-        amount = pick[pick.length-2].n;
-        balance = (balance==null) ? pick[pick.length-1].n : balance;
-      }
-    }
-
-    // 3) description: prefer mapped idxDesc; otherwise longest string cell that isn't a date
-    let desc = normStr(cell(row, idxDesc));
-    if(!desc){
-      let best="";
-      for(const v of row){
-        if(v===null || v===undefined) continue;
-        const s = normStr(v);
-        if(!s) continue;
-        if(excelDateToISO(v)) continue;
-        if(parseEuro(v)!=null) continue;
-        if(s.length>best.length) best=s;
-      }
-      desc = best;
-    }
-    if(!desc) desc = "Movimento";
-
-    // require date+amount at minimum
-    if(!dateISO || amount==null) return null;
-
-    return { dateISO, desc, amount, balance };
+      return -1;
+    };
+    const cDate = findCol(t => t.includes("data") && (t.includes("op") || t.includes("valor") || t.includes("mov")));
+    const cDesc = findCol(t => t.includes("descr") || t.includes("descrit") || t.includes("mov"));
+    const cAmt  = findCol(t => t.includes("mont") || t.includes("valor") || t.includes("amount"));
+    if (cDate>=0) colDate=cDate;
+    if (cDesc>=0) colDesc=cDesc;
+    if (cAmt>=0)  colAmount=cAmt;
   }
 
-  for(let i=startIdx;i<rows.length;i++) {
-    const row = rows[i];
-    // skip fully empty
-    if(!row || row.every(v=>v===null || v===undefined || String(v).trim()==="")) continue;
+  const startRow = headerRow>=0 ? headerRow+1 : 0;
+
+  const existing = (state.transactions||[]).map(t => bankTxSig(t)).filter(Boolean);
+  const seen = new Set(existing);
+
+  let read=0, added=0, dup=0;
+
+  for (let i=startRow;i<aoa.length;i++){
+    const r = aoa[i] || [];
+    // skip fully empty rows
+    if (!r.some(v => norm(v) !== "")) continue;
+
+    const dISO = toISODate(r[colDate]);
+    const desc = norm(r[colDesc]);
+    const amt  = toNumber(r[colAmount]);
+
+    // some exports have trailing totals/notes — skip
+    if (!dISO || !isFinite(amt) || (!desc && !isDateLike(r[colDate]))) continue;
+
     read++;
 
-    const ex = extractRow(row);
-    if(!ex) continue;
-
-    const amount = ex.amount;
-    const dateISO = ex.dateISO;
-    const desc = ex.desc;
-
-    const type = amount >= 0 ? "in" : "out";
-    const absAmount = Math.abs(amount);
-
-    // duplicate key
-    const key = [dateISO, type, absAmount.toFixed(2), desc.slice(0,80)].join("|");
-    if(state.bankSeenKeys && state.bankSeenKeys[key]) {
-      dup++;
-      continue;
-    }
+    const kind = (amt>=0) ? "in" : "out";
+    const amountAbs = Math.round(Math.abs(amt)*100)/100;
 
     const tx = {
-      id: "m_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8),
-      date: dateISO,
-      type,
-      amount: absAmount,
-      category: "",
-      note: desc,
-      source: "bank"
+      id: "tx_" + Math.random().toString(36).slice(2,10) + "_" + Date.now(),
+      type: kind,
+      category: "Banco",
+      desc: desc || "Movimento bancário",
+      amount: amountAbs,
+      date: dISO,
+      recurring: "none"
     };
 
-    state.movements = state.movements || [];
-    state.movements.push(tx);
-
-    state.bankSeenKeys = state.bankSeenKeys || {};
-    state.bankSeenKeys[key] = 1;
-
+    const sig = bankTxSig(tx);
+    if (seen.has(sig)){ dup++; continue; }
+    seen.add(sig);
+    state.transactions.push(tx);
     added++;
   }
 
-  // persist + rerender
   saveState();
-  renderAll();
+  return {read, added, dup, headerRow, cols:{date:colDate, desc:colDesc, amount:colAmount}};
+}
 
-  alert(`Importação de movimentos concluída.\nNovos: ${added} | Duplicados ignorados: ${dup} | Linhas lidas: ${read}`);
+function bankTxSig(t){
+  if (!t) return "";
+  const d = (t.date||"").slice(0,10);
+  const kind = t.type || "";
+  const amt = (typeof t.amount==="number" ? t.amount : Number(t.amount||0));
+  const cents = Math.round(amt*100);
+  const desc = (t.desc || t.description || t.category || "").toString().trim().toLowerCase().replace(/\s+/g," ");
+  if (!d || !kind || !isFinite(cents)) return "";
+  return `${d}|${kind}|${cents}|${desc}`;
 }
 
 function fileToRows(file){
@@ -1527,8 +1524,8 @@ if (fh) fh.addEventListener("change", ()=>renderFire());
       try{
         const aoa = await fileToAOA(f); // array-of-arrays
         const res = importBankMovementsAOA(aoa);
-        alert(`Importação de movimentos concluída. Novos: ${res.added} | Duplicados ignorados: ${res.duplicates} | Linhas lidas: ${res.read}`);
-        renderCashflow();
+        alert(`Importação de movimentos concluída. Novos: ${res.added} | Duplicados ignorados: ${res.dup} | Linhas lidas: ${res.read}`);
+        renderAll();
       }catch(e){
         alert("Falha no import de movimentos: " + (e && e.message ? e.message : String(e)));
       }
@@ -1602,7 +1599,7 @@ function openDistDetail(keepOpen=false){
         alert("Importação concluída:
 • Linhas lidas: " + res.rowsRead + "
 • Inseridos: " + res.inserted + "
-• Duplicados ignorados: " + res.duplicates + (res.errors ? "
+• Duplicados ignorados: " + res.dup + (res.errors ? "
 • Erros: " + res.errors : ""));
         fileInput.value = "";
         renderAll();
