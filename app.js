@@ -1523,11 +1523,13 @@ function openDistDetail(keepOpen=false){
         }
         const file = fileInput.files[0];
         const res = await importBankExcel(file);
-        alert("Importação concluída:
-• Linhas lidas: " + res.rowsRead + "
-• Inseridos: " + res.inserted + "
-• Duplicados ignorados: " + res.duplicates + (res.errors ? "
-• Erros: " + res.errors : ""));
+        alert(
+          `Importação concluída:\n` +
+          `• Linhas lidas: ${res.rowsRead}\n` +
+          `• Inseridos: ${res.inserted}\n` +
+          `• Duplicados ignorados: ${res.duplicates}` +
+          (res.errors ? `\n• Erros: ${res.errors}` : "")
+        );
         fileInput.value = "";
         renderAll();
       } catch (err) {
