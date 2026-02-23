@@ -6,7 +6,8 @@
    - Network-first para navegação HTML (para updates), com fallback cache
 */
 
-const CACHE_VERSION = 'pf-v1.0.0';
+// Incrementa este valor em cada deploy para forçar iOS/Safari a largar caches antigos.
+const CACHE_VERSION = 'pf-v1.0.1';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
 
@@ -20,8 +21,13 @@ const PRECACHE_URLS = [
   // libs externas (CDN) — essenciais p/ a app
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js',
   'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+  // pdf.js — vários CDNs (um deles pode falhar em certas redes/dispositivos)
   'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.min.js',
-  'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.min.js'
+  'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.min.js',
+  'https://unpkg.com/pdfjs-dist@4.2.67/build/pdf.min.js',
+  'https://unpkg.com/pdfjs-dist@4.2.67/build/pdf.worker.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.js'
 ];
 
 self.addEventListener('install', (event) => {

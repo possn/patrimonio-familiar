@@ -926,7 +926,7 @@ function parseBankLinesToMovements(lines){
 }
 
 async function importBankPdfFile(file){
-  if (!window.pdfjsLib) throw new Error("pdf.js não carregou (offline?).");
+  await ensurePdfJs();
   const buf = await file.arrayBuffer();
   const doc = await pdfjsLib.getDocument({ data: buf }).promise;
 
@@ -939,6 +939,70 @@ async function importBankPdfFile(file){
   const tx = parseBankLinesToMovements(allLines);
   if (!tx.length) throw new Error("Não consegui detectar movimentos neste PDF.");
   return tx;
+}
+
+// =======================
+// PDF.js loader (robust on iOS/PWA)
+// =======================
+
+let __pdfjsLoadedFrom = "";
+
+function loadScriptOnce(url){
+  return new Promise((resolve, reject)=>{
+    const existing = Array.from(document.scripts||[]).find(s=>s.src === url);
+    if (existing) return resolve(true);
+
+    const s = document.createElement("script");
+    s.src = url;
+    s.async = true;
+    s.defer = true;
+    s.onload = ()=>resolve(true);
+    s.onerror = ()=>reject(new Error(`Falha a carregar script: ${url}`));
+    document.head.appendChild(s);
+  });
+}
+
+async function ensurePdfJs(){
+  if (window.pdfjsLib) {
+    if (pdfjsLib.GlobalWorkerOptions && !pdfjsLib.GlobalWorkerOptions.workerSrc){
+      pdfjsLib.GlobalWorkerOptions.workerSrc = guessPdfWorkerSrc(__pdfjsLoadedFrom) || "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.js";
+    }
+    return true;
+  }
+
+  const candidates = [
+    "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.min.js",
+    "https://unpkg.com/pdfjs-dist@4.2.67/build/pdf.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.js"
+  ];
+
+  let lastErr = null;
+  for (const url of candidates){
+    try{
+      await loadScriptOnce(url);
+      if (window.pdfjsLib){
+        __pdfjsLoadedFrom = url;
+        if (pdfjsLib.GlobalWorkerOptions){
+          pdfjsLib.GlobalWorkerOptions.workerSrc = guessPdfWorkerSrc(url) || "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.js";
+        }
+        return true;
+      }
+    }catch(e){
+      lastErr = e;
+    }
+  }
+
+  const hint = lastErr ? String(lastErr.message||lastErr) : "bloqueio de rede";
+  throw new Error(`pdf.js não carregou. Possíveis causas: bloqueio a CDNs/Service Worker cache antigo. Detalhe: ${hint}`);
+}
+
+function guessPdfWorkerSrc(scriptUrl){
+  const u = String(scriptUrl||"");
+  if (!u) return "";
+  if (u.includes("jsdelivr.net")) return "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.min.js";
+  if (u.includes("unpkg.com")) return "https://unpkg.com/pdfjs-dist@4.2.67/build/pdf.worker.min.js";
+  if (u.includes("cdnjs.cloudflare.com")) return "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.js";
+  return "";
 }
 
 function txFingerprint(t){
@@ -1483,9 +1547,7 @@ if (fh) fh.addEventListener("change", ()=>renderFire());
   if ($("pdfInput") && $("btnImportPDF")){
     // pdf.js worker (CDN)
     try{
-      if (window.pdfjsLib && pdfjsLib.GlobalWorkerOptions){
-        pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.min.js";
-      }
+      // pdf.js workerSrc is set by ensurePdfJs() on demand (CDN fallback aware)
     }catch(_){}
 
     $("pdfInput").addEventListener("change", ()=>{
