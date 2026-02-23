@@ -137,25 +137,6 @@ function uid(){
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
-// === TRANSACTIONS DEDUPE KEY ===
-function normStr(v){
-  return String(v ?? "").trim().replace(/\s+/g," ").toLowerCase();
-}
-function txKey(date, type, amount, category, description){
-  const d = String(date ?? "");
-  const k = String(type ?? "");
-  const a = (Number(amount) || 0).toFixed(2);
-  return `${d}|${k}|${a}|${normStr(category)}|${normStr(description)}`;
-}
-function ensureTxKey(t){
-  if (!t) return "";
-  if (!t.extKey){
-    t.extKey = txKey(t.date, t.type ?? t.kind, t.amount, t.category, t.description);
-  }
-  return t.extKey;
-}
-
-
 function fmtEUR(n){
   const cur = (state.settings && state.settings.currency) ? state.settings.currency : "EUR";
   const v = Number(n || 0);
@@ -767,6 +748,154 @@ function renderTxList(){
 }
 
 /* IMPORT */
+
+function normStr(s){
+  return String(s ?? "").toLowerCase().replace(/\s+/g," ").trim();
+}
+function excelDateToISO(v){
+  // v can be Date, number (Excel serial), or string (dd-mm-yyyy / dd/mm/yyyy)
+  if (v == null || v === "") return null;
+  if (v instanceof Date && !isNaN(v.getTime())){
+    return v.toISOString().slice(0,10);
+  }
+  if (typeof v === "number"){
+    // Excel serial date
+    const d = XLSX.SSF.parse_date_code(v);
+    if (d && d.y && d.m && d.d){
+      const mm = String(d.m).padStart(2,"0");
+      const dd = String(d.d).padStart(2,"0");
+      return `${d.y}-${mm}-${dd}`;
+    }
+  }
+  const s = String(v).trim();
+  // accept '23-02-2026' or '23/02/2026' or '2026-02-23'
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m){
+    return `${m[1]}-${String(m[2]).padStart(2,"0")}-${String(m[3]).padStart(2,"0")}`;
+  }
+  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (m){
+    const dd = String(m[1]).padStart(2,"0");
+    const mm = String(m[2]).padStart(2,"0");
+    let yy = m[3];
+    if (yy.length===2) yy = "20"+yy;
+    return `${yy}-${mm}-${dd}`;
+  }
+  return null;
+}
+
+async function fileToAOA(file){
+  const data = await file.arrayBuffer();
+  const wb = XLSX.read(data, { type:"array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  // raw AOA (do NOT force headers)
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" });
+  return aoa;
+}
+
+function findHeaderRow(aoa){
+  // heuristics: row containing (data + descrição + montante) in any language variants
+  const want = ["data","descr","montante","valor","movimento","saldo","amount"];
+  for (let r=0; r<Math.min(aoa.length, 50); r++){
+    const row = aoa[r] || [];
+    const rowNorm = row.map(normStr).join(" | ");
+    let score = 0;
+    if (rowNorm.includes("data")) score++;
+    if (rowNorm.includes("descr")) score++;
+    if (rowNorm.includes("montante") || rowNorm.includes("valor") || rowNorm.includes("amount")) score++;
+    if (score>=2) return r;
+  }
+  return -1;
+}
+
+function parseEuroAmount(v){
+  if (v == null || v === "") return null;
+  if (typeof v === "number") return v;
+  let s = String(v).trim();
+  // remove currency and spaces
+  s = s.replace(/[€\s]/g,"");
+  // handle thousand separators and decimal comma
+  // cases: 1.234,56 ; 1234,56 ; 1234.56 ; -23,00
+  if (s.includes(",") && s.includes(".")){
+    // assume '.' thousands, ',' decimals
+    s = s.replace(/\./g,"").replace(",",".");
+  }else if (s.includes(",")){
+    s = s.replace(",",".");
+  }
+  const num = Number(s);
+  return isFinite(num) ? num : null;
+}
+
+function importBankMovementsAOA(aoa){
+  if (!Array.isArray(aoa) || aoa.length===0) throw new Error("Ficheiro vazio ou ilegível.");
+  const headerRowIdx = findHeaderRow(aoa);
+  let startIdx = 0;
+  let colMap = null;
+
+  if (headerRowIdx >= 0){
+    const header = (aoa[headerRowIdx]||[]).map(normStr);
+    startIdx = headerRowIdx + 1;
+
+    const idxDate = header.findIndex(h => h.includes("data") && (h.includes("opera") || h.includes("mov") || h==="data"));
+    const idxDesc = header.findIndex(h => h.includes("descr") || h.includes("descrit") || h.includes("movimento"));
+    const idxAmt  = header.findIndex(h => h.includes("montante") || h.includes("valor") || h.includes("amount"));
+    colMap = { date: idxDate>=0?idxDate:0, desc: idxDesc>=0?idxDesc:2, amt: idxAmt>=0?idxAmt:3 };
+  }else{
+    // no header: assume [data, data valor, descrição, montante, saldo] like typical PT bank export
+    startIdx = 0;
+    colMap = { date: 0, desc: 2, amt: 3 };
+  }
+
+  let read = 0, added = 0, duplicates = 0;
+
+  // build existing hash set
+  const existing = new Set((state.transactions || []).map(t => t.hash).filter(Boolean));
+
+  for (let r=startIdx; r<aoa.length; r++){
+    const row = aoa[r] || [];
+    // stop if row is basically empty
+    const nonEmpty = row.some(c => String(c ?? "").trim() !== "");
+    if (!nonEmpty) continue;
+
+    const dateISO = excelDateToISO(row[colMap.date]);
+    const desc = String(row[colMap.desc] ?? "").trim();
+    const amtRaw = parseEuroAmount(row[colMap.amt]);
+
+    read++;
+
+    if (!dateISO || !desc || amtRaw == null) continue;
+
+    const type = amtRaw < 0 ? "out" : "in";
+    const amount = Math.abs(amtRaw);
+
+    const hash = `${dateISO}|${type}|${amount.toFixed(2)}|${normStr(desc)}`;
+
+    if (existing.has(hash)){
+      duplicates++;
+      continue;
+    }
+
+    const tx = {
+      id: crypto.randomUUID(),
+      date: dateISO,
+      type,
+      amount,
+      category: "Banco",
+      desc,
+      recurring: false,
+      note: "Importado do Excel",
+      hash
+    };
+
+    state.transactions.unshift(tx);
+    existing.add(hash);
+    added++;
+  }
+
+  saveState();
+  return { read, added, duplicates };
+}
+
 function fileToRows(file){
   return new Promise((resolve,reject)=>{
     const name = file.name.toLowerCase();
@@ -956,7 +1085,7 @@ function classifyRow(r){
   if (["movimento","transaction","movement","cashflow","cash_flow","tx","dividend"].includes(tipo)) return "movimento";
 
   const hasDate = !!(r.data || r.date || r.payment_date || r.trade_date);
-  const amount = parseNumberSmart(r.montante || r.montante_eur || r.amount || r.valor || r.value || r.cash || r.total || r.net || r.saldo);
+  const amount = parseNumberSmart(r.montante || r.amount || r.valor || r.value || r.cash || r.total || r.net || r.saldo);
   const qty = parseNumberSmart(r.qty || r.quantity || r.shares || r.units || r.unidades);
   const mv  = parseNumberSmart(r.market_value || r.current_value || r.position_value || r.total_value || r.value || r.valor);
 
@@ -987,9 +1116,6 @@ function classifyRow(r){
 function importRows(rows){
   let addedA=0, addedL=0, addedT=0, unknown=0;
   let sampleUnknown=null;
-  // Dedupe: evitar inserir movimentos repetidos entre uploads mensais
-  const existingTxKeys = new Set((state.transactions||[]).map(t => ensureTxKey(t)));
-
 
   // Trade-style import aggregator (DivTracker_Combined, etc.)
   // We derive positions (assets) from trades; we do NOT push thousands of rows to "Movimentos".
@@ -1027,31 +1153,22 @@ function importRows(rows){
     }
 
     if (kind === "movimento"){
-      const amt = parseNumberSmart(r.montante || r.montante_eur || r.amount || r.value || r.valor || r.debito || r.credito);
-      const date = normalizeDate(r.date || r.data || r.data_valor || r.data_operacao || r.data_movimento || r.payment_date || r.data_pagamento || r.transaction_date || isoToday());
-      const desc = String(r.description || r.descricao || r.merchant || r.referencia || r.details || r.detalhes || "").trim();
-      const cat = String(r.category || r.categoria || "Banco").trim() || "Banco";
+      const amtRaw = r.montante || r.amount || r.valor || r.value || r.cash || r.total || r.net || r.saldo;
+      const amt = parseNumberSmart(amtRaw);
+      if (!Number.isFinite(amt) || Math.abs(amt) < 1e-9) continue;
 
-      if (!isFinite(amt) || !date) { skipped++; continue; }
-
-      const type = (amt >= 0) ? "in" : "out";
-      const amount = Math.abs(amt);
-
-      const key = txKey(date, type, amount, cat, desc);
-      if (existingTxKeys.has(key)) { skipped++; continue; }
+      const when = (r.data || r.date || r.payment_date || r.trade_date || "").trim();
+      const cat  = (r.categoria || r.category || r.classe || r.class || "Outros").trim() || "Outros";
+      const desc = (r.descricao || r.description || r.nome || r.name || r.memo || "").trim();
 
       state.transactions.push({
         id: uid(),
-        type,
+        date: normalizeDate(when) || isoToday(),
+        kind: amt>=0 ? "Entrada" : "Saída",
         category: cat,
-        amount,
-        date,
         description: desc,
-        extKey: key
+        amount: Math.abs(amt)
       });
-      existingTxKeys.add(key);
-
-      (type === "in") ? addedA++ : addedL++;
       addedT++;
       continue;
     }
@@ -1322,6 +1439,26 @@ if (fh) fh.addEventListener("change", ()=>renderFire());
     }
   });
   $("btnTemplate").addEventListener("click", downloadTemplate);
+
+  // bank movements import (Excel)
+  if ($("bankMovementsFile") && $("btnImportBankMovements")){
+    $("bankMovementsFile").addEventListener("change", ()=>{
+      $("btnImportBankMovements").disabled = !($("bankMovementsFile").files && $("bankMovementsFile").files.length);
+    });
+    $("btnImportBankMovements").addEventListener("click", async ()=>{
+      const f = $("bankMovementsFile").files && $("bankMovementsFile").files[0];
+      if (!f) return;
+      try{
+        const aoa = await fileToAOA(f); // array-of-arrays
+        const res = importBankMovementsAOA(aoa);
+        alert(`Importação de movimentos concluída. Novos: ${res.added} | Duplicados ignorados: ${res.duplicates} | Linhas lidas: ${res.read}`);
+        renderCashflow();
+      }catch(e){
+        alert("Falha no import de movimentos: " + (e && e.message ? e.message : String(e)));
+      }
+    });
+  }
+
 
   // json backup
   $("btnExportJSON").addEventListener("click", exportJSON);
