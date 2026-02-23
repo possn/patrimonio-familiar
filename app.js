@@ -1509,6 +1509,35 @@ function openDistDetail(keepOpen=false){
   const tog = document.getElementById("btnDistToggle");
   if (!list) return;
 
+
+// === BANK MOVEMENTS IMPORT (HOME TAB) ===
+(function(){
+  const fileInput = document.getElementById("bankMovementsFile_home");
+  const btnImport = document.getElementById("btnImportBankMovements_home");
+  if (fileInput && btnImport) {
+    btnImport.addEventListener("click", async () => {
+      try {
+        if (!fileInput.files || !fileInput.files[0]) {
+          alert("Escolhe um ficheiro .xls/.xlsx primeiro.");
+          return;
+        }
+        const file = fileInput.files[0];
+        const res = await importBankExcel(file);
+        alert("Importação concluída:
+• Linhas lidas: " + res.rowsRead + "
+• Inseridos: " + res.inserted + "
+• Duplicados ignorados: " + res.duplicates + (res.errors ? "
+• Erros: " + res.errors : ""));
+        fileInput.value = "";
+        renderAll();
+      } catch (err) {
+        console.error(err);
+        alert("Falha na importação: " + (err && err.message ? err.message : String(err)));
+      }
+    });
+  }
+})();
+
   list.innerHTML = "";
   if (entries.length === 0){
     const row = document.createElement("div");
