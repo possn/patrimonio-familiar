@@ -1,5 +1,5 @@
 /* Património Familiar — Service Worker (offline-first) */
-const CACHE_VERSION = "pf-20260223";
+const CACHE_VERSION = "pf-20260223-1";
 const CORE = [
   "./",
   "./index.html?v=20260223",
