@@ -11,7 +11,6 @@
   <link rel="stylesheet" href="styles.css?v=6">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <!-- pdf.js é carregado on-demand (com fallback de CDNs) no app.js -->
   <script defer src="app.js?v=6"></script>
 </head>
 <body>
@@ -145,25 +144,7 @@
         <div class="hint" id="importHint">Nenhum ficheiro importado nesta sessão.</div>
       </div>
 
-      
       <div class="card">
-        <div class="card__head">
-          <div>
-            <div class="card__title">Importar PDF (Movimentos bancários)</div>
-            <div class="card__muted">Extrai entradas/saídas do extracto. Lê localmente. Não envia dados.</div>
-          </div>
-        </div>
-
-        <div class="row row--wrap" style="gap:10px">
-          <input id="pdfInput" type="file" class="input" accept="application/pdf,.pdf">
-          <button class="btn btn--primary" id="btnImportPDF" disabled>Importar PDF</button>
-          <button class="btn" id="btnPdfHelp">Como funciona</button>
-        </div>
-
-        <div class="hint" id="pdfHint">Nenhum PDF importado nesta sessão.</div>
-      </div>
-
-<div class="card">
         <div class="card__head">
           <div>
             <div class="card__title">Backup</div>
@@ -416,16 +397,6 @@
     </div>
   </div>
 </div>
-
-<!-- PWA/Offline: cache CDN libs (Chart.js/XLSX/pdf.js) + app shell -->
-<script>
-  (function(){
-    if (!('serviceWorker' in navigator)) return;
-    window.addEventListener('load', function(){
-      navigator.serviceWorker.register('./sw.js').catch(function(){});
-    });
-  })();
-</script>
 
 </body>
 </html>
