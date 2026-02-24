@@ -355,6 +355,7 @@ function escapeHtml(s){
 }
 
 function renderDistChart(){
+  if (!window.Chart) return; // charts opcionais (não partir a app se Chart.js falhar)
   const by = {};
   for (const a of state.assets){
     const k = a.class || "Outros";
@@ -389,6 +390,7 @@ function renderDistChart(){
 }
 
 function renderTrendChart(){
+  if (!window.Chart) return; // charts opcionais
   const ctx = $("trendChart").getContext("2d");
   if (trendChart) trendChart.destroy();
 
@@ -1179,8 +1181,44 @@ function resetAll(){
 
 /* WIRING */
 
+// --- XLSX loader (on-demand) ---
+function loadScriptOnce(src, testFn, timeoutMs = 15000){
+  return new Promise((resolve, reject)=>{
+    try{
+      if (testFn()) return resolve(true);
+      const existing = Array.from(document.scripts).find(s=>s.src===src);
+      if (existing){
+        const t0 = Date.now();
+        const timer = setInterval(()=>{
+          if (testFn()) { clearInterval(timer); return resolve(true); }
+          if (Date.now()-t0 > timeoutMs){ clearInterval(timer); return reject(new Error('Timeout a carregar XLSX')); }
+        }, 100);
+        return;
+      }
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = ()=> testFn() ? resolve(true) : reject(new Error('XLSX não ficou disponível'));
+      s.onerror = ()=> reject(new Error('Falhou download do XLSX'));
+      document.head.appendChild(s);
+    }catch(e){
+      reject(e);
+    }
+  });
+}
+
+async function ensureXLSX(){
+  if (window.XLSX) return true;
+  const primary = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+  const fallback = 'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js';
+  try{ await loadScriptOnce(primary, ()=>!!window.XLSX); return true; }
+  catch(_){ await loadScriptOnce(fallback, ()=>!!window.XLSX); return true; }
+}
+
 // ===== Importação de movimentos a partir de Excel (.xls/.xlsx) =====
 async function importBankExcel(file){
+  // carregar XLSX só quando é preciso (evita que a app falhe se o CDN falhar)
+  await ensureXLSX();
   return new Promise((resolve, reject)=>{
     try{
       if(!window.XLSX) return reject(new Error("Biblioteca XLSX não carregou."));
@@ -1189,7 +1227,164 @@ async function importBankExcel(file){
       reader.onload = (e)=>{
         try{
           const data = new Uint8Array(e.target.result);
-          const wb = XLSX.read(data, { type:"array" });
+          let wb;
+          try{
+            wb = XLSX.read(data, { type:"array" });
+          }catch(errArray){
+            // Fallback (iOS/Safari + alguns .xls): tentar como binary string
+            const r2 = new FileReader();
+            r2.onerror = () => reject(new Error("Falha ao ler o ficheiro."));
+            r2.onload = ()=>{
+              try{
+                const wb2 = XLSX.read(r2.result, { type:"binary" });
+                // re-entrar no fluxo principal
+                wb = wb2;
+                // executar a partir daqui (abaixo) com wb definido
+                try{
+                  // escolher a folha que mais parece conter movimentos
+                  const sheetNames = wb.SheetNames || [];
+                  if(sheetNames.length===0) return resolve({ imported:0, duplicates:0, read:0 });
+
+                  const norm = (s)=> String(s||"").toLowerCase()
+                    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+                    .replace(/\s+/g," ").trim();
+
+                  function scoreSheet(rows){
+                    let score=0;
+                    const limit = Math.min(rows.length, 40);
+                    for(let r=0;r<limit;r++){
+                      const row = rows[r]||[];
+                      const line = norm(row.join(" "));
+                      if(line.includes("data") && (line.includes("descricao") || line.includes("descr"))) score+=2;
+                      if(line.includes("montante") || line.includes("debito") || line.includes("credito")) score+=2;
+                      if(line.includes("saldo")) score+=1;
+                    }
+                    return score;
+                  }
+
+                  let bestName = sheetNames[0];
+                  let bestScore = -1;
+                  const cacheRows = {};
+                  for(const name of sheetNames){
+                    const ws = wb.Sheets[name];
+                    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:""});
+                    cacheRows[name] = rows;
+                    const sc = scoreSheet(rows);
+                    if(sc>bestScore){ bestScore=sc; bestName=name; }
+                  }
+
+                  const rows = cacheRows[bestName] || XLSX.utils.sheet_to_json(wb.Sheets[bestName], {header:1, raw:false, defval:""});
+                  const read = rows.length;
+
+                  const HEADER_HINTS = {
+                    op: ["data operacao","data operação","data oper","data"],
+                    val: ["data valor","data-valor","data valor","data"],
+                    desc: ["descricao","descrição","descricao operacao","descricao da operacao","movimento","descricao movimento"],
+                    amount: ["montante","valor","debito","débito","credito","crédito"],
+                    balance: ["saldo","saldo contabilistico","saldo contabilístico"]
+                  };
+
+                  function headerRowIndex(rows){
+                    let best=-1, bestHits=-1;
+                    for(let i=0;i<Math.min(rows.length,60);i++){
+                      const line = rows[i].map(norm);
+                      let hits=0;
+                      const all = line.join(' | ');
+                      if(Object.values(HEADER_HINTS.op).some(h=>all.includes(norm(h)))) hits++;
+                      if(Object.values(HEADER_HINTS.desc).some(h=>all.includes(norm(h)))) hits++;
+                      if(Object.values(HEADER_HINTS.amount).some(h=>all.includes(norm(h)))) hits++;
+                      if(Object.values(HEADER_HINTS.balance).some(h=>all.includes(norm(h)))) hits++;
+                      if(hits>bestHits){ bestHits=hits; best=i; }
+                    }
+                    return best;
+                  }
+
+                  const hIdx = headerRowIndex(rows);
+                  const header = (rows[hIdx]||[]).map(norm);
+
+                  function findCol(hints){
+                    for(const h of hints){
+                      const nh = norm(h);
+                      for(let c=0;c<header.length;c++){
+                        if(header[c]===nh || header[c].includes(nh)) return c;
+                      }
+                    }
+                    return -1;
+                  }
+                  let colOp = findCol(HEADER_HINTS.op);
+                  let colDesc = findCol(HEADER_HINTS.desc);
+                  let colAmt = findCol(HEADER_HINTS.amount);
+                  let colBal = findCol(HEADER_HINTS.balance);
+                  if(colOp<0 && header.length>=4) colOp=0;
+                  if(colDesc<0 && header.length>=4) colDesc=2;
+                  if(colAmt<0 && header.length>=4) colAmt=3;
+                  if(colBal<0 && header.length>=5) colBal=4;
+
+                  function parseAmount(s){
+                    const t = String(s||'').replace(/\s/g,'');
+                    const cleaned = t.replace(/[^0-9,\.-]/g,'');
+                    if(!cleaned) return NaN;
+                    let x = cleaned;
+                    if(x.includes(',') && x.includes('.')) x = x.replace(/\./g,'').replace(',','.');
+                    else if(x.includes(',') && !x.includes('.')) x = x.replace(',','.');
+                    const n = Number(x);
+                    return Number.isFinite(n) ? n : NaN;
+                  }
+                  function parseDate(s){
+                    const t = String(s||'').trim();
+                    const m = t.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+                    if(m){
+                      const dd = String(m[1]).padStart(2,'0');
+                      const mm = String(m[2]).padStart(2,'0');
+                      let yy = m[3];
+                      if(yy.length===2) yy = '20'+yy;
+                      return `${yy}-${mm}-${dd}`;
+                    }
+                    const d = new Date(t);
+                    if(!isNaN(d)) return d.toISOString().slice(0,10);
+                    return '';
+                  }
+
+                  const out = [];
+                  for(let i=hIdx+1;i<rows.length;i++){
+                    const r = rows[i];
+                    if(!r || r.every(x=>String(x||'').trim()==='')) continue;
+                    const date = parseDate(r[colOp]);
+                    const desc = String(r[colDesc]||'').trim();
+                    const amt = parseAmount(r[colAmt]);
+                    if(!date || !desc || !Number.isFinite(amt)) continue;
+                    const bal = colBal>=0 ? parseAmount(r[colBal]) : null;
+                    out.push({
+                      id: 'mv_'+Math.random().toString(36).slice(2)+Date.now().toString(36),
+                      date,
+                      desc,
+                      amount: amt,
+                      balance: Number.isFinite(bal) ? bal : null,
+                      category: '',
+                      account: 'Banco',
+                      tags: []
+                    });
+                  }
+
+                  const before = (state.movements||[]).length;
+                  addBankMovementsWithDedupe(out);
+                  const after = (state.movements||[]).length;
+                  const imported = Math.max(0, after-before);
+                  const duplicates = Math.max(0, out.length-imported);
+                  saveState();
+                  renderCashflow();
+                  renderDashboard();
+                  return resolve({ imported, duplicates, read });
+                }catch(errIn){
+                  return reject(errIn);
+                }
+              }catch(err2){
+                reject(err2);
+              }
+            };
+            try{ r2.readAsBinaryString(file); }catch(e){ reject(errArray); }
+            return;
+          }
 
           // escolher a folha que mais parece conter movimentos
           const sheetNames = wb.SheetNames || [];
@@ -1776,6 +1971,9 @@ function renderFire(){
     row.innerHTML = `<div class="item__l"><div class="item__t">${r.sc.name}</div><div class="item__s">r ${(r.sc.r*100).toFixed(1)}% · inflação ${(r.sc.inf*100).toFixed(1)}% · SWR ${(r.sc.swr*100).toFixed(2)}%</div></div><div class="item__v">${right}</div>`;
     list.appendChild(row);
   }
+
+  // Chart.js é opcional — não partir a app se não estiver disponível
+  if (!window.Chart) return;
 
   // chart: base scenario capital vs fire number
   const base = scenarios[1];

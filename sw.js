@@ -1,5 +1,5 @@
 // Património Familiar — Service Worker (network-first for app shell)
-const CACHE_VERSION = "pf-2026-02-23";
+const CACHE_VERSION = "pf-2026-02-23b";
 const CACHE_STATIC = `${CACHE_VERSION}-static`;
 
 const STATIC_ASSETS = [
