@@ -1,5 +1,5 @@
 /* Património Familiar — SW estável (cache-bust por versão) */
-const VERSION = 'pf-v20260224';
+const VERSION = 'pfwa-20260224011900';
 const ASSETS = [
   './',
   './index.html',
@@ -43,7 +43,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // cache-first para restantes assets
+  // JS/CSS/manifest: network-first (evita ficar preso em versões antigas)
+  const url = new URL(req.url);
+  const pathname = url.pathname || '';
+  const isCode = pathname.endsWith('.js') || pathname.endsWith('.css') || pathname.endsWith('.json') || pathname.endsWith('.webmanifest');
+
+  if (isCode) {
+    event.respondWith(
+      fetch(req).then((res) => {
+        const copy = res.clone();
+        caches.open(VERSION).then(c => c.put(req, copy)).catch(()=>{});
+        return res;
+      }).catch(() => caches.match(req))
+    );
+    return;
+  }
+
+  // restantes assets: cache-first
   event.respondWith(
     caches.match(req).then((cached) => cached || fetch(req).then((res) => {
       const copy = res.clone();
