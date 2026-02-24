@@ -1,6 +1,68 @@
 /* Património Familiar — REBUILD percento-ish v5 (fix nav+import+tx) */
 "use strict";
 
+// --- PWA: service worker (cache-bust p/ iOS) ---
+try {
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js?v=20260224").catch(() => {});
+    });
+  }
+} catch (_) {}
+
+// --- util: normalização p/ dedupe ---
+const normStr = (s) => String(s || "")
+  .toLowerCase()
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .replace(/\s+/g, " ")
+  .trim();
+
+function parseEuroNumberPT(raw) {
+  if (raw == null) return null;
+  let s = String(raw).trim();
+  s = s.replace(/€/g, "");
+  s = s.replace(/\s+/g, "");
+  // normaliza sinal unicode (−)
+  s = s.replace(/\u2212/g, "-");
+  // remove separadores de milhar
+  s = s.replace(/\./g, "");
+  // vírgula decimal
+  s = s.replace(/,/g, ".");
+  const v = Number(s);
+  return Number.isFinite(v) ? v : null;
+}
+
+function parsePtDate(day, mon, year) {
+  const m = normStr(mon).slice(0, 3);
+  const map = { jan:1, fev:2, feb:2, mar:3, abr:4, apr:4, mai:5, may:5, jun:6, jul:7, ago:8, aug:8, set:9, sep:9, out:10, oct:10, nov:11, dez:12, dec:12 };
+  const mm = map[m];
+  const dd = Number(day);
+  const yy = Number(year);
+  if (!mm || !dd || !yy) return null;
+  return `${yy.toString().padStart(4,"0")}-${String(mm).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
+}
+
+function parseBankCsvLikeText(text) {
+  // Exportações “CSV” do banco vêm muitas vezes como texto com colunas alinhadas.
+  // Estratégia: linha a linha, detectar padrão de data + 2 montantes no fim.
+  const lines = String(text || "").split(/\r?\n/);
+  const out = [];
+  const re = /^\s*"?(\d{1,2})\s+([A-Za-zÀ-ÿçÇ]{3})\s+(\d{4})\s+(.*?)\s+([\u2212\-]?\d[\d\.]*,\d{2})€\s+([\u2212\-]?\d[\d\.]*,\d{2})€"?\s*$/;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const m = line.match(re);
+    if (!m) continue;
+    const iso = parsePtDate(m[1], m[2], m[3]);
+    if (!iso) continue;
+    const desc = String(m[4] || "").replace(/\s+/g, " ").trim();
+    const val = parseEuroNumberPT(m[5]);
+    if (val == null) continue;
+    out.push({ date: iso, desc, amount: val });
+  }
+  return out;
+}
+
 function safeClone(obj){
   try{ if (typeof structuredClone === "function") return structuredClone(obj); }catch(_){ }
   return JSON.parse(JSON.stringify(obj));
@@ -119,6 +181,7 @@ const DEFAULT_STATE = {
   history: []       // {dateISO, net, assets, liabilities, passiveAnnual}
 };
 
+let bankCsvSelectedFile = null; // iOS-safe: manter referência ao ficheiro escolhido
 let state = safeClone(DEFAULT_STATE);
 let currentView = "dashboard";
 let showingLiabs = false;
@@ -131,7 +194,39 @@ let fireChart = null;
 
 let trendChart = null;
 
-function $(id){ return document.getElementById(id); }
+function $(id){
+  const el = document.getElementById(id);
+  if (el) return el;
+  // No-op fallback to avoid a single missing element breaking all wiring.
+  return {
+    _missing: true,
+    addEventListener(){},
+    removeEventListener(){},
+    classList: { add(){}, remove(){}, toggle(){}, contains(){ return false; } },
+    setAttribute(){},
+    getAttribute(){ return null; },
+    querySelector(){ return null; },
+    querySelectorAll(){ return []; },
+    appendChild(){},
+    remove(){},
+    style: {},
+    value: "",
+    checked: false,
+    files: null,
+    innerHTML: "",
+    textContent: "",
+    focus(){},
+  };
+}
+
+// Safe event binding: avoids breaking the whole app if an element is missing
+// in the current layout (prevents "buttons stop working" cascades).
+function on(id, evt, handler, opts){
+  const el = document.getElementById(id);
+  if (!el) return false;
+  el.addEventListener(evt, handler, opts);
+  return true;
+}
 
 function uid(){
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -775,6 +870,15 @@ function fileToRows(file){
   });
 }
 
+function fileToText(file){
+  return new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onerror = ()=>reject(new Error("Erro a ler ficheiro."));
+    reader.onload = ()=>resolve(String(reader.result || ""));
+    reader.readAsText(file);
+  });
+}
+
 
 function csvToObjects(text){
   // Robust CSV/TSV parser with delimiter + header detection and multi-section support (e.g., "Combined" exports).
@@ -928,6 +1032,73 @@ function parseNumberSmart(x){
   const n = Number(s);
   if (Number.isFinite(n)) return neg ? -n : n;
   return NaN;
+}
+
+// === Importação de movimentos do banco (CSV/texto, PT) ===
+function escapeHtml(s){
+  return String(s||"")
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/\"/g,"&quot;")
+    .replace(/'/g,"&#39;");
+}
+
+async function importBankMovementsCsv(file){
+  const debugEl = document.getElementById("bankImportDebug");
+  const showDebug = (html) => {
+    if (!debugEl) return;
+    debugEl.style.display = "block";
+    debugEl.innerHTML = html;
+  };
+
+  if (!file) throw new Error("Sem ficheiro.");
+  const text = await fileToText(file);
+  const parsed = parseBankCsvLikeText(text);
+
+  if (!parsed.length){
+    const rows = String(text||"").split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    const head = rows[0] || "";
+    showToast("Importação concluída, mas 0 linhas reconhecidas.");
+    showDebug(`0 linhas reconhecidas. <br><br><b>Primeira linha:</b> ${escapeHtml(head).slice(0,220)}`);
+    return { added:0, dup:0, read:0 };
+  }
+
+  // dedupe por chave forte: data + dir + cents + descrição normalizada
+  const existing = new Set((state.txs||[]).map(tx => {
+    const iso = String(tx.date||"").slice(0,10);
+    const amt = Number(tx.amount||0);
+    const dir = tx.dir || (amt>=0?"in":"out");
+    const desc = normStr(tx.note||"");
+    return `${iso}|${dir}|${Math.round(Math.abs(amt)*100)}|${desc}`;
+  }));
+
+  let added = 0;
+  let dup = 0;
+
+  for (const r of parsed){
+    const dir = r.amount >= 0 ? "in" : "out";
+    const amount = Math.abs(r.amount);
+    const descN = normStr(r.desc);
+    const key = `${r.date}|${dir}|${Math.round(amount*100)}|${descN}`;
+    if (existing.has(key)) { dup++; continue; }
+    existing.add(key);
+    state.txs.push({
+      id: uid(),
+      date: r.date,
+      dir,
+      amount,
+      cat: "Banco",
+      note: r.desc
+    });
+    added++;
+  }
+
+  save();
+  renderAll();
+  showToast(`Importação concluída. Novos: ${added} | Duplicados: ${dup} | Linhas reconhecidas: ${parsed.length}`);
+  showDebug(`Linhas reconhecidas: <b>${parsed.length}</b> · Inseridos: <b>${added}</b> · Duplicados: <b>${dup}</b>`);
+  return { added, dup, read: parsed.length };
 }
 
 function classifyRow(r){
@@ -1121,199 +1292,6 @@ function importRows(rows){
 }
 
 
-// === BANK CSV IMPORT (Movimentos) ===
-// Compatível com exports tipo "Lista_Movimentos" (linhas de texto) e CSV com separador ; ou ,
-// Estratégia:
-// 1) tenta formato "fixed width" com data + descrição + montante (€)
-// 2) fallback para CSV clássico (headers reconhecíveis)
-// Deduplicação: chave = dateISO|amountCents|descNorm
-
-const PT_MONTHS = {
-  jan:1, fev:2, mar:3, abr:4, mai:5, jun:6,
-  jul:7, ago:8, set:9, out:10, nov:11, dez:12
-};
-
-function parsePtDateLoose(s){
-  if(!s) return null;
-  s = String(s).trim().toLowerCase();
-  // "23 fev 2026" ou "23/02/2026" ou "2026-02-23"
-  let m = s.match(/^(\d{1,2})\s+([a-zç]{3})\s+(\d{4})$/i);
-  if(m){
-    const d=+m[1], mon=PT_MONTHS[m[2].slice(0,3)]||null, y=+m[3];
-    if(!mon) return null;
-    return new Date(Date.UTC(y, mon-1, d));
-  }
-  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-  if(m){
-    const d=+m[1], mon=+m[2], y=+(m[3].length===2?("20"+m[3]):m[3]);
-    return new Date(Date.UTC(y, mon-1, d));
-  }
-  m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
-  if(m){
-    const y=+m[1], mon=+m[2], d=+m[3];
-    return new Date(Date.UTC(y, mon-1, d));
-  }
-  return null;
-}
-
-function euroToCents(raw){
-  if(raw==null) return null;
-  let s = String(raw).trim();
-  s = s.replace(/\s/g,'');
-  // normaliza sinal unicode minus "−"
-  s = s.replace(/−/g,'-');
-  // remove €
-  s = s.replace(/€$/,'').replace(/^€/,'');
-  // remove separadores de milhar (.)
-  // e mantém decimal , para converter
-  // também aceita 1,234.56
-  if(s.includes(',') && s.includes('.')){
-    // assume . milhar e , decimal (pt)
-    // se houver mais que um ponto, remove todos
-    const lastComma = s.lastIndexOf(',');
-    const lastDot = s.lastIndexOf('.');
-    if(lastComma > lastDot){
-      s = s.replace(/\./g,'').replace(',', '.');
-    } else {
-      // provável formato US
-      s = s.replace(/,/g,'');
-    }
-  } else if(s.includes(',')){
-    s = s.replace(/\./g,'').replace(',', '.');
-  } else {
-    // só pontos → pode ser decimal
-    s = s.replace(/,/g,'');
-  }
-  const v = Number(s);
-  if(!Number.isFinite(v)) return null;
-  return Math.round(v*100);
-}
-
-function normDesc(s){
-  return String(s||'')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g,' ')
-    .replace(/[“”"']/g,'')
-    .replace(/[^a-z0-9áàãâäçéèêëíìîïóòõôöúùûü\s\-\/]/gi,'');
-}
-
-function parseBankCsvText(text){
-  const lines = String(text||'').split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
-
-  const out = [];
-
-  // 1) fixed-width "relatório" dentro de aspas
-  // Ex: "23 fev 2026  ...  −23,00€  9.346,66€"
-  const re1 = /^"?\s*(\d{1,2}\s+[A-Za-zç]{3}\s+\d{4})\s+(.+?)\s+([−\-]?\d[\d\.,]*\s*€)\s+(?:[−\-]?\d[\d\.,]*\s*€)?\s*"?$/;
-
-  for(const line of lines){
-    const m = line.match(re1);
-    if(m){
-      const d = parsePtDateLoose(m[1]);
-      const cents = euroToCents(m[3]);
-      if(d && cents!=null){
-        out.push({
-          date: d.toISOString().slice(0,10),
-          desc: m[2].trim(),
-          amountCents: cents
-        });
-      }
-    }
-  }
-  if(out.length>0) return out;
-
-  // 2) CSV clássico com delimitador ; ou ,
-  const sample = lines.slice(0,5).join('\n');
-  const delim = (sample.match(/;/g)||[]).length >= (sample.match(/,/g)||[]).length ? ';' : ',';
-
-  function splitCsvLine(l){
-    const res=[]; let cur=''; let inQ=false;
-    for(let i=0;i<l.length;i++){
-      const ch=l[i];
-      if(ch==='"'){ inQ = !inQ; continue; }
-      if(!inQ && ch===delim){ res.push(cur); cur=''; continue; }
-      cur+=ch;
-    }
-    res.push(cur);
-    return res.map(x=>x.trim());
-  }
-
-  const rows = lines.map(splitCsvLine);
-  // tenta detectar header
-  const hdr = rows[0].map(h=>h.toLowerCase());
-  const idxDate = hdr.findIndex(h=>h.includes('data')||h.includes('date'));
-  const idxDesc = hdr.findIndex(h=>h.includes('descr')||h.includes('mov')||h.includes('descrição')||h.includes('descricao'));
-  const idxAmt  = hdr.findIndex(h=>h.includes('valor')||h.includes('mont')||h.includes('amount')||h.includes('débito')||h.includes('debito')||h.includes('crédito')||h.includes('credito'));
-
-  const startRow = (idxDate!==-1 && idxDesc!==-1 && idxAmt!==-1) ? 1 : 0;
-
-  for(let r=startRow;r<rows.length;r++){
-    const row = rows[r];
-    const d = parsePtDateLoose(row[idxDate!==-1?idxDate:0]);
-    const desc = row[idxDesc!==-1?idxDesc:1] || '';
-    const cents = euroToCents(row[idxAmt!==-1?idxAmt:2]);
-    if(!d || cents==null) continue;
-    out.push({ date: d.toISOString().slice(0,10), desc: desc.trim(), amountCents: cents });
-  }
-  return out;
-}
-
-function importBankCsvFile(file){
-  return new Promise((resolve, reject)=>{
-    if(!file) return reject(new Error("Sem ficheiro."));
-    const reader = new FileReader();
-    reader.onerror = ()=>reject(reader.error||new Error("Falha a ler ficheiro."));
-    reader.onload = ()=>{
-      try{
-        const parsed = parseBankCsvText(reader.result);
-        resolve(parsed);
-      }catch(e){ reject(e); }
-    };
-    reader.readAsText(file, 'utf-8');
-  });
-}
-
-function applyBankMovementsToTransactions(parsed){
-  // cria índice de duplicados existentes
-  const existing = new Set(state.transactions.map(tx=>{
-    const date = tx.date || '';
-    const cents = Math.round((Number(tx.amount||0))*100) * (tx.type==='out'?-1:1);
-    return `${date}|${cents}|${normDesc(tx.desc)}`;
-  }));
-
-  let added=0, dup=0;
-
-  for(const it of parsed){
-    const key = `${it.date}|${it.amountCents}|${normDesc(it.desc)}`;
-    if(existing.has(key)){ dup++; continue; }
-    existing.add(key);
-
-    const type = it.amountCents>=0 ? 'in' : 'out';
-    const amount = Math.abs(it.amountCents)/100;
-
-    state.transactions.unshift({
-      id: uid(),
-      date: it.date,
-      desc: it.desc,
-      category: 'Banco',
-      type,
-      amount
-    });
-    added++;
-  }
-
-  persist();
-  renderAll();
-  alert(`Importação concluída.\nNovos: ${added}\nDuplicados ignorados: ${dup}\nLinhas reconhecidas: ${parsed.length}`);
-}
-
-// mantém o File em memória para evitar perda quando há re-render/troca de tab
-let __bankCsvFile = null;
-
-
-
-
 function downloadTemplate(){
   const rows = [
     ["tipo","classe","nome","valor","yield_tipo","yield_valor","data","notas"],
@@ -1485,55 +1463,40 @@ if (fh) fh.addEventListener("change", ()=>renderFire());
   });
   $("btnTemplate").addEventListener("click", downloadTemplate);
 
-  // bank CSV (movimentos)
-  const bankInput = $("bankCsvInput");
-  const bankName  = $("bankCsvName");
-  const bankBtn   = $("btnImportBankCsv");
-  if (bankBtn) bankBtn.disabled = true;
+  // --- Importar movimentos do banco (CSV) ---
+// Nota (iOS/WebView): não confiar apenas em input.files no clique, porque o input pode ser recriado
+// por re-render e perder o File handle. Guardamos uma referência.
+(function bindBankCsvImport(){
+  const input = $("bankCsvFile");
+  const btn = $("btnImportBankCsv");
+  const nameEl = $("bankCsvName");
 
-  if (bankInput){
-    bankInput.addEventListener("change", ()=>{
-      __bankCsvFile = (bankInput.files && bankInput.files[0]) ? bankInput.files[0] : null;
-      if (bankName) bankName.textContent = __bankCsvFile ? __bankCsvFile.name : "";
-      if (bankBtn) bankBtn.disabled = !__bankCsvFile;
-    });
-  }
+  if (!input || !btn) return;
 
-  if (bankBtn){
-    bankBtn.addEventListener("click", async ()=>{
-      try{
-        const f = __bankCsvFile || (bankInput && bankInput.files && bankInput.files[0]);
-        if (!f){
-          alert("Escolhe primeiro o ficheiro CSV do banco.");
-          return;
-        }
-        const parsed = await importBankCsvFile(f);
-        if (!parsed || parsed.length===0){
-          alert("Não foram reconhecidas linhas de movimentos neste ficheiro.");
-          return;
-        }
-        applyBankMovementsToTransactions(parsed);
-        // após import, limpa selecção (opcional)
-        __bankCsvFile = null;
-        if (bankInput) bankInput.value = "";
-        if (bankName) bankName.textContent = "";
-        if (bankBtn) bankBtn.disabled = true;
-      }catch(e){
-        console.error(e);
-        alert("Falhou a importação do CSV. Se possível, abre a consola para detalhes.");
-      }
-    });
-  }
+  // Inicial
+  if (nameEl) nameEl.textContent = "";
+  btn.disabled = true;
 
-  const bankHelp = $("btnBankCsvHelp");
-  if (bankHelp){
-    bankHelp.addEventListener("click", ()=>{
-      alert("Formato suportado:\n• Export do banco em CSV normal (separador ; ou ,) com colunas Data/Descrição/Valor.\n• Export 'Lista_Movimentos' (linhas de texto dentro de aspas).\n\nDica: se o banco exportar em .xls, converte para CSV e tenta novamente.");
-    });
-  }
+  input.addEventListener("change", () => {
+    bankCsvSelectedFile = (input.files && input.files[0]) ? input.files[0] : null;
+    if (nameEl) nameEl.textContent = bankCsvSelectedFile ? bankCsvSelectedFile.name : "";
+    btn.disabled = !bankCsvSelectedFile;
+  });
 
-
-  // json backup
+  btn.addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      const f = bankCsvSelectedFile || (input.files && input.files[0]) || null;
+      if (!f) return showModal("Escolhe primeiro o ficheiro CSV do banco.");
+      await importBankMovementsCsv(f);
+    } catch (err) {
+      console.error(err);
+      showModal("Falhou a importação do CSV. Se possível, abre a consola para detalhes.");
+    }
+  });
+})();
+// json backup
   $("btnExportJSON").addEventListener("click", exportJSON);
   $("jsonInput").addEventListener("change", ()=>{
     $("btnImportJSON").disabled = !$("jsonInput").files || !$("jsonInput").files.length;

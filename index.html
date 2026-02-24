@@ -5,15 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#eef1f6" />
   <title>Património Familiar</title>
-  <link rel="manifest" href="manifest.webmanifest?v=20260224082237">
-  <meta name="theme-color" content="#4f46e5">
 
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="assets/icon-192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="assets/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=6">
+  <link rel="stylesheet" href="styles.css?v=20260224">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script defer src="app.js?v=6"></script>
+  <!-- NOTA: removido XLSX (instável em iOS/PWA). Importação do banco faz-se por CSV. -->
+  <script defer src="app.js?v=20260224"></script>
 </head>
 <body>
   <header class="topbar">
@@ -205,27 +205,29 @@
         </div>
         <div id="txList" class="list"></div>
       </div>
-    </section>
 
       <div class="card">
-        <h2>Importar movimentos (CSV do banco)</h2>
-        <p class="muted">Carrega o ficheiro exportado do banco. Duplicados são ignorados automaticamente.</p>
-
-        <div class="row" style="gap:12px; align-items:center; flex-wrap:wrap;">
-          <input id="bankCsvInput" type="file" accept=".csv,text/csv" />
-          <span id="bankCsvName" class="muted"></span>
+        <div class="card__head">
+          <div>
+            <div class="card__title">Importar movimentos (CSV do banco)</div>
+            <div class="card__muted">Carrega o ficheiro exportado do banco. Duplicados são ignorados automaticamente.</div>
+          </div>
         </div>
 
-        <div class="row" style="margin-top:12px; gap:10px; flex-wrap:wrap;">
-          <button id="btnImportBankCsv" class="btn primary">Importar</button>
-          <button id="btnBankCsvHelp" class="btn">Ajuda</button>
+        <div class="row" style="gap:10px; flex-wrap:wrap">
+          <input class="input" id="bankCsvFile" type="file"
+                 accept=".csv,text/csv,application/csv,application/vnd.ms-excel" />
+          <button class="btn btn--primary" id="btnImportBankCsv">Importar</button>
         </div>
+        <div id="bankCsvName" class="card__muted" style="margin-top:6px;font-size:12px"></div>
 
-        <p class="muted" style="margin-top:10px">
+        <div class="card__muted" style="margin-top:10px">
           Dica: podes manter o ficheiro tal como o banco exporta (mesmo com linhas de título). Se voltares a importar o mesmo mês, a app filtra duplicados.
-        </p>
-      </div>
+        </div>
 
+        <div id="bankImportDebug" class="card__muted" style="margin-top:10px; display:none"></div>
+      </div>
+    </section>
 
     <!-- SETTINGS -->
     <section class="view" data-view="settings" id="viewSettings" hidden>
@@ -420,10 +422,19 @@
   </div>
 </div>
 
-  <script>
-  if('serviceWorker' in navigator){
-    window.addEventListener('load', ()=>navigator.serviceWorker.register('./sw.js?v=20260224082237').catch(()=>{}));
+
+<script>
+  // força update do Service Worker e recarrega quando a versão muda
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistration().then((reg) => { if (reg) reg.update(); });
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (refreshing) return;
+      refreshing = true;
+      location.reload();
+    });
   }
-  </script>
+</script>
+
 </body>
 </html>
