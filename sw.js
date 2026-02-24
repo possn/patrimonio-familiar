@@ -1,66 +1,54 @@
-/* Património Familiar — Service Worker (offline-first) */
-const CACHE_VERSION = "pf-20260223";
-const CORE = [
-  "./",
-  "./index.html?v=20260223",
-  "./styles.css?v=20260223",
-  "./app.js?v=20260223",
-  "./manifest.webmanifest"
+/* Património Familiar — SW estável (cache-bust por versão) */
+const VERSION = 'pf-v20260224';
+const ASSETS = [
+  './',
+  './index.html',
+  './styles.css?v=20260224',
+  './app.js?v=20260224',
+  './manifest.webmanifest'
 ];
 
-self.addEventListener("install", (e) => {
-  self.skipWaiting();
-  e.waitUntil(
-    caches.open(CACHE_VERSION).then(cache => cache.addAll(CORE)).catch(()=>{})
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(VERSION).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting())
   );
 });
 
-self.addEventListener("activate", (e) => {
-  e.waitUntil((async () => {
-    const keys = await caches.keys();
-    await Promise.all(keys.filter(k => k.startsWith("pf-") && k !== CACHE_VERSION).map(k => caches.delete(k)));
-    await self.clients.claim();
-  })());
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k)));
+      await self.clients.claim();
+    })()
+  );
 });
 
-self.addEventListener("fetch", (e) => {
-  const req = e.request;
-  if (req.method !== "GET") return;
-
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
   const url = new URL(req.url);
 
-  // só cachea same-origin
-  if (url.origin !== location.origin) return;
+  // só controla o próprio origin
+  if (url.origin !== self.location.origin) return;
 
-  // HTML: network-first para facilitar updates
-  const isHTML = req.headers.get("accept")?.includes("text/html");
-
-  if (isHTML) {
-    e.respondWith((async () => {
-      try {
-        const fresh = await fetch(req);
-        const cache = await caches.open(CACHE_VERSION);
-        cache.put(req, fresh.clone());
-        return fresh;
-      } catch {
-        const cached = await caches.match(req);
-        return cached || caches.match("./");
-      }
-    })());
+  // network-first para HTML (evita servir UI velha)
+  if (req.mode === 'navigate' || (req.headers.get('accept') || '').includes('text/html')) {
+    event.respondWith(
+      fetch(req).then((res) => {
+        const copy = res.clone();
+        caches.open(VERSION).then(c => c.put('./index.html', copy)).catch(()=>{});
+        return res;
+      }).catch(() => caches.match('./index.html'))
+    );
     return;
   }
 
-  // outros: cache-first
-  e.respondWith((async () => {
-    const cached = await caches.match(req);
-    if (cached) return cached;
-    try {
-      const fresh = await fetch(req);
-      const cache = await caches.open(CACHE_VERSION);
-      cache.put(req, fresh.clone());
-      return fresh;
-    } catch {
-      return cached;
-    }
-  })());
+  // cache-first para restantes assets
+  event.respondWith(
+    caches.match(req).then((cached) => cached || fetch(req).then((res) => {
+      const copy = res.clone();
+      caches.open(VERSION).then(c => c.put(req, copy)).catch(()=>{});
+      return res;
+    }))
+  );
 });

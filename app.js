@@ -1,6 +1,68 @@
 /* Património Familiar — REBUILD percento-ish v5 (fix nav+import+tx) */
 "use strict";
 
+// --- PWA: service worker (cache-bust p/ iOS) ---
+try {
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js?v=20260224").catch(() => {});
+    });
+  }
+} catch (_) {}
+
+// --- util: normalização p/ dedupe ---
+const normStr = (s) => String(s || "")
+  .toLowerCase()
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .replace(/\s+/g, " ")
+  .trim();
+
+function parseEuroNumberPT(raw) {
+  if (raw == null) return null;
+  let s = String(raw).trim();
+  s = s.replace(/€/g, "");
+  s = s.replace(/\s+/g, "");
+  // normaliza sinal unicode (−)
+  s = s.replace(/\u2212/g, "-");
+  // remove separadores de milhar
+  s = s.replace(/\./g, "");
+  // vírgula decimal
+  s = s.replace(/,/g, ".");
+  const v = Number(s);
+  return Number.isFinite(v) ? v : null;
+}
+
+function parsePtDate(day, mon, year) {
+  const m = normStr(mon).slice(0, 3);
+  const map = { jan:1, fev:2, feb:2, mar:3, abr:4, apr:4, mai:5, may:5, jun:6, jul:7, ago:8, aug:8, set:9, sep:9, out:10, oct:10, nov:11, dez:12, dec:12 };
+  const mm = map[m];
+  const dd = Number(day);
+  const yy = Number(year);
+  if (!mm || !dd || !yy) return null;
+  return `${yy.toString().padStart(4,"0")}-${String(mm).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
+}
+
+function parseBankCsvLikeText(text) {
+  // Exportações “CSV” do banco vêm muitas vezes como texto com colunas alinhadas.
+  // Estratégia: linha a linha, detectar padrão de data + 2 montantes no fim.
+  const lines = String(text || "").split(/\r?\n/);
+  const out = [];
+  const re = /^\s*"?(\d{1,2})\s+([A-Za-zÀ-ÿçÇ]{3})\s+(\d{4})\s+(.*?)\s+([\u2212\-]?\d[\d\.]*,\d{2})€\s+([\u2212\-]?\d[\d\.]*,\d{2})€"?\s*$/;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const m = line.match(re);
+    if (!m) continue;
+    const iso = parsePtDate(m[1], m[2], m[3]);
+    if (!iso) continue;
+    const desc = String(m[4] || "").replace(/\s+/g, " ").trim();
+    const val = parseEuroNumberPT(m[5]);
+    if (val == null) continue;
+    out.push({ date: iso, desc, amount: val });
+  }
+  return out;
+}
+
 function safeClone(obj){
   try{ if (typeof structuredClone === "function") return structuredClone(obj); }catch(_){ }
   return JSON.parse(JSON.stringify(obj));
@@ -775,6 +837,15 @@ function fileToRows(file){
   });
 }
 
+function fileToText(file){
+  return new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onerror = ()=>reject(new Error("Erro a ler ficheiro."));
+    reader.onload = ()=>resolve(String(reader.result || ""));
+    reader.readAsText(file);
+  });
+}
+
 
 function csvToObjects(text){
   // Robust CSV/TSV parser with delimiter + header detection and multi-section support (e.g., "Combined" exports).
@@ -928,6 +999,73 @@ function parseNumberSmart(x){
   const n = Number(s);
   if (Number.isFinite(n)) return neg ? -n : n;
   return NaN;
+}
+
+// === Importação de movimentos do banco (CSV/texto, PT) ===
+function escapeHtml(s){
+  return String(s||"")
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/\"/g,"&quot;")
+    .replace(/'/g,"&#39;");
+}
+
+async function importBankMovementsCsv(file){
+  const debugEl = document.getElementById("bankImportDebug");
+  const showDebug = (html) => {
+    if (!debugEl) return;
+    debugEl.style.display = "block";
+    debugEl.innerHTML = html;
+  };
+
+  if (!file) throw new Error("Sem ficheiro.");
+  const text = await fileToText(file);
+  const parsed = parseBankCsvLikeText(text);
+
+  if (!parsed.length){
+    const rows = String(text||"").split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    const head = rows[0] || "";
+    showToast("Importação concluída, mas 0 linhas reconhecidas.");
+    showDebug(`0 linhas reconhecidas. <br><br><b>Primeira linha:</b> ${escapeHtml(head).slice(0,220)}`);
+    return { added:0, dup:0, read:0 };
+  }
+
+  // dedupe por chave forte: data + dir + cents + descrição normalizada
+  const existing = new Set((state.txs||[]).map(tx => {
+    const iso = String(tx.date||"").slice(0,10);
+    const amt = Number(tx.amount||0);
+    const dir = tx.dir || (amt>=0?"in":"out");
+    const desc = normStr(tx.note||"");
+    return `${iso}|${dir}|${Math.round(Math.abs(amt)*100)}|${desc}`;
+  }));
+
+  let added = 0;
+  let dup = 0;
+
+  for (const r of parsed){
+    const dir = r.amount >= 0 ? "in" : "out";
+    const amount = Math.abs(r.amount);
+    const descN = normStr(r.desc);
+    const key = `${r.date}|${dir}|${Math.round(amount*100)}|${descN}`;
+    if (existing.has(key)) { dup++; continue; }
+    existing.add(key);
+    state.txs.push({
+      id: uid(),
+      date: r.date,
+      dir,
+      amount,
+      cat: "Banco",
+      note: r.desc
+    });
+    added++;
+  }
+
+  save();
+  renderAll();
+  showToast(`Importação concluída. Novos: ${added} | Duplicados: ${dup} | Linhas reconhecidas: ${parsed.length}`);
+  showDebug(`Linhas reconhecidas: <b>${parsed.length}</b> · Inseridos: <b>${added}</b> · Duplicados: <b>${dup}</b>`);
+  return { added, dup, read: parsed.length };
 }
 
 function classifyRow(r){
@@ -1178,272 +1316,6 @@ function resetAll(){
 }
 
 /* WIRING */
-
-// ===== Importação de movimentos a partir de Excel (.xls/.xlsx) =====
-async function importBankFile(file){
-  // Suporta CSV/TXT sem bibliotecas externas.
-  // Excel (.xls/.xlsx) só funciona se a biblioteca XLSX estiver disponível (opcional).
-  const name = (file?.name || "").toLowerCase();
-
-  const hasXLSX = (typeof window !== "undefined" && window.XLSX && typeof window.XLSX.read === "function");
-
-  // 1) CSV / TXT (recomendado)
-  if (name.endsWith(".csv") || name.endsWith(".txt")) {
-    const text = await file.text();
-    return importBankCSVText(text);
-  }
-
-  // 2) Excel, se houver XLSX carregado
-  if ((name.endsWith(".xlsx") || name.endsWith(".xls")) && hasXLSX) {
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: "array" });
-    const sheetName = wb.SheetNames?.[0];
-    if (!sheetName) throw new Error("Workbook sem folhas.");
-    const ws = wb.Sheets[sheetName];
-
-    // raw rows (2D)
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" });
-    return importBankRows(rows);
-  }
-
-  // 3) Excel sem biblioteca → instrução clara
-  throw new Error("Este ficheiro parece ser Excel (.xls/.xlsx). Nesta versão, a importação de Excel requer conversão para CSV (Separador ';' ou ',').");
-}
-
-function importBankCSVText(text){
-  // Detecta delimitador ; ou ,
-  const sample = text.slice(0, 4000);
-  const semi = (sample.match(/;/g) || []).length;
-  const comma = (sample.match(/,/g) || []).length;
-  const delim = semi >= comma ? ";" : ",";
-
-  const lines = text
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .filter(l => l.trim().length > 0);
-
-  // Parser simples com aspas
-  const rows = lines.map(line => parseDelimitedLine(line, delim));
-  return importBankRows(rows);
-}
-
-function parseDelimitedLine(line, delim){
-  const out = [];
-  let cur = "";
-  let inQ = false;
-  for (let i=0;i<line.length;i++){
-    const ch = line[i];
-    if (ch === '"'){
-      // double quote escape
-      if (inQ && line[i+1] === '"'){ cur += '"'; i++; }
-      else inQ = !inQ;
-      continue;
-    }
-    if (!inQ && ch === delim){
-      out.push(cur.trim());
-      cur = "";
-      continue;
-    }
-    cur += ch;
-  }
-  out.push(cur.trim());
-  return out;
-}
-
-function importBankRows(rows){
-  // Heurística: encontrar linha de cabeçalho (se existir)
-  // Procuramos palavras típicas (Data / Descrição / Montante / Valor / Débito / Crédito)
-  const headerIdx = findHeaderRowIndex(rows);
-  let dataRows = rows;
-
-  // map de colunas
-  let col = { date: 0, desc: 1, amount: 2, balance: -1 };
-
-  if (headerIdx !== -1){
-    const header = rows[headerIdx].map(x => String(x||"").toLowerCase());
-    const idxDate = findCol(header, ["data", "date"]);
-    const idxDesc = findCol(header, ["descr", "descrição", "descricao", "mov", "movimento", "designação", "designacao", "descritivo"]);
-    const idxAmt  = findCol(header, ["montante", "valor", "amount", "débito", "debito", "crédito", "credito"]);
-    const idxBal  = findCol(header, ["saldo", "balance"]);
-    if (idxDate !== -1) col.date = idxDate;
-    if (idxDesc !== -1) col.desc = idxDesc;
-    if (idxAmt  !== -1) col.amount = idxAmt;
-    if (idxBal  !== -1) col.balance = idxBal;
-    dataRows = rows.slice(headerIdx + 1);
-  } else {
-    // sem cabeçalho: tentar ignorar linhas de título até encontrar uma data na 1ª coluna
-    const firstData = rows.findIndex(r => isDateLike(r?.[0]));
-    if (firstData > 0) dataRows = rows.slice(firstData);
-  }
-
-  let read = 0, added = 0, dup = 0;
-  for (const r of dataRows){
-    if (!r || r.length < 2) continue;
-    const rawDate = r[col.date];
-    const rawDesc = r[col.desc];
-    const rawAmt  = r[col.amount];
-
-    if (!isDateLike(rawDate)) continue;
-
-    const dateISO = normalizeDateISO(rawDate);
-    const desc = String(rawDesc ?? "").trim();
-    const amount = parseEuroAmount(rawAmt);
-
-    // se amount não for número, saltar
-    if (!Number.isFinite(amount)) continue;
-
-    read++;
-
-    const key = makeTxnKey(dateISO, desc, amount);
-    if (state._txnKeys?.has?.(key)) { dup++; continue; }
-    if (!state._txnKeys) state._txnKeys = new Set();
-    state._txnKeys.add(key);
-
-    state.transactions.push({
-      id: cryptoRandomId(),
-      date: dateISO,
-      desc,
-      amount,
-      category: guessCategory(desc, amount),
-      recurring: false
-    });
-    added++;
-  }
-
-  // ordenar por data desc
-  state.transactions.sort((a,b)=> (b.date||"").localeCompare(a.date||""));
-
-  saveState();
-  return {added, dup, rows: read};
-}
-
-function findHeaderRowIndex(rows){
-  const maxScan = Math.min(rows.length, 30);
-  for (let i=0;i<maxScan;i++){
-    const r = rows[i] || [];
-    const joined = r.map(x => String(x||"").toLowerCase()).join(" ");
-    const hits =
-      (joined.includes("data") || joined.includes("date")) &&
-      (joined.includes("descr") || joined.includes("designa") || joined.includes("mov")) &&
-      (joined.includes("montante") || joined.includes("valor") || joined.includes("deb") || joined.includes("cred") || joined.includes("amount"));
-    if (hits) return i;
-  }
-  return -1;
-}
-
-function findCol(headerLower, keys){
-  for (const k of keys){
-    const idx = headerLower.findIndex(h => h.includes(k));
-    if (idx !== -1) return idx;
-  }
-  return -1;
-}
-
-function isDateLike(v){
-  if (v == null) return false;
-  if (typeof v === "number") return v > 20000 && v < 90000; // excel serial
-  const s = String(v).trim();
-  if (!s) return false;
-  // formatos comuns: dd/mm/yyyy, dd-mm-yyyy, yyyy-mm-dd
-  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) return true;
-  if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/.test(s)) return true;
-  // nomes de dia (ex: "Segunda-feira, 23 de Fevereiro de 2026")
-  if (/[a-zà-ú]+-feira/i.test(s) && /\d{1,2}/.test(s) && /\d{4}/.test(s)) return true;
-  return false;
-}
-
-function normalizeDateISO(v){
-  // 1) excel serial number
-  if (typeof v === "number"){
-    // Excel epoch 1899-12-30
-    const ms = Math.round((v - 25569) * 86400 * 1000);
-    const d = new Date(ms);
-    return d.toISOString().slice(0,10);
-  }
-
-  const s0 = String(v).trim();
-
-  // 2) yyyy-mm-dd
-  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s0)){
-    const [y,m,d]=s0.split("-").map(x=>parseInt(x,10));
-    return `${String(y).padStart(4,"0")}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-  }
-
-  // 3) dd/mm/yyyy or dd-mm-yyyy
-  const m = s0.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-  if (m){
-    const dd=parseInt(m[1],10), mm=parseInt(m[2],10);
-    let yy=parseInt(m[3],10); if (yy < 100) yy += 2000;
-    return `${String(yy).padStart(4,"0")}-${String(mm).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
-  }
-
-  // 4) "Segunda-feira, 23 de Fevereiro de 2026"
-  const months = {
-    janeiro:1, fevereiro:2, março:3, marco:3, abril:4, maio:5, junho:6,
-    julho:7, agosto:8, setembro:9, outubro:10, novembro:11, dezembro:12
-  };
-  const mm2 = s0.toLowerCase().match(/(\d{1,2})\s+de\s+([a-zà-ú]+)\s+de\s+(\d{4})/i);
-  if (mm2){
-    const dd=parseInt(mm2[1],10);
-    const monName=mm2[2].normalize("NFD").replace(/\p{Diacritic}/gu,"");
-    const month=months[monName] || months[mm2[2].toLowerCase()] || 0;
-    const yy=parseInt(mm2[3],10);
-    if (month) return `${String(yy).padStart(4,"0")}-${String(month).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
-  }
-
-  // fallback: Date.parse
-  const d = new Date(s0);
-  if (!isNaN(d.getTime())) return d.toISOString().slice(0,10);
-
-  return "";
-}
-
-function parseEuroAmount(v){
-  if (typeof v === "number") return v;
-  const s = String(v ?? "").trim();
-  if (!s) return NaN;
-  // remover moeda e espaços
-  let t = s.replace(/\s/g,"").replace(/€|eur/ig,"");
-  // sinal
-  let sign = 1;
-  if (t.startsWith("(") && t.endsWith(")")) { sign = -1; t = t.slice(1,-1); }
-  if (t.startsWith("-")) { sign = -1; t = t.slice(1); }
-  // milhar/ponto e decimal/virgula
-  // se houver tanto '.' como ',', assumimos '.' milhar e ',' decimal
-  if (t.includes(".") && t.includes(",")){
-    t = t.replace(/\./g,"").replace(",",".");
-  } else if (t.includes(",") && !t.includes(".")){
-    t = t.replace(",",".");
-  }
-  const n = parseFloat(t);
-  return Number.isFinite(n) ? sign*n : NaN;
-}
-
-function makeTxnKey(dateISO, desc, amount){
-  const d = (dateISO||"").slice(0,10);
-  const a = Math.round(amount*100);
-  const s = (desc||"").toLowerCase().replace(/\s+/g," ").trim();
-  return `${d}::${a}::${s}`;
-}
-function cryptoRandomId(){
-  // compat iOS
-  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
-  const arr = new Uint8Array(16);
-  (window.crypto || {}).getRandomValues?.(arr);
-  return Array.from(arr).map(b=>b.toString(16).padStart(2,"0")).join("");
-}
-
-function hashStr(str){
-  // hash leve e determinístico (FNV-1a 32-bit)
-  let h = 0x811c9dc5;
-  for (let i=0;i<str.length;i++){
-    h ^= str.charCodeAt(i);
-    h = (h + ((h<<1)+(h<<4)+(h<<7)+(h<<8)+(h<<24))) >>> 0;
-  }
-  return ("00000000"+h.toString(16)).slice(-8);
-}
-
 function wire(){
   wireModalClosers();
 
@@ -1585,35 +1457,6 @@ if (fh) fh.addEventListener("change", ()=>renderFire());
   setModeLiabs(false);
   setView("dashboard");
   renderCashflow();
-
-  // --- Importação Excel do banco (movimentos) ---
-  const btnBank = $("btnImportBankExcel");
-  if (btnBank){
-    btnBank.addEventListener("click", async () => {
-      try{
-        const file = $("bankExcelFile")?.files?.[0];
-        if (!file){ alert("Escolhe primeiro um ficheiro .xls/.xlsx."); return; }
-        if (typeof XLSX === "undefined"){
-          alert("Não foi possível ler Excel (.xls/.xlsx) neste ambiente. Solução: exporta/converte o ficheiro para CSV e volta a importar.");
-          return;
-        }
-        btnBank.disabled = true;
-        btnBank.textContent = "A importar…";
-        const res = await importBankFile(file);
-        btnBank.textContent = "Importar";
-        btnBank.disabled = false;
-
-        alert(`Importação concluída.\nNovos: ${res.added}\nDuplicados ignorados: ${res.dup}\nLinhas lidas: ${res.rows}`);
-        // refrescar
-        renderCashflow();
-      }catch(err){
-        console.error(err);
-        alert("Falhou a importação do Excel. Abre a consola para detalhes.");
-        try{ btnBank.textContent = "Importar"; btnBank.disabled = false; }catch(_){}
-      }
-    });
-  }
-
 }
 
 document.addEventListener("DOMContentLoaded", async () => {

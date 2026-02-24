@@ -5,13 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#eef1f6" />
   <title>Património Familiar</title>
-  <link rel="manifest" href="manifest.webmanifest">
 
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="assets/icon-192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="assets/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=20260223">
+  <link rel="stylesheet" href="styles.css?v=20260224">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-<script defer src="app.js?v=20260223"></script>
+  <!-- NOTA: removido XLSX (instável em iOS/PWA). Importação do banco faz-se por CSV. -->
+  <script defer src="app.js?v=20260224"></script>
 </head>
 <body>
   <header class="topbar">
@@ -203,18 +205,28 @@
         </div>
         <div id="txList" class="list"></div>
       </div>
-    
-    <div class="card">
-      <h3>Importar movimentos (Excel do banco)</h3>
-      <p class="muted">Carrega o ficheiro mensal do banco (.csv; também aceita .xls/.xlsx se suportado). A app tenta reconhecer as colunas e ignora duplicados automaticamente.</p>
-      <div class="row">
-        <input id="bankExcelFile" type="file" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
-        <button class="btn" id="btnImportBankExcel">Importar</button>
-      </div>
-      <p class="tiny muted" id="bankImportHint">Dica: podes manter o ficheiro tal como o banco exporta (mesmo com linhas de título). Se houver cabeçalhos, melhor.</p>
-    </div>
 
-  </section>
+      <div class="card">
+        <div class="card__head">
+          <div>
+            <div class="card__title">Importar movimentos (CSV do banco)</div>
+            <div class="card__muted">Carrega o ficheiro exportado do banco. Duplicados são ignorados automaticamente.</div>
+          </div>
+        </div>
+
+        <div class="row" style="gap:10px; flex-wrap:wrap">
+          <input class="input" id="bankCsvFile" type="file"
+                 accept=".csv,text/csv,application/csv,application/vnd.ms-excel" />
+          <button class="btn btn--primary" id="btnImportBankCsv">Importar</button>
+        </div>
+
+        <div class="card__muted" style="margin-top:10px">
+          Dica: podes manter o ficheiro tal como o banco exporta (mesmo com linhas de título). Se voltares a importar o mesmo mês, a app filtra duplicados.
+        </div>
+
+        <div id="bankImportDebug" class="card__muted" style="margin-top:10px; display:none"></div>
+      </div>
+    </section>
 
     <!-- SETTINGS -->
     <section class="view" data-view="settings" id="viewSettings" hidden>
@@ -408,15 +420,6 @@
     </div>
   </div>
 </div>
-
-
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js').catch(()=>{});
-      });
-    }
-  </script>
 
 </body>
 </html>
