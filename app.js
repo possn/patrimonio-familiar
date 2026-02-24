@@ -193,7 +193,39 @@ let fireChart = null;
 
 let trendChart = null;
 
-function $(id){ return document.getElementById(id); }
+function $(id){
+  const el = document.getElementById(id);
+  if (el) return el;
+  // No-op fallback to avoid a single missing element breaking all wiring.
+  return {
+    _missing: true,
+    addEventListener(){},
+    removeEventListener(){},
+    classList: { add(){}, remove(){}, toggle(){}, contains(){ return false; } },
+    setAttribute(){},
+    getAttribute(){ return null; },
+    querySelector(){ return null; },
+    querySelectorAll(){ return []; },
+    appendChild(){},
+    remove(){},
+    style: {},
+    value: "",
+    checked: false,
+    files: null,
+    innerHTML: "",
+    textContent: "",
+    focus(){},
+  };
+}
+
+// Safe event binding: avoids breaking the whole app if an element is missing
+// in the current layout (prevents "buttons stop working" cascades).
+function on(id, evt, handler, opts){
+  const el = document.getElementById(id);
+  if (!el) return false;
+  el.addEventListener(evt, handler, opts);
+  return true;
+}
 
 function uid(){
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -1429,6 +1461,23 @@ if (fh) fh.addEventListener("change", ()=>renderFire());
     }
   });
   $("btnTemplate").addEventListener("click", downloadTemplate);
+
+  // --- Importar movimentos do banco (CSV) ---
+  // (Em algumas builds antigas existia apenas o import de holdings; aqui suportamos o CSV do banco.)
+  $("fileBankCsv").addEventListener("change", ()=>{
+    const has = $("fileBankCsv").files && $("fileBankCsv").files.length;
+    $("btnImportBankCsv").disabled = !has;
+  });
+  $("btnImportBankCsv").addEventListener("click", async ()=>{
+    const f = $("fileBankCsv").files && $("fileBankCsv").files[0];
+    if (!f) { alert("Escolhe primeiro o ficheiro CSV do banco."); return; }
+    try{
+      await importBankMovementsCsv(f);
+    }catch(e){
+      console.error(e);
+      alert("Falhou a importação do CSV. Abre a consola para detalhes.");
+    }
+  });
 
   // json backup
   $("btnExportJSON").addEventListener("click", exportJSON);

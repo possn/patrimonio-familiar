@@ -1,10 +1,10 @@
 /* Património Familiar — SW estável (cache-bust por versão) */
-const VERSION = 'pfwa-20260224011900';
+const VERSION = 'pfwa-20260224073000';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=20260224',
-  './app.js?v=20260224',
+  './styles.css?v=20260224073000',
+  './app.js?v=20260224073000',
   './manifest.webmanifest'
 ];
 
@@ -44,7 +44,6 @@ self.addEventListener('fetch', (event) => {
   }
 
   // JS/CSS/manifest: network-first (evita ficar preso em versões antigas)
-  const url = new URL(req.url);
   const pathname = url.pathname || '';
   const isCode = pathname.endsWith('.js') || pathname.endsWith('.css') || pathname.endsWith('.json') || pathname.endsWith('.webmanifest');
 
