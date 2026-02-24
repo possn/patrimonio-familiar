@@ -355,7 +355,6 @@ function escapeHtml(s){
 }
 
 function renderDistChart(){
-  if (!window.Chart) return; // charts opcionais (não partir a app se Chart.js falhar)
   const by = {};
   for (const a of state.assets){
     const k = a.class || "Outros";
@@ -390,7 +389,6 @@ function renderDistChart(){
 }
 
 function renderTrendChart(){
-  if (!window.Chart) return; // charts opcionais
   const ctx = $("trendChart").getContext("2d");
   if (trendChart) trendChart.destroy();
 
@@ -1181,439 +1179,260 @@ function resetAll(){
 
 /* WIRING */
 
-// --- XLSX loader (on-demand) ---
-function loadScriptOnce(src, testFn, timeoutMs = 15000){
-  return new Promise((resolve, reject)=>{
-    try{
-      if (testFn()) return resolve(true);
-      const existing = Array.from(document.scripts).find(s=>s.src===src);
-      if (existing){
-        const t0 = Date.now();
-        const timer = setInterval(()=>{
-          if (testFn()) { clearInterval(timer); return resolve(true); }
-          if (Date.now()-t0 > timeoutMs){ clearInterval(timer); return reject(new Error('Timeout a carregar XLSX')); }
-        }, 100);
-        return;
-      }
-      const s = document.createElement('script');
-      s.src = src;
-      s.async = true;
-      s.onload = ()=> testFn() ? resolve(true) : reject(new Error('XLSX não ficou disponível'));
-      s.onerror = ()=> reject(new Error('Falhou download do XLSX'));
-      document.head.appendChild(s);
-    }catch(e){
-      reject(e);
-    }
-  });
-}
-
-async function ensureXLSX(){
-  if (window.XLSX) return true;
-  const primary = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
-  const fallback = 'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js';
-  try{ await loadScriptOnce(primary, ()=>!!window.XLSX); return true; }
-  catch(_){ await loadScriptOnce(fallback, ()=>!!window.XLSX); return true; }
-}
-
 // ===== Importação de movimentos a partir de Excel (.xls/.xlsx) =====
-async function importBankExcel(file){
-  // carregar XLSX só quando é preciso (evita que a app falhe se o CDN falhar)
-  await ensureXLSX();
-  return new Promise((resolve, reject)=>{
-    try{
-      if(!window.XLSX) return reject(new Error("Biblioteca XLSX não carregou."));
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error("Falha ao ler o ficheiro."));
-      reader.onload = (e)=>{
-        try{
-          const data = new Uint8Array(e.target.result);
-          let wb;
-          try{
-            wb = XLSX.read(data, { type:"array" });
-          }catch(errArray){
-            // Fallback (iOS/Safari + alguns .xls): tentar como binary string
-            const r2 = new FileReader();
-            r2.onerror = () => reject(new Error("Falha ao ler o ficheiro."));
-            r2.onload = ()=>{
-              try{
-                const wb2 = XLSX.read(r2.result, { type:"binary" });
-                // re-entrar no fluxo principal
-                wb = wb2;
-                // executar a partir daqui (abaixo) com wb definido
-                try{
-                  // escolher a folha que mais parece conter movimentos
-                  const sheetNames = wb.SheetNames || [];
-                  if(sheetNames.length===0) return resolve({ imported:0, duplicates:0, read:0 });
+async function importBankFile(file){
+  // Suporta CSV/TXT sem bibliotecas externas.
+  // Excel (.xls/.xlsx) só funciona se a biblioteca XLSX estiver disponível (opcional).
+  const name = (file?.name || "").toLowerCase();
 
-                  const norm = (s)=> String(s||"").toLowerCase()
-                    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-                    .replace(/\s+/g," ").trim();
+  const hasXLSX = (typeof window !== "undefined" && window.XLSX && typeof window.XLSX.read === "function");
 
-                  function scoreSheet(rows){
-                    let score=0;
-                    const limit = Math.min(rows.length, 40);
-                    for(let r=0;r<limit;r++){
-                      const row = rows[r]||[];
-                      const line = norm(row.join(" "));
-                      if(line.includes("data") && (line.includes("descricao") || line.includes("descr"))) score+=2;
-                      if(line.includes("montante") || line.includes("debito") || line.includes("credito")) score+=2;
-                      if(line.includes("saldo")) score+=1;
-                    }
-                    return score;
-                  }
+  // 1) CSV / TXT (recomendado)
+  if (name.endsWith(".csv") || name.endsWith(".txt")) {
+    const text = await file.text();
+    return importBankCSVText(text);
+  }
 
-                  let bestName = sheetNames[0];
-                  let bestScore = -1;
-                  const cacheRows = {};
-                  for(const name of sheetNames){
-                    const ws = wb.Sheets[name];
-                    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:""});
-                    cacheRows[name] = rows;
-                    const sc = scoreSheet(rows);
-                    if(sc>bestScore){ bestScore=sc; bestName=name; }
-                  }
+  // 2) Excel, se houver XLSX carregado
+  if ((name.endsWith(".xlsx") || name.endsWith(".xls")) && hasXLSX) {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array" });
+    const sheetName = wb.SheetNames?.[0];
+    if (!sheetName) throw new Error("Workbook sem folhas.");
+    const ws = wb.Sheets[sheetName];
 
-                  const rows = cacheRows[bestName] || XLSX.utils.sheet_to_json(wb.Sheets[bestName], {header:1, raw:false, defval:""});
-                  const read = rows.length;
+    // raw rows (2D)
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" });
+    return importBankRows(rows);
+  }
 
-                  const HEADER_HINTS = {
-                    op: ["data operacao","data operação","data oper","data"],
-                    val: ["data valor","data-valor","data valor","data"],
-                    desc: ["descricao","descrição","descricao operacao","descricao da operacao","movimento","descricao movimento"],
-                    amount: ["montante","valor","debito","débito","credito","crédito"],
-                    balance: ["saldo","saldo contabilistico","saldo contabilístico"]
-                  };
-
-                  function headerRowIndex(rows){
-                    let best=-1, bestHits=-1;
-                    for(let i=0;i<Math.min(rows.length,60);i++){
-                      const line = rows[i].map(norm);
-                      let hits=0;
-                      const all = line.join(' | ');
-                      if(Object.values(HEADER_HINTS.op).some(h=>all.includes(norm(h)))) hits++;
-                      if(Object.values(HEADER_HINTS.desc).some(h=>all.includes(norm(h)))) hits++;
-                      if(Object.values(HEADER_HINTS.amount).some(h=>all.includes(norm(h)))) hits++;
-                      if(Object.values(HEADER_HINTS.balance).some(h=>all.includes(norm(h)))) hits++;
-                      if(hits>bestHits){ bestHits=hits; best=i; }
-                    }
-                    return best;
-                  }
-
-                  const hIdx = headerRowIndex(rows);
-                  const header = (rows[hIdx]||[]).map(norm);
-
-                  function findCol(hints){
-                    for(const h of hints){
-                      const nh = norm(h);
-                      for(let c=0;c<header.length;c++){
-                        if(header[c]===nh || header[c].includes(nh)) return c;
-                      }
-                    }
-                    return -1;
-                  }
-                  let colOp = findCol(HEADER_HINTS.op);
-                  let colDesc = findCol(HEADER_HINTS.desc);
-                  let colAmt = findCol(HEADER_HINTS.amount);
-                  let colBal = findCol(HEADER_HINTS.balance);
-                  if(colOp<0 && header.length>=4) colOp=0;
-                  if(colDesc<0 && header.length>=4) colDesc=2;
-                  if(colAmt<0 && header.length>=4) colAmt=3;
-                  if(colBal<0 && header.length>=5) colBal=4;
-
-                  function parseAmount(s){
-                    const t = String(s||'').replace(/\s/g,'');
-                    const cleaned = t.replace(/[^0-9,\.-]/g,'');
-                    if(!cleaned) return NaN;
-                    let x = cleaned;
-                    if(x.includes(',') && x.includes('.')) x = x.replace(/\./g,'').replace(',','.');
-                    else if(x.includes(',') && !x.includes('.')) x = x.replace(',','.');
-                    const n = Number(x);
-                    return Number.isFinite(n) ? n : NaN;
-                  }
-                  function parseDate(s){
-                    const t = String(s||'').trim();
-                    const m = t.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-                    if(m){
-                      const dd = String(m[1]).padStart(2,'0');
-                      const mm = String(m[2]).padStart(2,'0');
-                      let yy = m[3];
-                      if(yy.length===2) yy = '20'+yy;
-                      return `${yy}-${mm}-${dd}`;
-                    }
-                    const d = new Date(t);
-                    if(!isNaN(d)) return d.toISOString().slice(0,10);
-                    return '';
-                  }
-
-                  const out = [];
-                  for(let i=hIdx+1;i<rows.length;i++){
-                    const r = rows[i];
-                    if(!r || r.every(x=>String(x||'').trim()==='')) continue;
-                    const date = parseDate(r[colOp]);
-                    const desc = String(r[colDesc]||'').trim();
-                    const amt = parseAmount(r[colAmt]);
-                    if(!date || !desc || !Number.isFinite(amt)) continue;
-                    const bal = colBal>=0 ? parseAmount(r[colBal]) : null;
-                    out.push({
-                      id: 'mv_'+Math.random().toString(36).slice(2)+Date.now().toString(36),
-                      date,
-                      desc,
-                      amount: amt,
-                      balance: Number.isFinite(bal) ? bal : null,
-                      category: '',
-                      account: 'Banco',
-                      tags: []
-                    });
-                  }
-
-                  const before = (state.movements||[]).length;
-                  addBankMovementsWithDedupe(out);
-                  const after = (state.movements||[]).length;
-                  const imported = Math.max(0, after-before);
-                  const duplicates = Math.max(0, out.length-imported);
-                  saveState();
-                  renderCashflow();
-                  renderDashboard();
-                  return resolve({ imported, duplicates, read });
-                }catch(errIn){
-                  return reject(errIn);
-                }
-              }catch(err2){
-                reject(err2);
-              }
-            };
-            try{ r2.readAsBinaryString(file); }catch(e){ reject(errArray); }
-            return;
-          }
-
-          // escolher a folha que mais parece conter movimentos
-          const sheetNames = wb.SheetNames || [];
-          if(sheetNames.length===0) return resolve({ imported:0, duplicates:0, read:0 });
-
-          const norm = (s)=> String(s||"").toLowerCase()
-            .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-            .replace(/\s+/g," ").trim();
-
-          function scoreSheet(rows){
-            let score=0;
-            const limit = Math.min(rows.length, 40);
-            for(let r=0;r<limit;r++){
-              const row = rows[r]||[];
-              const line = norm(row.join(" "));
-              if(line.includes("data") && (line.includes("descricao") || line.includes("descr"))) score+=2;
-              if(line.includes("montante") || line.includes("debito") || line.includes("credito")) score+=2;
-              if(line.includes("saldo")) score+=1;
-              if(line.includes("data operacao") || line.includes("data operacao")) score+=3;
-            }
-            return score;
-          }
-
-          let bestName = sheetNames[0];
-          let bestRows = XLSX.utils.sheet_to_json(wb.Sheets[bestName], { header:1, raw:false, defval:"" });
-          let bestScore = scoreSheet(bestRows);
-
-          for(const name of sheetNames.slice(1,6)){
-            const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, raw:false, defval:"" });
-            const sc = scoreSheet(rows);
-            if(sc > bestScore){
-              bestScore=sc; bestName=name; bestRows=rows;
-            }
-          }
-
-          const rows2 = bestRows || [];
-          if(rows2.length===0) return resolve({ imported:0, duplicates:0, read:0 });
-
-          // encontrar linha de cabeçalho (colunas)
-          let headerRowIdx=-1;
-          let header=[];
-          for(let r=0;r<Math.min(rows2.length,60);r++){
-            const row = rows2[r]||[];
-            const normCells = row.map(c=>norm(c));
-            const hitData = normCells.some(c=>c==="data" || c.includes("data oper") || c.includes("data operacao") || c.includes("data operação") || c.includes("data valor") || c.includes("data mov"));
-            const hitDesc = normCells.some(c=>c.includes("descricao") || c.includes("descr"));
-            const hitAmt  = normCells.some(c=>c.includes("montante") || c.includes("debito") || c.includes("débito") || c.includes("credito") || c.includes("crédito") || c.includes("valor"));
-            if(hitData && hitDesc && hitAmt){
-              headerRowIdx=r;
-              header=normCells;
-              break;
-            }
-          }
-
-          if(headerRowIdx<0){
-            // fallback: assumir que existe uma tabela logo a partir da primeira linha com 5+ colunas e uma coluna data
-            for(let r=0;r<Math.min(rows2.length,30);r++){
-              const row = rows2[r]||[];
-              if(row.length>=4 && norm(row[0]).includes("data")){
-                headerRowIdx=r; header=(row||[]).map(c=>norm(c)); break;
-              }
-            }
-          }
-          if(headerRowIdx<0){
-            return resolve({ imported:0, duplicates:0, read:0, error:"Cabeçalhos não reconhecidos." });
-          }
-
-          // util: achar coluna por nome
-          const findCol = (...needles)=>{
-            const n = header.length;
-            for(let i=0;i<n;i++){
-              const h = header[i]||"";
-              for(const nd of needles){
-                if(h===nd || h.includes(nd)) return i;
-              }
-            }
-            return -1;
-          };
-
-          const idxDateOp = findCol("data operacao","data operação","data oper");
-          const idxDateVal= findCol("data valor","data val");
-          const idxDesc   = findCol("descricao","descr");
-          const idxMont   = findCol("montante","valor");
-          const idxDeb    = findCol("debito","débito");
-          const idxCred   = findCol("credito","crédito");
-          const idxSaldo  = findCol("saldo");
-
-          const excelSerialToISO = (n)=>{
-            // Excel serial (dias desde 1899-12-30)
-            const ms = (n - 25569) * 86400 * 1000;
-            const d = new Date(ms);
-            if(!isFinite(d.getTime())) return "";
-            const yyyy=d.getUTCFullYear();
-            const mm=String(d.getUTCMonth()+1).padStart(2,"0");
-            const dd=String(d.getUTCDate()).padStart(2,"0");
-            return `${yyyy}-${mm}-${dd}`;
-          };
-
-          const parseDateAny = (v)=>{
-            if(v==null) return "";
-            if(typeof v==="number" && v>20000) return excelSerialToISO(v);
-            const s = String(v).trim();
-            if(!s) return "";
-            // dd-mm-yyyy ou dd/mm/yyyy
-            let m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
-            if(m){
-              const dd=String(parseInt(m[1],10)).padStart(2,"0");
-              const mm=String(parseInt(m[2],10)).padStart(2,"0");
-              let yy=m[3]; if(yy.length===2) yy="20"+yy;
-              return `${yy}-${mm}-${dd}`;
-            }
-            // yyyy-mm-dd
-            m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
-            if(m){
-              const yyyy=m[1];
-              const mm=String(parseInt(m[2],10)).padStart(2,"0");
-              const dd=String(parseInt(m[3],10)).padStart(2,"0");
-              return `${yyyy}-${mm}-${dd}`;
-            }
-            return "";
-          };
-
-          const parseMoneyAny = (v)=>{
-            if(v==null) return 0;
-            if(typeof v==="number") return isFinite(v)? v : 0;
-            let s = String(v).trim();
-            if(!s) return 0;
-            // normalizar menos unicode
-            s = s.replace(/\u2212/g,"-");
-            // remover tudo excepto digitos, sinal, separadores
-            s = s.replace(/[^\d,.\-()]/g,"");
-            let neg=false;
-            if(s.startsWith("(") && s.endsWith(")")){
-              neg=true; s=s.slice(1,-1);
-            }
-            // se tiver "," e ".", assumir que "," é milhares
-            if(s.includes(",") && s.includes(".")){
-              if(s.lastIndexOf(",") > s.lastIndexOf(".")){
-                // 1.234,56
-                s = s.replace(/\./g,"").replace(",",".");
-              }else{
-                // 1,234.56
-                s = s.replace(/,/g,"");
-              }
-            }else if(s.includes(",")){
-              s = s.replace(",",".");
-            }
-            const num = parseFloat(s);
-            if(!isFinite(num)) return 0;
-            return neg? -Math.abs(num): num;
-          };
-
-          const newRows=[];
-          let read=0, imported=0, duplicates=0;
-
-          for(let r=headerRowIdx+1; r<rows2.length; r++){
-            const row = rows2[r]||[];
-            const opRaw = (idxDateOp>=0? row[idxDateOp] : row[0]);
-            const valRaw= (idxDateVal>=0? row[idxDateVal] : "");
-            const descRaw=(idxDesc>=0? row[idxDesc] : row[2]);
-            if((opRaw===""||opRaw==null) && (descRaw===""||descRaw==null)) continue;
-
-            const dateISO = parseDateAny(opRaw) || parseDateAny(valRaw);
-            const desc = String(descRaw||"").trim();
-            if(!dateISO || !desc) continue;
-
-            let amt = 0;
-            if(idxMont>=0){
-              amt = parseMoneyAny(row[idxMont]);
-            }else if(idxCred>=0 || idxDeb>=0){
-              const cr = idxCred>=0 ? parseMoneyAny(row[idxCred]) : 0;
-              const db = idxDeb>=0 ? parseMoneyAny(row[idxDeb]) : 0;
-              amt = cr - db;
-            }else{
-              amt = parseMoneyAny(row[3]);
-            }
-            if(!amt) continue;
-
-            const saldo = idxSaldo>=0 ? parseMoneyAny(row[idxSaldo]) : null;
-
-            newRows.push({
-              date: dateISO,
-              desc,
-              amount: amt,
-              balance: (saldo!=null && isFinite(saldo))? saldo : null,
-              source: "bank_excel"
-            });
-            read++;
-          }
-
-          // inserir com dedupe
-          const existing = state.cash?.movements || [];
-          const existingKey = new Set(existing.map(m=> movementKey(m)));
-
-          for(const m of newRows){
-            const key = movementKey(m);
-            if(existingKey.has(key)){
-              duplicates++;
-              continue;
-            }
-            existingKey.add(key);
-            existing.push({
-              id: uid(),
-              date: m.date,
-              desc: m.desc,
-              amount: m.amount,
-              tags: [],
-              note: "",
-              source: m.source || "bank_excel",
-              balance: m.balance
-            });
-            imported++;
-          }
-
-          state.cash = state.cash || {};
-          state.cash.movements = existing;
-          saveState();
-          resolve({ imported, duplicates, read });
-        }catch(err){
-          reject(err);
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    }catch(err){
-      reject(err);
-    }
-  });
+  // 3) Excel sem biblioteca → instrução clara
+  throw new Error("Este ficheiro parece ser Excel (.xls/.xlsx). Nesta versão, a importação de Excel requer conversão para CSV (Separador ';' ou ',').");
 }
 
+function importBankCSVText(text){
+  // Detecta delimitador ; ou ,
+  const sample = text.slice(0, 4000);
+  const semi = (sample.match(/;/g) || []).length;
+  const comma = (sample.match(/,/g) || []).length;
+  const delim = semi >= comma ? ";" : ",";
+
+  const lines = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .filter(l => l.trim().length > 0);
+
+  // Parser simples com aspas
+  const rows = lines.map(line => parseDelimitedLine(line, delim));
+  return importBankRows(rows);
+}
+
+function parseDelimitedLine(line, delim){
+  const out = [];
+  let cur = "";
+  let inQ = false;
+  for (let i=0;i<line.length;i++){
+    const ch = line[i];
+    if (ch === '"'){
+      // double quote escape
+      if (inQ && line[i+1] === '"'){ cur += '"'; i++; }
+      else inQ = !inQ;
+      continue;
+    }
+    if (!inQ && ch === delim){
+      out.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+function importBankRows(rows){
+  // Heurística: encontrar linha de cabeçalho (se existir)
+  // Procuramos palavras típicas (Data / Descrição / Montante / Valor / Débito / Crédito)
+  const headerIdx = findHeaderRowIndex(rows);
+  let dataRows = rows;
+
+  // map de colunas
+  let col = { date: 0, desc: 1, amount: 2, balance: -1 };
+
+  if (headerIdx !== -1){
+    const header = rows[headerIdx].map(x => String(x||"").toLowerCase());
+    const idxDate = findCol(header, ["data", "date"]);
+    const idxDesc = findCol(header, ["descr", "descrição", "descricao", "mov", "movimento", "designação", "designacao", "descritivo"]);
+    const idxAmt  = findCol(header, ["montante", "valor", "amount", "débito", "debito", "crédito", "credito"]);
+    const idxBal  = findCol(header, ["saldo", "balance"]);
+    if (idxDate !== -1) col.date = idxDate;
+    if (idxDesc !== -1) col.desc = idxDesc;
+    if (idxAmt  !== -1) col.amount = idxAmt;
+    if (idxBal  !== -1) col.balance = idxBal;
+    dataRows = rows.slice(headerIdx + 1);
+  } else {
+    // sem cabeçalho: tentar ignorar linhas de título até encontrar uma data na 1ª coluna
+    const firstData = rows.findIndex(r => isDateLike(r?.[0]));
+    if (firstData > 0) dataRows = rows.slice(firstData);
+  }
+
+  let read = 0, added = 0, dup = 0;
+  for (const r of dataRows){
+    if (!r || r.length < 2) continue;
+    const rawDate = r[col.date];
+    const rawDesc = r[col.desc];
+    const rawAmt  = r[col.amount];
+
+    if (!isDateLike(rawDate)) continue;
+
+    const dateISO = normalizeDateISO(rawDate);
+    const desc = String(rawDesc ?? "").trim();
+    const amount = parseEuroAmount(rawAmt);
+
+    // se amount não for número, saltar
+    if (!Number.isFinite(amount)) continue;
+
+    read++;
+
+    const key = makeTxnKey(dateISO, desc, amount);
+    if (state._txnKeys?.has?.(key)) { dup++; continue; }
+    if (!state._txnKeys) state._txnKeys = new Set();
+    state._txnKeys.add(key);
+
+    state.transactions.push({
+      id: cryptoRandomId(),
+      date: dateISO,
+      desc,
+      amount,
+      category: guessCategory(desc, amount),
+      recurring: false
+    });
+    added++;
+  }
+
+  // ordenar por data desc
+  state.transactions.sort((a,b)=> (b.date||"").localeCompare(a.date||""));
+
+  saveState();
+  return {added, dup, rows: read};
+}
+
+function findHeaderRowIndex(rows){
+  const maxScan = Math.min(rows.length, 30);
+  for (let i=0;i<maxScan;i++){
+    const r = rows[i] || [];
+    const joined = r.map(x => String(x||"").toLowerCase()).join(" ");
+    const hits =
+      (joined.includes("data") || joined.includes("date")) &&
+      (joined.includes("descr") || joined.includes("designa") || joined.includes("mov")) &&
+      (joined.includes("montante") || joined.includes("valor") || joined.includes("deb") || joined.includes("cred") || joined.includes("amount"));
+    if (hits) return i;
+  }
+  return -1;
+}
+
+function findCol(headerLower, keys){
+  for (const k of keys){
+    const idx = headerLower.findIndex(h => h.includes(k));
+    if (idx !== -1) return idx;
+  }
+  return -1;
+}
+
+function isDateLike(v){
+  if (v == null) return false;
+  if (typeof v === "number") return v > 20000 && v < 90000; // excel serial
+  const s = String(v).trim();
+  if (!s) return false;
+  // formatos comuns: dd/mm/yyyy, dd-mm-yyyy, yyyy-mm-dd
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) return true;
+  if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/.test(s)) return true;
+  // nomes de dia (ex: "Segunda-feira, 23 de Fevereiro de 2026")
+  if (/[a-zà-ú]+-feira/i.test(s) && /\d{1,2}/.test(s) && /\d{4}/.test(s)) return true;
+  return false;
+}
+
+function normalizeDateISO(v){
+  // 1) excel serial number
+  if (typeof v === "number"){
+    // Excel epoch 1899-12-30
+    const ms = Math.round((v - 25569) * 86400 * 1000);
+    const d = new Date(ms);
+    return d.toISOString().slice(0,10);
+  }
+
+  const s0 = String(v).trim();
+
+  // 2) yyyy-mm-dd
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s0)){
+    const [y,m,d]=s0.split("-").map(x=>parseInt(x,10));
+    return `${String(y).padStart(4,"0")}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+  }
+
+  // 3) dd/mm/yyyy or dd-mm-yyyy
+  const m = s0.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (m){
+    const dd=parseInt(m[1],10), mm=parseInt(m[2],10);
+    let yy=parseInt(m[3],10); if (yy < 100) yy += 2000;
+    return `${String(yy).padStart(4,"0")}-${String(mm).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
+  }
+
+  // 4) "Segunda-feira, 23 de Fevereiro de 2026"
+  const months = {
+    janeiro:1, fevereiro:2, março:3, marco:3, abril:4, maio:5, junho:6,
+    julho:7, agosto:8, setembro:9, outubro:10, novembro:11, dezembro:12
+  };
+  const mm2 = s0.toLowerCase().match(/(\d{1,2})\s+de\s+([a-zà-ú]+)\s+de\s+(\d{4})/i);
+  if (mm2){
+    const dd=parseInt(mm2[1],10);
+    const monName=mm2[2].normalize("NFD").replace(/\p{Diacritic}/gu,"");
+    const month=months[monName] || months[mm2[2].toLowerCase()] || 0;
+    const yy=parseInt(mm2[3],10);
+    if (month) return `${String(yy).padStart(4,"0")}-${String(month).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
+  }
+
+  // fallback: Date.parse
+  const d = new Date(s0);
+  if (!isNaN(d.getTime())) return d.toISOString().slice(0,10);
+
+  return "";
+}
+
+function parseEuroAmount(v){
+  if (typeof v === "number") return v;
+  const s = String(v ?? "").trim();
+  if (!s) return NaN;
+  // remover moeda e espaços
+  let t = s.replace(/\s/g,"").replace(/€|eur/ig,"");
+  // sinal
+  let sign = 1;
+  if (t.startsWith("(") && t.endsWith(")")) { sign = -1; t = t.slice(1,-1); }
+  if (t.startsWith("-")) { sign = -1; t = t.slice(1); }
+  // milhar/ponto e decimal/virgula
+  // se houver tanto '.' como ',', assumimos '.' milhar e ',' decimal
+  if (t.includes(".") && t.includes(",")){
+    t = t.replace(/\./g,"").replace(",",".");
+  } else if (t.includes(",") && !t.includes(".")){
+    t = t.replace(",",".");
+  }
+  const n = parseFloat(t);
+  return Number.isFinite(n) ? sign*n : NaN;
+}
+
+function makeTxnKey(dateISO, desc, amount){
+  const d = (dateISO||"").slice(0,10);
+  const a = Math.round(amount*100);
+  const s = (desc||"").toLowerCase().replace(/\s+/g," ").trim();
+  return `${d}::${a}::${s}`;
+}
+function cryptoRandomId(){
+  // compat iOS
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  const arr = new Uint8Array(16);
+  (window.crypto || {}).getRandomValues?.(arr);
+  return Array.from(arr).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
 
 function hashStr(str){
   // hash leve e determinístico (FNV-1a 32-bit)
@@ -1775,12 +1594,12 @@ if (fh) fh.addEventListener("change", ()=>renderFire());
         const file = $("bankExcelFile")?.files?.[0];
         if (!file){ alert("Escolhe primeiro um ficheiro .xls/.xlsx."); return; }
         if (typeof XLSX === "undefined"){
-          alert("Biblioteca XLSX não carregou. Confirma internet e volta a tentar.");
+          alert("Não foi possível ler Excel (.xls/.xlsx) neste ambiente. Solução: exporta/converte o ficheiro para CSV e volta a importar.");
           return;
         }
         btnBank.disabled = true;
         btnBank.textContent = "A importar…";
-        const res = await importBankExcel(file);
+        const res = await importBankFile(file);
         btnBank.textContent = "Importar";
         btnBank.disabled = false;
 
@@ -1971,9 +1790,6 @@ function renderFire(){
     row.innerHTML = `<div class="item__l"><div class="item__t">${r.sc.name}</div><div class="item__s">r ${(r.sc.r*100).toFixed(1)}% · inflação ${(r.sc.inf*100).toFixed(1)}% · SWR ${(r.sc.swr*100).toFixed(2)}%</div></div><div class="item__v">${right}</div>`;
     list.appendChild(row);
   }
-
-  // Chart.js é opcional — não partir a app se não estiver disponível
-  if (!window.Chart) return;
 
   // chart: base scenario capital vs fire number
   const base = scenarios[1];

@@ -10,8 +10,8 @@
   <link rel="icon" href="assets/icon-192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="assets/icon-192.png">
   <link rel="stylesheet" href="styles.css?v=20260223">
-  <!-- libs: carregadas on-demand (evita que falhas de CDN partam a app) -->
-  <script defer src="app.js?v=20260223"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script defer src="app.js?v=20260223"></script>
 </head>
 <body>
   <header class="topbar">
@@ -206,7 +206,7 @@
     
     <div class="card">
       <h3>Importar movimentos (Excel do banco)</h3>
-      <p class="muted">Carrega o ficheiro mensal do banco (.xls/.xlsx). A app tenta reconhecer as colunas e ignora duplicados automaticamente.</p>
+      <p class="muted">Carrega o ficheiro mensal do banco (.csv; também aceita .xls/.xlsx se suportado). A app tenta reconhecer as colunas e ignora duplicados automaticamente.</p>
       <div class="row">
         <input id="bankExcelFile" type="file" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
         <button class="btn" id="btnImportBankExcel">Importar</button>
