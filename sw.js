@@ -1,7 +1,5 @@
-/* Património Familiar — Service Worker (offline-first)
-   Versão: 20260224
-*/
-const CACHE_NAME = "pf-cache-20260224";
+/* Património Familiar — Service Worker v6 */
+const CACHE_NAME = "pf-cache-20260411";
 const ASSETS = [
   "./",
   "./index.html",
@@ -10,36 +8,27 @@ const ASSETS = [
   "./manifest.webmanifest"
 ];
 
-// Install: precache core + activate asap
-self.addEventListener("install", (event) => {
+self.addEventListener("install", event => {
   self.skipWaiting();
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).catch(() => {})
+    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)).catch(() => {})
   );
 });
 
-// Activate: claim clients + clean old caches
-self.addEventListener("activate", (event) => {
+self.addEventListener("activate", event => {
   event.waitUntil((async () => {
     try {
       const keys = await caches.keys();
-      await Promise.all(keys.map((k) => (k !== CACHE_NAME ? caches.delete(k) : Promise.resolve())));
-    } catch {}
+      await Promise.all(keys.map(k => k !== CACHE_NAME ? caches.delete(k) : Promise.resolve()));
+    } catch (_) {}
     await self.clients.claim();
   })());
 });
 
-// Fetch strategy:
-// - navigations: network-first (fallback cache)
-// - others: cache-first (fallback network)
-self.addEventListener("fetch", (event) => {
+self.addEventListener("fetch", event => {
   const req = event.request;
-  const url = new URL(req.url);
-
-  // Ignore non-GET
   if (req.method !== "GET") return;
-
-  // Only same-origin or github.io assets
+  const url = new URL(req.url);
   const isSameOrigin = url.origin === self.location.origin;
 
   if (req.mode === "navigate") {

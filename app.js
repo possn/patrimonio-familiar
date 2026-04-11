@@ -1,53 +1,1138 @@
-/* Património Familiar — REBUILD percento-ish v5 (fix nav+import+tx) */
+/* Património Familiar — v6 FINAL
+   Fase 1: bug fixes (XLSX removido, state.txs→transactions, funções em falta, escapeHtml deduplicado, renderAll definido, FIRE usa t.amount)
+   Fase 2: juro composto por ativo, balanço diário/semanal/mensal/anual, comparação de períodos YoY/MoM, previsão de rentabilidade por ativo e carteira
+*/
 "use strict";
 
-// --- PWA: service worker (cache-bust p/ iOS) ---
+/* ─── PWA ─────────────────────────────────────────────────── */
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260224").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260411").catch(() => {});
     });
   }
 } catch (_) {}
 
-// --- util: normalização p/ dedupe ---
+/* ─── UTILS ───────────────────────────────────────────────── */
 const normStr = (s) => String(s || "")
-  .toLowerCase()
-  .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-  .replace(/\s+/g, " ")
-  .trim();
+  .toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .replace(/\s+/g, " ").trim();
 
-function parseEuroNumberPT(raw) {
-  if (raw == null) return null;
-  let s = String(raw).trim();
-  s = s.replace(/€/g, "");
-  s = s.replace(/\s+/g, "");
-  // normaliza sinal unicode (−)
-  s = s.replace(/\u2212/g, "-");
-  // remove separadores de milhar
-  s = s.replace(/\./g, "");
-  // vírgula decimal
-  s = s.replace(/,/g, ".");
-  const v = Number(s);
-  return Number.isFinite(v) ? v : null;
+function escapeHtml(s) {
+  return String(s || "").replace(/[&<>"']/g,
+    c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }
 
+function uid() { return Math.random().toString(16).slice(2) + Date.now().toString(16); }
+
+function isoToday() { return new Date().toISOString().slice(0, 10); }
+
+function safeClone(obj) {
+  try { if (typeof structuredClone === "function") return structuredClone(obj); } catch (_) {}
+  return JSON.parse(JSON.stringify(obj));
+}
+
+function parseNum(x) {
+  if (x === null || x === undefined) return 0;
+  if (typeof x === "number") return Number.isFinite(x) ? x : 0;
+  let s = String(x).trim().replace(/\u00A0/g, " ").replace(/\s+/g, " ");
+  let neg = false;
+  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+  let t = s.replace(/[^0-9,.\-]+/g, "").replace(/\s/g, "");
+  const hasComma = t.includes(","), hasDot = t.includes(".");
+  if (hasComma && hasDot) {
+    if (t.lastIndexOf(",") > t.lastIndexOf(".")) t = t.replace(/\./g,"").replace(/,/g,".");
+    else t = t.replace(/,/g,"");
+  } else if (hasComma && !hasDot) {
+    t = /,[0-9]{1,2}$/.test(t) ? t.replace(/,/g,".") : t.replace(/,/g,"");
+  } else if (!hasComma && hasDot) {
+    const parts = t.split(".");
+    if (parts.length > 2 && !/\.[0-9]{1,2}$/.test(t)) t = t.replace(/\./g,"");
+  }
+  const n = Number(t);
+  return neg ? -(Number.isFinite(n) ? n : 0) : (Number.isFinite(n) ? n : 0);
+}
+
+function fmtEUR(n) {
+  const cur = (state.settings && state.settings.currency) || "EUR";
+  const v = Number(n || 0);
+  try {
+    return new Intl.NumberFormat("pt-PT", { style: "currency", currency: cur, maximumFractionDigits: 0 }).format(v);
+  } catch { return Math.round(v) + " " + cur; }
+}
+
+function fmtEUR2(n) {
+  const cur = (state.settings && state.settings.currency) || "EUR";
+  const v = Number(n || 0);
+  try {
+    return new Intl.NumberFormat("pt-PT", { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(v);
+  } catch { return v.toFixed(2) + " " + cur; }
+}
+
+function fmt(n, maxFrac = 4) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "0";
+  return new Intl.NumberFormat("pt-PT", { maximumFractionDigits: maxFrac, minimumFractionDigits: 0 }).format(v);
+}
+
+function fmtPct(n) { return fmt(n, 2) + "%"; }
+
+function normalizeDate(s) {
+  if (!s) return null;
+  s = String(s).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const parts = s.split(/[\/\-\.]/).filter(Boolean);
+  if (parts.length === 3) {
+    const [a, b, c] = parts.map(Number);
+    if (c > 1000) return `${c}-${String(b).padStart(2,"0")}-${String(a).padStart(2,"0")}`;
+    if (a > 1000) return `${a}-${String(b).padStart(2,"0")}-${String(c).padStart(2,"0")}`;
+  }
+  return null;
+}
+
+function normalizeClassName(s) {
+  const map = {
+    "stock":"Ações/ETFs","etf":"Ações/ETFs","equity":"Ações/ETFs","fund":"Fundos",
+    "crypto":"Cripto","gold":"Ouro","silver":"Prata","real estate":"Imobiliário",
+    "deposit":"Depósitos","cash":"Liquidez","ppr":"PPR","debt":"Dívida"
+  };
+  const n = normStr(s || "");
+  for (const [k,v] of Object.entries(map)) { if (n.includes(k)) return v; }
+  return s || "Outros";
+}
+
+function normalizeYieldType(s) {
+  const n = normStr(s || "");
+  if (n.includes("pct") || n.includes("%") || n.includes("percent")) return "yield_pct";
+  if (n.includes("eur") || n.includes("year") || n.includes("annual")) return "yield_eur_year";
+  if (n.includes("rent") || n.includes("month")) return "rent_month";
+  return "none";
+}
+
+/* ─── TOAST ───────────────────────────────────────────────── */
+function toast(msg, duration = 3000) {
+  let el = document.getElementById("toastEl");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toastEl";
+    el.style.cssText = "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;padding:10px 20px;border-radius:20px;font-weight:700;font-size:14px;z-index:999;max-width:90vw;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,.2);transition:opacity .3s";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.opacity = "1";
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = "0"; }, duration);
+}
+
+/* ─── PERSISTENCE (IndexedDB + localStorage fallback) ─────── */
+const STORAGE_KEY = "PF_STATE_V6";
+const DB_NAME = "pf_v6", DB_STORE = "kv", DB_KEY = "state";
+
+function idbAvailable() { return typeof indexedDB !== "undefined" && indexedDB; }
+
+function idbOpen() {
+  return new Promise((res, rej) => {
+    try {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains(DB_STORE)) req.result.createObjectStore(DB_STORE); };
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => rej(req.error);
+    } catch (e) { rej(e); }
+  });
+}
+
+async function idbGet(key) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(DB_STORE, "readonly");
+    const req = tx.objectStore(DB_STORE).get(key);
+    req.onsuccess = () => { db.close(); res(req.result); };
+    req.onerror = () => { db.close(); rej(req.error); };
+  });
+}
+
+async function idbSet(key, value) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(DB_STORE, "readwrite");
+    tx.objectStore(DB_STORE).put(value, key);
+    tx.oncomplete = () => { db.close(); res(true); };
+    tx.onerror = () => { db.close(); rej(tx.error); };
+  });
+}
+
+async function idbDel(key) {
+  const db = await idbOpen();
+  return new Promise(res => {
+    const tx = db.transaction(DB_STORE, "readwrite");
+    tx.objectStore(DB_STORE).delete(key);
+    tx.oncomplete = () => { db.close(); res(true); };
+    tx.onerror = () => { db.close(); res(false); };
+  });
+}
+
+async function requestPersistentStorage() {
+  try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (_) {}
+}
+
+async function storageGet() {
+  if (idbAvailable()) { try { const v = await idbGet(DB_KEY); if (v) return v; } catch (_) {} }
+  try { return localStorage.getItem(STORAGE_KEY); } catch (_) { return null; }
+}
+
+async function storageSet(raw) {
+  if (idbAvailable()) { try { await idbSet(DB_KEY, raw); return; } catch (_) {} }
+  try { localStorage.setItem(STORAGE_KEY, raw); } catch (_) {}
+}
+
+async function storageClear() {
+  if (idbAvailable()) await idbDel(DB_KEY);
+  try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+}
+
+/* ─── STATE ───────────────────────────────────────────────── */
+const DEFAULT_STATE = {
+  settings: { currency: "EUR" },
+  assets: [],       // {id, class, name, value, yieldType, yieldValue, maturityDate, compoundFreq, notes}
+  liabilities: [],  // {id, class, name, value, rate, notes}
+  transactions: [], // {id, type:'in'|'out', category, amount, date, recurring:'none'|'monthly'|'yearly', notes}
+  history: []       // {dateISO, net, assets, liabilities, passiveAnnual}
+};
+
+let state = safeClone(DEFAULT_STATE);
+let currentView = "dashboard";
+let showingLiabs = false;
+let summaryExpanded = false;
+let txExpanded = false;
+let distDetailExpanded = false;
+let editingItemId = null;
+let bankCsvSelectedFile = null;
+
+// Chart instances
+let distChart = null, trendChart = null, fireChart = null, compoundChart = null, forecastChart = null, compareChart = null;
+
+/* ─── DOM HELPER ──────────────────────────────────────────── */
+const NOOP_EL = {
+  _missing: true, addEventListener(){}, removeEventListener(){},
+  classList: { add(){}, remove(){}, toggle(){}, contains(){ return false; } },
+  setAttribute(){}, getAttribute(){ return null; },
+  querySelector(){ return null; }, querySelectorAll(){ return []; },
+  appendChild(){}, remove(){}, style: {}, value: "", checked: false,
+  files: null, innerHTML: "", textContent: "", focus(){}, disabled: false
+};
+
+function $(id) { return document.getElementById(id) || NOOP_EL; }
+
+/* ─── SAVE / LOAD ─────────────────────────────────────────── */
+async function loadStateAsync() {
+  try {
+    const raw = await storageGet();
+    if (!raw) return safeClone(DEFAULT_STATE);
+    const p = JSON.parse(raw);
+    return {
+      settings: p.settings || { currency: "EUR" },
+      assets: Array.isArray(p.assets) ? p.assets : [],
+      liabilities: Array.isArray(p.liabilities) ? p.liabilities : [],
+      transactions: Array.isArray(p.transactions) ? p.transactions : [],
+      history: Array.isArray(p.history) ? p.history : []
+    };
+  } catch { return safeClone(DEFAULT_STATE); }
+}
+
+function saveState() { void storageSet(JSON.stringify(state)); }
+
+/* ─── TOTALS ──────────────────────────────────────────────── */
+function passiveFromItem(it) {
+  const v = parseNum(it.value), yv = parseNum(it.yieldValue), yt = it.yieldType || "none";
+  if (yt === "yield_pct") return v * (yv / 100);
+  if (yt === "yield_eur_year") return yv;
+  if (yt === "rent_month") return yv * 12;
+  return 0;
+}
+
+function calcTotals() {
+  const assetsTotal = state.assets.reduce((a, x) => a + parseNum(x.value), 0);
+  const liabsTotal = state.liabilities.reduce((a, x) => a + parseNum(x.value), 0);
+  const net = assetsTotal - liabsTotal;
+  const passiveAnnual = state.assets.reduce((a, x) => a + passiveFromItem(x), 0);
+  return { assetsTotal, liabsTotal, net, passiveAnnual };
+}
+
+/* ─── COMPOUND INTEREST ENGINE ────────────────────────────── */
+// Returns array of {year, value} for n years with compound interest
+function compoundGrowth(principal, rateAnnual, years, freq = 12, contributions = 0) {
+  const r = rateAnnual / 100;
+  const result = [];
+  let v = principal;
+  for (let y = 0; y <= years; y++) {
+    result.push({ year: y, value: v });
+    // compound for one year with monthly contributions
+    for (let m = 0; m < 12; m++) {
+      v = v * (1 + r / freq) + contributions / 12;
+    }
+  }
+  return result;
+}
+
+// Effective annual rate from nominal rate and frequency
+function effectiveRate(nominalPct, freq) {
+  const r = nominalPct / 100;
+  return (Math.pow(1 + r / freq, freq) - 1) * 100;
+}
+
+/* ─── NAVIGATION ──────────────────────────────────────────── */
+function setView(view) {
+  currentView = view;
+  document.querySelectorAll(".view").forEach(s => { s.hidden = s.dataset.view !== view; });
+  document.querySelectorAll(".navbtn").forEach(b => { b.classList.toggle("navbtn--active", b.dataset.view === view); });
+  if (view === "dashboard") renderDashboard();
+  if (view === "assets") renderItems();
+  if (view === "cashflow") renderCashflow();
+  if (view === "analysis") renderAnalysis();
+  window.scrollTo({ top: 0, behavior: "instant" });
+}
+
+function openModal(id) { $(id).setAttribute("aria-hidden", "false"); }
+function closeModal(id) { $(id).setAttribute("aria-hidden", "true"); }
+
+function wireModalClosers() {
+  document.body.addEventListener("click", e => {
+    const t = e.target;
+    if (!(t instanceof HTMLElement)) return;
+    const close = t.getAttribute("data-close");
+    if (close) closeModal(close);
+  });
+}
+
+/* ─── RENDER ALL ──────────────────────────────────────────── */
+function renderAll() {
+  renderDashboard();
+  renderItems();
+  renderCashflow();
+}
+
+/* ─── DASHBOARD ───────────────────────────────────────────── */
+function renderDashboard() {
+  const t = calcTotals();
+  $("kpiNet").textContent = fmtEUR(t.net);
+  $("kpiAP").textContent = `Ativos ${fmtEUR(t.assetsTotal)} | Passivos ${fmtEUR(t.liabsTotal)}`;
+  $("kpiPassiveAnnual").textContent = fmtEUR(t.passiveAnnual);
+  $("kpiPassiveMonthly").textContent = fmtEUR(t.passiveAnnual / 12);
+  renderSummary();
+  renderDistChart();
+  renderTrendChart();
+}
+
+function renderSummary() {
+  const list = $("summaryList");
+  list.innerHTML = "";
+  const items = [...state.assets].sort((a, b) => parseNum(b.value) - parseNum(a.value));
+  if (!items.length) {
+    list.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem ativos</div><div class="item__s">Usa o botão + para adicionar.</div></div><div class="item__v">—</div></div>`;
+    $("btnSummaryToggle").style.display = "none";
+    return;
+  }
+  const shown = summaryExpanded ? items : items.slice(0, 10);
+  for (const it of shown) {
+    const row = document.createElement("div");
+    row.className = "item";
+    const passive = passiveFromItem(it);
+    const badge = passive > 0 ? `<span class="badge badge--green">${fmtEUR(passive)}/ano</span>` : "";
+    row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(it.name || "—")} ${badge}</div><div class="item__s">${escapeHtml(it.class || "")}</div></div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
+    row.addEventListener("click", () => { setView("assets"); editItem(it.id); });
+    list.appendChild(row);
+  }
+  $("btnSummaryToggle").style.display = items.length > 10 ? "inline-flex" : "none";
+  $("btnSummaryToggle").textContent = summaryExpanded ? "Ver menos" : "Ver o resto";
+}
+
+const PALETTE = ["#5b5ce6","#3b82f6","#39d6d8","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899","#06b6d4","#84cc16","#f97316","#64748b"];
+
+function renderDistChart() {
+  const by = {};
+  for (const a of state.assets) { const k = a.class || "Outros"; by[k] = (by[k] || 0) + parseNum(a.value); }
+  const labels = Object.keys(by);
+  const values = labels.map(k => by[k]);
+  const ctx = $("distChart").getContext("2d");
+  if (distChart) distChart.destroy();
+  if (!labels.length) {
+    distChart = new Chart(ctx, { type: "doughnut", data: { labels: ["Sem dados"], datasets: [{ data: [1], backgroundColor: ["#e6e9f0"] }] }, options: { plugins: { legend: { display: false } }, cutout: "72%" } });
+    return;
+  }
+  distChart = new Chart(ctx, {
+    type: "doughnut",
+    data: { labels, datasets: [{ data: values, backgroundColor: PALETTE, borderWidth: 0 }] },
+    options: {
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${c.label}: ${fmtEUR(c.raw)} (${fmtPct(c.raw / values.reduce((a,b)=>a+b,0)*100)})` } } },
+      cutout: "72%"
+    }
+  });
+}
+
+function renderTrendChart() {
+  const ctx = $("trendChart").getContext("2d");
+  if (trendChart) trendChart.destroy();
+  const h = state.history.slice().sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
+  const hint = $("historyHint");
+  if (!h.length) {
+    if (hint) hint.style.display = "block";
+    trendChart = new Chart(ctx, { type: "line", data: { labels: ["—"], datasets: [{ data: [0], tension: .35, pointRadius: 0 }] }, options: { plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } } });
+    return;
+  }
+  if (hint) hint.style.display = "none";
+  trendChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: h.map(x => x.dateISO.slice(0, 7)),
+      datasets: [
+        { label: "Património", data: h.map(x => parseNum(x.net)), tension: .4, pointRadius: 3, borderColor: "#5b5ce6", backgroundColor: "rgba(91,92,230,.08)", fill: true },
+        { label: "Ativos", data: h.map(x => parseNum(x.assets)), tension: .4, pointRadius: 0, borderDash: [4, 4], borderColor: "#39d6d8", borderWidth: 1.5 }
+      ]
+    },
+    options: { plugins: { legend: { display: true, labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } } }, scales: { y: { ticks: { callback: v => fmtEUR(v) } } } }
+  });
+}
+
+function snapshotMonth() {
+  const t = calcTotals();
+  const dateISO = isoToday();
+  // avoid duplicate same-day snapshot
+  const existing = state.history.findIndex(h => h.dateISO === dateISO);
+  const snap = { dateISO, net: t.net, assets: t.assetsTotal, liabilities: t.liabsTotal, passiveAnnual: t.passiveAnnual };
+  if (existing >= 0) state.history[existing] = snap; else state.history.push(snap);
+  saveState();
+  renderDashboard();
+  toast("Snapshot registado.");
+}
+
+/* ─── ASSETS / LIABILITIES VIEW ──────────────────────────── */
+const CLASSES_ASSETS = ["Imobiliário","Liquidez","Ações/ETFs","Cripto","Ouro","Prata","Arte","Fundos","PPR","Depósitos","Obrigações","Outros"];
+const CLASSES_LIABS  = ["Crédito habitação","Crédito pessoal","Cartão de crédito","Outros"];
+const COMPOUND_FREQS = [{ v: 1, l: "Anual" }, { v: 2, l: "Semestral" }, { v: 4, l: "Trimestral" }, { v: 12, l: "Mensal" }, { v: 365, l: "Diária" }];
+
+function setModeLiabs(on) {
+  showingLiabs = !!on;
+  $("segLiabs").classList.toggle("seg__btn--active", showingLiabs);
+  $("segAssets").classList.toggle("seg__btn--active", !showingLiabs);
+  $("itemsTitle").textContent = showingLiabs ? "Passivos" : "Ativos";
+  $("itemsSub").textContent = showingLiabs ? "Créditos, dívidas, cartões…" : "Imobiliário, liquidez, ações/ETFs, metais, cripto, fundos, PPR, depósitos, obrigações…";
+  rebuildClassFilter();
+  renderItems();
+}
+
+function rebuildClassFilter() {
+  const sel = $("qClass");
+  const current = sel.value;
+  sel.innerHTML = `<option value="">Todas as classes</option>`;
+  const src = showingLiabs ? state.liabilities : state.assets;
+  const classes = [...new Set(src.map(x => x.class).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "pt"));
+  for (const c of classes) { const o = document.createElement("option"); o.value = c; o.textContent = c; sel.appendChild(o); }
+  sel.value = current;
+}
+
+function renderItems() {
+  rebuildClassFilter();
+  const list = $("itemsList");
+  list.innerHTML = "";
+  const q = ($("qSearch").value || "").trim().toLowerCase();
+  const cfilter = $("qClass").value || "";
+  const sort = $("qSort").value;
+
+  let src = showingLiabs ? [...state.liabilities] : [...state.assets];
+  src = src.filter(it => {
+    const hay = `${it.name || ""} ${it.class || ""}`.toLowerCase();
+    if (q && !hay.includes(q)) return false;
+    if (cfilter && (it.class || "") !== cfilter) return false;
+    return true;
+  });
+
+  if (sort === "value_desc") src.sort((a, b) => parseNum(b.value) - parseNum(a.value));
+  if (sort === "value_asc") src.sort((a, b) => parseNum(a.value) - parseNum(b.value));
+  if (sort === "name_asc") src.sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "pt"));
+
+  if (!src.length) {
+    list.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem ${showingLiabs ? "passivos" : "ativos"}</div><div class="item__s">Usa "Adicionar".</div></div><div class="item__v">—</div></div>`;
+    return;
+  }
+
+  for (const it of src) {
+    const row = document.createElement("div");
+    row.className = "item";
+    const badge = !showingLiabs ? yieldBadge(it) : "";
+    row.innerHTML = `<div class="item__l">
+      <div class="item__t">${escapeHtml(it.name || "—")}</div>
+      <div class="item__s">${escapeHtml(it.class || "")}${badge}</div>
+    </div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
+    row.addEventListener("click", () => editItem(it.id));
+    list.appendChild(row);
+  }
+}
+
+function yieldBadge(it) {
+  const yt = it.yieldType || "none", yv = parseNum(it.yieldValue);
+  if (yt === "yield_pct" && yv > 0) return ` · <span class="badge badge--green">${fmtPct(yv)}</span>`;
+  if (yt === "yield_eur_year" && yv > 0) return ` · <span class="badge badge--green">${fmtEUR(yv)}/ano</span>`;
+  if (yt === "rent_month" && yv > 0) return ` · <span class="badge badge--green">${fmtEUR(yv)}/mês</span>`;
+  return "";
+}
+
+/* ─── MODAL: ITEM ─────────────────────────────────────────── */
+function openItemModal(kind) {
+  editingItemId = null;
+  $("mId").value = "";
+  $("mKind").value = kind;
+  $("btnDeleteItem").style.display = "none";
+  $("modalItemTitle").textContent = kind === "liab" ? "Adicionar passivo" : "Adicionar ativo";
+  buildClassSelect(kind);
+  $("mName").value = "";
+  $("mValue").value = "";
+  $("mYieldType").value = "none";
+  $("mYieldValue").value = "";
+  $("mMaturity").value = "";
+  $("mCompound").value = "12";
+  $("mNotes").value = "";
+  toggleYieldFields(kind);
+  $("btnSaveItem").dataset.kind = kind;
+  openModal("modalItem");
+}
+
+function buildClassSelect(kind) {
+  const sel = $("mClass");
+  sel.innerHTML = "";
+  const classes = kind === "liab" ? CLASSES_LIABS : CLASSES_ASSETS;
+  for (const c of classes) { const o = document.createElement("option"); o.value = c; o.textContent = c; sel.appendChild(o); }
+}
+
+function toggleYieldFields(kind) {
+  const isLiab = kind === "liab";
+  $("mYieldType").disabled = isLiab;
+  $("mYieldValue").disabled = isLiab;
+  $("mMaturity").disabled = isLiab;
+  $("mCompound").disabled = isLiab;
+  const yieldRow = document.getElementById("yieldRow");
+  if (yieldRow) yieldRow.style.display = isLiab ? "none" : "";
+}
+
+function editItem(id) {
+  const src = showingLiabs ? state.liabilities : state.assets;
+  const it = src.find(x => x.id === id);
+  if (!it) return;
+  editingItemId = id;
+  const kind = showingLiabs ? "liab" : "asset";
+  $("mId").value = id;
+  $("mKind").value = kind;
+  $("btnDeleteItem").style.display = "";
+  $("modalItemTitle").textContent = showingLiabs ? "Editar passivo" : "Editar ativo";
+  buildClassSelect(kind);
+  $("mClass").value = it.class || (kind === "liab" ? CLASSES_LIABS[0] : CLASSES_ASSETS[0]);
+  $("mName").value = it.name || "";
+  $("mValue").value = String(parseNum(it.value) || "");
+  $("mNotes").value = it.notes || "";
+  toggleYieldFields(kind);
+  if (!showingLiabs) {
+    $("mYieldType").value = it.yieldType || "none";
+    $("mYieldValue").value = it.yieldValue != null ? String(it.yieldValue) : "";
+    $("mMaturity").value = it.maturityDate || "";
+    $("mCompound").value = String(it.compoundFreq || 12);
+  } else {
+    $("mYieldType").value = "none";
+    $("mYieldValue").value = "";
+    $("mMaturity").value = "";
+    $("mCompound").value = "12";
+  }
+  $("btnSaveItem").dataset.kind = kind;
+  openModal("modalItem");
+}
+
+function saveItemFromModal() {
+  const kind = $("btnSaveItem").dataset.kind;
+  const isLiab = kind === "liab";
+  const obj = {
+    id: editingItemId || uid(),
+    class: $("mClass").value || "Outros",
+    name: ($("mName").value || "").trim(),
+    value: parseNum($("mValue").value),
+    notes: ($("mNotes").value || "").trim()
+  };
+  if (!obj.name) { toast("Nome é obrigatório."); return; }
+  if (!isLiab) {
+    obj.yieldType = $("mYieldType").value || "none";
+    obj.yieldValue = parseNum($("mYieldValue").value);
+    obj.maturityDate = $("mMaturity").value || "";
+    obj.compoundFreq = parseInt($("mCompound").value) || 12;
+  }
+  if (isLiab) {
+    const ix = state.liabilities.findIndex(x => x.id === obj.id);
+    if (ix >= 0) state.liabilities[ix] = obj; else state.liabilities.push(obj);
+  } else {
+    const ix = state.assets.findIndex(x => x.id === obj.id);
+    if (ix >= 0) state.assets[ix] = obj; else state.assets.push(obj);
+  }
+  saveState();
+  closeModal("modalItem");
+  renderDashboard();
+  renderItems();
+}
+
+function deleteCurrentItem() {
+  if (!editingItemId) return;
+  const kind = $("mKind").value || (showingLiabs ? "liab" : "asset");
+  if (!confirm("Apagar este item? Esta ação não pode ser anulada.")) return;
+  if (kind === "liab") state.liabilities = state.liabilities.filter(x => x.id !== editingItemId);
+  else state.assets = state.assets.filter(x => x.id !== editingItemId);
+  editingItemId = null;
+  saveState();
+  closeModal("modalItem");
+  renderAll();
+}
+
+/* ─── CASHFLOW ────────────────────────────────────────────── */
+const TX_PREVIEW_COUNT = 5;
+
+function ensureMonthYearOptions() {
+  const now = new Date(), yearNow = now.getFullYear();
+  const years = [];
+  for (let y = yearNow - 5; y <= yearNow + 1; y++) years.push(y);
+  const curY = $("cfYear").value || String(yearNow);
+  const curM = $("cfMonth").value || String(now.getMonth() + 1);
+  $("cfYear").innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join("");
+  $("cfMonth").innerHTML = Array.from({ length: 12 }, (_, i) => i + 1)
+    .map(m => `<option value="${m}">${String(m).padStart(2, "0")}</option>`).join("");
+  $("cfYear").value = curY;
+  $("cfMonth").value = curM;
+  if (!$("cfYear").value) $("cfYear").value = String(yearNow);
+  if (!$("cfMonth").value) $("cfMonth").value = String(now.getMonth() + 1);
+  $("tDate").value = isoToday();
+}
+
+function monthKeyFromDateISO(d) {
+  const s = String(d || "");
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s.slice(0, 7) : null;
+}
+
+function expandRecurring(tx) {
+  const out = [];
+  const yearLimit = new Date().getFullYear() + 2;
+  for (const t of tx) {
+    out.push(t);
+    const rec = t.recurring || "none";
+    if (rec === "none") continue;
+    const d0 = new Date(t.date + "T00:00:00");
+    if (isNaN(d0.getTime())) continue;
+    for (let i = 1; i <= 48; i++) {
+      const d = new Date(d0);
+      if (rec === "monthly") d.setMonth(d.getMonth() + i);
+      else if (rec === "yearly") d.setFullYear(d.getFullYear() + i);
+      if (d.getFullYear() > yearLimit) break;
+      out.push({ ...t, id: t.id + "_r" + i, date: d.toISOString().slice(0, 10) });
+    }
+  }
+  return out;
+}
+
+// ─── Cashflow granularity: daily / weekly / monthly / annual ─
+function cfGranData(granularity) {
+  const all = expandRecurring(state.transactions).filter(t => parseNum(t.amount) > 0);
+  const bucket = {};
+  for (const t of all) {
+    let key;
+    const d = new Date(t.date + "T00:00:00");
+    if (isNaN(d.getTime())) continue;
+    if (granularity === "day") key = t.date;
+    else if (granularity === "week") {
+      const jan1 = new Date(d.getFullYear(), 0, 1);
+      const wk = Math.ceil(((d - jan1) / 86400000 + jan1.getDay() + 1) / 7);
+      key = `${d.getFullYear()}-W${String(wk).padStart(2,"0")}`;
+    } else if (granularity === "month") key = t.date.slice(0, 7);
+    else key = t.date.slice(0, 4);
+    if (!bucket[key]) bucket[key] = { in: 0, out: 0 };
+    if (t.type === "in") bucket[key].in += parseNum(t.amount);
+    else bucket[key].out += parseNum(t.amount);
+  }
+  const keys = Object.keys(bucket).sort();
+  return { keys, data: keys.map(k => bucket[k]) };
+}
+
+function renderCashflow() {
+  ensureMonthYearOptions();
+  const y = $("cfYear").value;
+  const m = String($("cfMonth").value).padStart(2, "0");
+  const key = `${y}-${m}`;
+  const tx = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === key);
+  const totalIn = tx.filter(t => t.type === "in").reduce((a, t) => a + parseNum(t.amount), 0);
+  const totalOut = tx.filter(t => t.type === "out").reduce((a, t) => a + parseNum(t.amount), 0);
+  const net = totalIn - totalOut;
+  const rate = totalIn > 0 ? (net / totalIn) * 100 : 0;
+  $("cfIn").textContent = fmtEUR(totalIn);
+  $("cfOut").textContent = fmtEUR(totalOut);
+  $("cfNet").textContent = fmtEUR(net);
+  $("cfRate").textContent = `${Math.round(rate)}%`;
+  renderTxList();
+  renderCashflowChart();
+}
+
+function renderBalance() { renderCashflow(); }
+
+function renderCashflowChart() {
+  const gran = ($("cfGranularity") && $("cfGranularity").value) || "month";
+  const { keys, data } = cfGranData(gran);
+  const ctx = $("cfChart") && $("cfChart").getContext("2d");
+  if (!ctx) return;
+  if (window._cfChart) window._cfChart.destroy();
+  if (!keys.length) return;
+  window._cfChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: keys,
+      datasets: [
+        { label: "Entradas", data: data.map(d => d.in), backgroundColor: "#10b981" },
+        { label: "Saídas", data: data.map(d => d.out), backgroundColor: "#ef4444" }
+      ]
+    },
+    options: {
+      plugins: { legend: { labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } } },
+      scales: { x: { stacked: false }, y: { ticks: { callback: v => fmtEUR(v) } } }
+    }
+  });
+}
+
+function renderTxList() {
+  const wrap = $("txList");
+  wrap.innerHTML = "";
+  const tx = expandRecurring(state.transactions)
+    .filter(t => parseNum(t.amount) > 0)
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+
+  if (!tx.length) {
+    wrap.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem movimentos</div><div class="item__s">Adiciona entradas/saídas.</div></div><div class="item__v">—</div></div>`;
+    $("btnTxToggle").style.display = "none";
+    return;
+  }
+
+  const shown = txExpanded ? tx : tx.slice(0, TX_PREVIEW_COUNT);
+  for (const t of shown) {
+    const sign = t.type === "in" ? "+" : "−";
+    const row = document.createElement("div");
+    row.className = "item";
+    row.innerHTML = `<div class="item__l">
+      <div class="item__t">${sign} ${escapeHtml(t.category)}</div>
+      <div class="item__s">${escapeHtml(t.type === "in" ? "Entrada" : "Saída")} · ${escapeHtml(t.date)}${t.recurring !== "none" ? " · ↻" : ""}</div>
+    </div><div class="item__v">${fmtEUR(parseNum(t.amount))}</div>`;
+    wrap.appendChild(row);
+  }
+  if (tx.length > TX_PREVIEW_COUNT) {
+    $("btnTxToggle").style.display = "inline";
+    $("btnTxToggle").textContent = txExpanded ? "Ver menos" : "Ver todos";
+  } else {
+    $("btnTxToggle").style.display = "none";
+  }
+}
+
+function openTxModal() {
+  $("tType").value = "in";
+  $("tCat").value = "";
+  $("tAmt").value = "";
+  $("tRec").value = "none";
+  $("tDate").value = isoToday();
+  $("tNotes").value = "";
+  openModal("modalTx");
+}
+
+function saveTxFromModal() {
+  const type = $("tType").value;
+  const category = ($("tCat").value || "").trim() || "Outros";
+  const amount = parseNum($("tAmt").value);
+  const date = $("tDate").value;
+  const recurring = $("tRec").value || "none";
+  const notes = ($("tNotes").value || "").trim();
+  if (!amount || amount <= 0) { toast("Valor tem de ser > 0."); return; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { toast("Data inválida."); return; }
+  state.transactions.push({ id: uid(), type, category, amount, date, recurring, notes });
+  saveState();
+  closeModal("modalTx");
+  renderCashflow();
+}
+
+/* ─── ANALYSIS VIEW ───────────────────────────────────────── */
+function renderAnalysis() {
+  const tab = ($("analysisTab") && $("analysisTab").value) || "compound";
+  document.querySelectorAll(".analysisPanelTab").forEach(p => { p.style.display = "none"; });
+  const panel = document.getElementById("analysisPanelTab_" + tab);
+  if (panel) panel.style.display = "";
+  if (tab === "compound") renderCompoundPanel();
+  if (tab === "forecast") renderForecastPanel();
+  if (tab === "compare") renderComparePanel();
+  if (tab === "fire") renderFire();
+}
+
+/* ── Compound Interest Panel ── */
+function renderCompoundPanel() {
+  // Build asset selector
+  const sel = $("compAsset");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = `<option value="__custom__">Personalizado…</option>`;
+  for (const a of state.assets) {
+    const o = document.createElement("option");
+    o.value = a.id;
+    o.textContent = `${a.name} (${fmtEUR(parseNum(a.value))})`;
+    sel.appendChild(o);
+  }
+  sel.value = prev || "__custom__";
+  syncCompoundFromAsset();
+}
+
+function syncCompoundFromAsset() {
+  const sel = $("compAsset");
+  if (!sel) return;
+  const id = sel.value;
+  if (id === "__custom__") return;
+  const a = state.assets.find(x => x.id === id);
+  if (!a) return;
+  $("compPrincipal").value = String(Math.round(parseNum(a.value)));
+  if (a.yieldType === "yield_pct") $("compRate").value = String(parseNum(a.yieldValue));
+  else if (a.yieldType === "yield_eur_year") $("compRate").value = fmt(parseNum(a.yieldValue) / Math.max(1, parseNum(a.value)) * 100, 2);
+  $("compFreq").value = String(a.compoundFreq || 12);
+}
+
+function calcAndRenderCompound() {
+  const principal = parseNum($("compPrincipal").value);
+  const rate = parseNum($("compRate").value);
+  const years = parseInt($("compYears").value) || 20;
+  const freq = parseInt($("compFreq").value) || 12;
+  const contrib = parseNum($("compContrib").value);
+
+  if (principal <= 0 || rate <= 0) { toast("Preenche capital e taxa."); return; }
+
+  const data = compoundGrowth(principal, rate, years, freq, contrib);
+  const effRate = effectiveRate(rate, freq);
+
+  // Summary table
+  const tb = $("compoundTable");
+  if (tb) {
+    tb.innerHTML = `<div class="kpiRow">
+      <div class="kpi"><div class="kpi__k">Capital inicial</div><div class="kpi__v">${fmtEUR(principal)}</div></div>
+      <div class="kpi kpi--net"><div class="kpi__k">Taxa efetiva anual</div><div class="kpi__v">${fmtPct(effRate)}</div></div>
+      <div class="kpi kpi--in"><div class="kpi__k">Em ${years} anos</div><div class="kpi__v">${fmtEUR(data[data.length-1].value)}</div></div>
+    </div>
+    <div class="kpiRow" style="margin-top:10px">
+      <div class="kpi"><div class="kpi__k">Juros totais</div><div class="kpi__v">${fmtEUR(data[data.length-1].value - principal - contrib * years)}</div></div>
+      <div class="kpi kpi--in"><div class="kpi__k">CAGR</div><div class="kpi__v">${fmtPct(rate)}</div></div>
+      <div class="kpi"><div class="kpi__k">Contrib. total</div><div class="kpi__v">${fmtEUR(contrib * years)}</div></div>
+    </div>`;
+  }
+
+  // Milestone table
+  const mt = $("compoundMilestones");
+  if (mt) {
+    const milestones = [1, 5, 10, 15, 20, 25, 30].filter(y => y <= years);
+    mt.innerHTML = milestones.map(y => {
+      const d = data[y];
+      const gain = d.value - principal;
+      return `<div class="item">
+        <div class="item__l"><div class="item__t">${y} ano${y>1?"s":""}</div><div class="item__s">Ganho: ${fmtEUR(gain)}</div></div>
+        <div class="item__v">${fmtEUR(d.value)}</div>
+      </div>`;
+    }).join("");
+  }
+
+  // Chart
+  const ctx = $("compoundChart") && $("compoundChart").getContext("2d");
+  if (!ctx) return;
+  if (compoundChart) compoundChart.destroy();
+  const contribLine = data.map((d, i) => principal + contrib * i);
+  compoundChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: data.map(d => `+${d.year}a`),
+      datasets: [
+        { label: "Capital+Juros", data: data.map(d => d.value), tension: .4, borderColor: "#5b5ce6", backgroundColor: "rgba(91,92,230,.08)", fill: true, pointRadius: 0 },
+        { label: "Apenas capital", data: contribLine, tension: 0, borderDash: [6, 4], borderColor: "#94a3b8", borderWidth: 1.5, pointRadius: 0 }
+      ]
+    },
+    options: {
+      plugins: { legend: { labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } } },
+      scales: { y: { ticks: { callback: v => fmtEUR(v) } } }
+    }
+  });
+}
+
+/* ── Forecast / Rentabilidade Panel ── */
+function renderForecastPanel() {
+  const years = parseInt($("forecastYears") && $("forecastYears").value) || 10;
+  const t = calcTotals();
+
+  // per-asset forecast
+  const rows = state.assets.filter(a => {
+    const yt = a.yieldType || "none";
+    return yt !== "none" || (a.compoundFreq && parseNum(a.yieldValue) > 0);
+  });
+
+  const tbl = $("forecastTable");
+  if (tbl) {
+    if (!rows.length) {
+      tbl.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Nenhum ativo com rendimento configurado</div><div class="item__s">Edita os ativos e define yield/taxa.</div></div><div class="item__v">—</div></div>`;
+    } else {
+      tbl.innerHTML = rows.map(a => {
+        const v0 = parseNum(a.value);
+        const rate = a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
+          a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue) / Math.max(1, v0) * 100 :
+          a.yieldType === "rent_month" ? parseNum(a.yieldValue) * 12 / Math.max(1, v0) * 100 : 0;
+        const freq = a.compoundFreq || 1; // default annual for non-compound assets
+        const vN = compoundGrowth(v0, rate, years, freq, 0)[years].value;
+        const gain = vN - v0;
+        return `<div class="item">
+          <div class="item__l">
+            <div class="item__t">${escapeHtml(a.name)}</div>
+            <div class="item__s">${escapeHtml(a.class)} · ${fmtPct(rate)}/ano · freq ${a.compoundFreq || 1}×</div>
+          </div>
+          <div class="item__v" style="text-align:right">
+            <div>${fmtEUR(vN)}</div>
+            <div class="item__s">+${fmtEUR(gain)}</div>
+          </div>
+        </div>`;
+      }).join("");
+    }
+  }
+
+  // Portfolio aggregate chart
+  const ctx = $("forecastChart") && $("forecastChart").getContext("2d");
+  if (!ctx) return;
+  if (forecastChart) forecastChart.destroy();
+
+  // Build aggregate projection for each year
+  const aggData = [];
+  for (let y = 0; y <= years; y++) {
+    let total = 0;
+    for (const a of state.assets) {
+      const v0 = parseNum(a.value);
+      const yt = a.yieldType || "none";
+      const rate = yt === "yield_pct" ? parseNum(a.yieldValue) :
+        yt === "yield_eur_year" ? parseNum(a.yieldValue) / Math.max(1, v0) * 100 :
+        yt === "rent_month" ? parseNum(a.yieldValue) * 12 / Math.max(1, v0) * 100 : 0;
+      const freq = a.compoundFreq || 1;
+      total += compoundGrowth(v0, rate, y, freq, 0)[y].value;
+    }
+    aggData.push(total);
+  }
+  const labels = Array.from({ length: years + 1 }, (_, i) => `+${i}a`);
+  forecastChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        { label: "Portfólio projetado", data: aggData, tension: .4, borderColor: "#10b981", backgroundColor: "rgba(16,185,129,.08)", fill: true, pointRadius: 0 },
+        { label: "Atual (sem crescimento)", data: Array(years + 1).fill(t.assetsTotal), borderDash: [6, 4], borderColor: "#94a3b8", borderWidth: 1.5, pointRadius: 0 }
+      ]
+    },
+    options: {
+      plugins: { legend: { labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } } },
+      scales: { y: { ticks: { callback: v => fmtEUR(v) } } }
+    }
+  });
+}
+
+/* ── Compare Panel (YoY / MoM) ── */
+function renderComparePanel() {
+  const mode = ($("compareMode") && $("compareMode").value) || "yoy";
+  const h = state.history.slice().sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
+
+  const ctx = $("compareChart") && $("compareChart").getContext("2d");
+  if (!ctx) return;
+  if (compareChart) compareChart.destroy();
+
+  if (h.length < 2) {
+    const tbl = $("compareTable");
+    if (tbl) tbl.innerHTML = `<div class="note">Precisas de pelo menos 2 snapshots para comparar. Usa "Registar mês" no Dashboard.</div>`;
+    return;
+  }
+
+  // Build deltas
+  const deltas = [];
+  for (let i = 1; i < h.length; i++) {
+    const prev = h[i - 1], cur = h[i];
+    const delta = parseNum(cur.net) - parseNum(prev.net);
+    const pct = parseNum(prev.net) !== 0 ? (delta / Math.abs(parseNum(prev.net))) * 100 : 0;
+    deltas.push({ label: cur.dateISO.slice(0, 7), prev: parseNum(prev.net), cur: parseNum(cur.net), delta, pct });
+  }
+
+  // YoY: group by year
+  let displayData = deltas;
+  if (mode === "yoy") {
+    const byYear = {};
+    for (const d of deltas) {
+      const y = d.label.slice(0, 4);
+      if (!byYear[y]) byYear[y] = { label: y, delta: 0, cur: 0 };
+      byYear[y].delta += d.delta;
+      byYear[y].cur = d.cur;
+    }
+    displayData = Object.values(byYear);
+  }
+
+  const colors = displayData.map(d => (d.delta || 0) >= 0 ? "#10b981" : "#ef4444");
+  compareChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: displayData.map(d => d.label),
+      datasets: [{ label: mode === "yoy" ? "Variação anual" : "Variação mensal", data: displayData.map(d => d.delta || 0), backgroundColor: colors }]
+    },
+    options: {
+      plugins: { tooltip: { callbacks: { label: c => `${fmtEUR(c.raw)} (${fmtPct((c.raw / Math.abs(displayData[c.dataIndex].prev || 1)) * 100)})` } } },
+      scales: { y: { ticks: { callback: v => fmtEUR(v) } } }
+    }
+  });
+
+  const tbl = $("compareTable");
+  if (tbl) {
+    tbl.innerHTML = displayData.slice().reverse().map(d => {
+      const sign = (d.delta || 0) >= 0 ? "+" : "";
+      const cls = (d.delta || 0) >= 0 ? "kpi--in" : "kpi--out";
+      return `<div class="item">
+        <div class="item__l"><div class="item__t">${escapeHtml(d.label)}</div><div class="item__s">Valor: ${fmtEUR(d.cur)}</div></div>
+        <div class="item__v ${cls}">${sign}${fmtEUR(d.delta || 0)}</div>
+      </div>`;
+    }).join("");
+  }
+}
+
+/* ── FIRE Panel ── */
+function renderFire() {
+  const capEl = $("fireCap"), expEl = $("fireExp"), passEl = $("firePass");
+  const list = $("fireResults"), canvas = $("fireChart");
+  if (!list || !canvas) return;
+
+  const W = parseInt($("fireWindow") && $("fireWindow").value || "6", 10);
+  const H = parseInt($("fireHorizon") && $("fireHorizon").value || "30", 10);
+
+  const isHome = a => {
+    const name = (a.name || "").toLowerCase(), cls = (a.class || "").toLowerCase();
+    return cls.includes("imob") && (name.includes("casa") || name.includes("habita") || name.includes("home"));
+  };
+  const investible = state.assets.filter(a => !isHome(a)).reduce((s, a) => s + parseNum(a.value), 0);
+  const debt = state.liabilities.reduce((s, a) => s + Math.abs(parseNum(a.value)), 0);
+  const cap0 = investible - debt;
+
+  const byMonth = new Map();
+  for (const t of (state.transactions || [])) {
+    const d = t.date || "";
+    if (d.length < 7) continue;
+    const ym = d.slice(0, 7);
+    const cur = byMonth.get(ym) || { inc: 0, out: 0 };
+    const v = parseNum(t.amount); // FIXED: was t.value
+    if (t.type === "out") cur.out += v; else cur.inc += v;
+    byMonth.set(ym, cur);
+  }
+  const months = [...byMonth.keys()].sort();
+  const last = months.slice(-W);
+  const avg = key => last.length ? last.reduce((s, m) => s + (byMonth.get(m)?.[key] || 0), 0) / last.length : 0;
+  const incM = avg("inc"), outM = avg("out"), saveM = Math.max(0, incM - outM);
+  const exp0 = outM * 12;
+  const passiveAnnual = calcTotals().passiveAnnual;
+  const passY = cap0 > 0 ? passiveAnnual / cap0 : 0;
+
+  if (capEl) capEl.textContent = fmtEUR(cap0);
+  if (expEl) expEl.textContent = fmtEUR(exp0);
+  if (passEl) passEl.textContent = fmtEUR(passiveAnnual);
+
+  const scenarios = [
+    { name: "Conservador", r: 0.04, inf: 0.03, swr: 0.0325 },
+    { name: "Base", r: 0.06, inf: 0.025, swr: 0.0375 },
+    { name: "Otimista", r: 0.08, inf: 0.02, swr: 0.04 }
+  ];
+
+  const results = [];
+  for (const sc of scenarios) {
+    let cap = cap0, exp = exp0, hit = null;
+    for (let t = 0; t <= H; t++) {
+      const pass = passY * cap;
+      const fireNum = sc.swr > 0 ? exp / sc.swr : Infinity;
+      if (cap >= fireNum && pass >= exp) { hit = { t, cap, exp, pass, fireNum }; break; }
+      cap = cap * (1 + sc.r) + saveM * 12;
+      exp = exp * (1 + sc.inf);
+    }
+    results.push({ sc, hit });
+  }
+
+  list.innerHTML = results.map(r => {
+    const right = r.hit ? `🎯 FIRE em ${r.hit.t}a (cap: ${fmtEUR(r.hit.cap)})` : `Sem FIRE em ${H}a`;
+    const cls = r.hit ? "kpi--in" : "";
+    return `<div class="item ${cls}">
+      <div class="item__l"><div class="item__t">${r.sc.name}</div><div class="item__s">r ${fmtPct(r.sc.r * 100)} · infl. ${fmtPct(r.sc.inf * 100)} · SWR ${fmtPct(r.sc.swr * 100)}</div></div>
+      <div class="item__v">${right}</div>
+    </div>`;
+  }).join("");
+
+  const base = scenarios[1];
+  let cap = cap0, exp = exp0;
+  const labels = [], capS = [], fireS = [], passS = [];
+  for (let t = 0; t <= H; t++) {
+    labels.push("+" + t + "a");
+    capS.push(cap); fireS.push(base.swr > 0 ? exp / base.swr : null); passS.push(passY * cap * 12);
+    cap = cap * (1 + base.r) + saveM * 12; exp = exp * (1 + base.inf);
+  }
+
+  const ctx = canvas.getContext("2d");
+  if (fireChart) fireChart.destroy();
+  fireChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        { label: "Capital", data: capS, tension: .3, borderColor: "#5b5ce6", pointRadius: 0, borderWidth: 2 },
+        { label: "FIRE número", data: fireS, tension: .3, borderDash: [6, 4], borderColor: "#ef4444", pointRadius: 0 },
+        { label: "Rendimento passivo/ano", data: passS, tension: .3, borderColor: "#10b981", pointRadius: 0 }
+      ]
+    },
+    options: {
+      plugins: { legend: { labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } } },
+      scales: { y: { ticks: { callback: v => fmtEUR(v) } } }
+    }
+  });
+}
+
+/* ─── DISTRIBUTION DETAIL MODAL ───────────────────────────── */
+function openDistDetail(keepOpen = false) {
+  const by = {};
+  for (const a of state.assets) { const k = a.class || "Outros"; by[k] = (by[k] || 0) + parseNum(a.value); }
+  const total = Object.values(by).reduce((a, b) => a + b, 0);
+  const entries = Object.entries(by).sort((a, b) => b[1] - a[1]);
+  const list = $("distDetailList"), tog = $("btnDistToggle");
+  if (!list) return;
+
+  list.innerHTML = "";
+  if (!entries.length) {
+    list.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem dados</div></div></div>`;
+  } else {
+    const shown = distDetailExpanded ? entries : entries.slice(0, 10);
+    for (const [cls, val] of shown) {
+      const pct = total > 0 ? (val / total * 100) : 0;
+      const row = document.createElement("div");
+      row.className = "item";
+      row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(cls)}</div><div class="item__s">${fmtPct(pct)} do portfólio · Toca para filtrar</div></div><div class="item__v">${fmtEUR(val)}</div>`;
+      row.addEventListener("click", () => { setView("assets"); $("qClass").value = cls; renderItems(); closeModal("modalDist"); });
+      list.appendChild(row);
+    }
+  }
+  if (tog) {
+    tog.style.display = entries.length > 10 ? "" : "none";
+    tog.textContent = distDetailExpanded ? "Ver menos" : "Ver o resto";
+  }
+  if (!keepOpen) openModal("modalDist");
+}
+
+/* ─── IMPORT / EXPORT ─────────────────────────────────────── */
 function parsePtDate(day, mon, year) {
   const m = normStr(mon).slice(0, 3);
-  const map = { jan:1, fev:2, feb:2, mar:3, abr:4, apr:4, mai:5, may:5, jun:6, jul:7, ago:8, aug:8, set:9, sep:9, out:10, oct:10, nov:11, dez:12, dec:12 };
-  const mm = map[m];
-  const dd = Number(day);
-  const yy = Number(year);
+  const map = { jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12 };
+  const mm = map[m], dd = Number(day), yy = Number(year);
   if (!mm || !dd || !yy) return null;
   return `${yy.toString().padStart(4,"0")}-${String(mm).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
 }
 
 function parseBankCsvLikeText(text) {
-  // Exportações “CSV” do banco vêm muitas vezes como texto com colunas alinhadas.
-  // Estratégia: linha a linha, detectar padrão de data + 2 montantes no fim.
   const lines = String(text || "").split(/\r?\n/);
   const out = [];
-  const re = /^\s*"?(\d{1,2})\s+([A-Za-zÀ-ÿçÇ]{3})\s+(\d{4})\s+(.*?)\s+([\u2212\-]?\d[\d\.]*,\d{2})€\s+([\u2212\-]?\d[\d\.]*,\d{2})€"?\s*$/;
+  const re = /^\s*"?(\d{1,2})\s+([A-Za-zÀ-ÿçÇ]{3})\s+(\d{4})\s+(.*?)\s+([\u2212\-]?\d[\d.]*,\d{2})€?\s+([\u2212\-]?\d[\d.]*,\d{2})€?"?\s*$/;
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
@@ -56,1473 +1141,444 @@ function parseBankCsvLikeText(text) {
     const iso = parsePtDate(m[1], m[2], m[3]);
     if (!iso) continue;
     const desc = String(m[4] || "").replace(/\s+/g, " ").trim();
-    const val = parseEuroNumberPT(m[5]);
+    let val = null;
+    const raw5 = m[5].replace(/\u2212/g, "-").replace(/\./g, "").replace(/,/g, ".");
+    const n = Number(raw5);
+    if (Number.isFinite(n)) val = n;
     if (val == null) continue;
     out.push({ date: iso, desc, amount: val });
   }
   return out;
 }
 
-function safeClone(obj){
-  try{ if (typeof structuredClone === "function") return structuredClone(obj); }catch(_){ }
-  return JSON.parse(JSON.stringify(obj));
-}
-
-
-// =======================
-// Persistence (iOS-safe)
-// =======================
-// iOS in-app browsers / Private Mode can drop localStorage between sessions.
-// Use IndexedDB as primary storage with localStorage fallback.
-
-const STORAGE_KEY = "PF_STATE_PERCENTO_V5"; // keep for backwards-compat
-
-const DB_NAME = "pf_percento";
-const DB_STORE = "kv";
-const DB_KEY = "state";
-
-function idbAvailable(){
-  return typeof indexedDB !== "undefined" && indexedDB;
-}
-
-function idbOpen(){
-  return new Promise((resolve, reject) => {
-    try{
-      const req = indexedDB.open(DB_NAME, 1);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if(!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE);
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error || new Error("IDB open failed"));
-    }catch(e){ reject(e); }
-  });
-}
-
-async function idbGet(key){
-  const db = await idbOpen();
-  return new Promise((resolve, reject) => {
-    try{
-      const tx = db.transaction(DB_STORE, "readonly");
-      const st = tx.objectStore(DB_STORE);
-      const req = st.get(key);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error || new Error("IDB get failed"));
-      tx.oncomplete = () => db.close();
-      tx.onerror = () => { try{db.close();}catch{} };
-    }catch(e){ try{db.close();}catch{} reject(e); }
-  });
-}
-
-async function idbSet(key, value){
-  const db = await idbOpen();
-  return new Promise((resolve, reject) => {
-    try{
-      const tx = db.transaction(DB_STORE, "readwrite");
-      const st = tx.objectStore(DB_STORE);
-      st.put(value, key);
-      tx.oncomplete = () => { try{db.close();}catch{} resolve(true); };
-      tx.onerror = () => { try{db.close();}catch{} reject(tx.error || new Error("IDB set failed")); };
-    }catch(e){ try{db.close();}catch{} reject(e); }
-  });
-}
-
-async function idbDel(key){
-  const db = await idbOpen();
-  return new Promise((resolve) => {
-    try{
-      const tx = db.transaction(DB_STORE, "readwrite");
-      const st = tx.objectStore(DB_STORE);
-      st.delete(key);
-      tx.oncomplete = () => { try{db.close();}catch{} resolve(true); };
-      tx.onerror = () => { try{db.close();}catch{} resolve(false); };
-    }catch(e){ try{db.close();}catch{} resolve(false); }
-  });
-}
-
-async function requestPersistentStorage(){
-  try{
-    if(navigator.storage && navigator.storage.persist){
-      await navigator.storage.persist();
-    }
-  }catch(_){/* ignore */}
-}
-
-async function storageGet(){
-  // 1) IndexedDB
-  if(idbAvailable()){
-    try{
-      const v = await idbGet(DB_KEY);
-      if(v) return v;
-    }catch(_){/* fall through */}
-  }
-  // 2) localStorage fallback
-  try{ return localStorage.getItem(STORAGE_KEY); }catch(_){ return null; }
-}
-
-async function storageSet(raw){
-  if(idbAvailable()){
-    try{ await idbSet(DB_KEY, raw); return; }catch(_){/* fall through */}
-  }
-  try{ localStorage.setItem(STORAGE_KEY, raw); }catch(_){/* ignore */}
-}
-
-async function storageClear(){
-  if(idbAvailable()) await idbDel(DB_KEY);
-  try{ localStorage.removeItem(STORAGE_KEY); }catch(_){/* ignore */}
-}
-const TX_PREVIEW_COUNT = 5;
-
-const DEFAULT_STATE = {
-  settings: { currency: "EUR" },
-  assets: [],       // {id, class, name, value, yieldType, yieldValue, notes, fav}
-  liabilities: [],  // {id, class, name, value, notes}
-  transactions: [], // {id, type:'in'|'out', category, amount, date, recurring:'none'|'monthly'|'yearly'}
-  history: []       // {dateISO, net, assets, liabilities, passiveAnnual}
-};
-
-let bankCsvSelectedFile = null; // iOS-safe: manter referência ao ficheiro escolhido
-let state = safeClone(DEFAULT_STATE);
-let currentView = "dashboard";
-let showingLiabs = false;
-let summaryExpanded = false;
-let txExpanded = false;
-
-let distChart = null;
-let distDetailExpanded = false;
-let fireChart = null;
-
-let trendChart = null;
-
-function $(id){
-  const el = document.getElementById(id);
-  if (el) return el;
-  // No-op fallback to avoid a single missing element breaking all wiring.
-  return {
-    _missing: true,
-    addEventListener(){},
-    removeEventListener(){},
-    classList: { add(){}, remove(){}, toggle(){}, contains(){ return false; } },
-    setAttribute(){},
-    getAttribute(){ return null; },
-    querySelector(){ return null; },
-    querySelectorAll(){ return []; },
-    appendChild(){},
-    remove(){},
-    style: {},
-    value: "",
-    checked: false,
-    files: null,
-    innerHTML: "",
-    textContent: "",
-    focus(){},
-  };
-}
-
-// Safe event binding: avoids breaking the whole app if an element is missing
-// in the current layout (prevents "buttons stop working" cascades).
-function on(id, evt, handler, opts){
-  const el = document.getElementById(id);
-  if (!el) return false;
-  el.addEventListener(evt, handler, opts);
-  return true;
-}
-
-function uid(){
-  return Math.random().toString(16).slice(2) + Date.now().toString(16);
-}
-
-function fmtEUR(n){
-  const cur = (state.settings && state.settings.currency) ? state.settings.currency : "EUR";
-  const v = Number(n || 0);
-  try{
-    return new Intl.NumberFormat("pt-PT", { style:"currency", currency: cur, maximumFractionDigits:0 }).format(v);
-  }catch{
-    return (Math.round(v)).toString() + " " + cur;
-  }
-}
-
-// Generic number formatter (for quantities, prices, etc.)
-function fmt(n, maxFrac = 6){
-  const v = Number(n);
-  if (!Number.isFinite(v)) return "0";
-  return new Intl.NumberFormat("pt-PT", {
-    maximumFractionDigits: maxFrac,
-    minimumFractionDigits: 0
-  }).format(v);
-}
-
-// Money formatter for arbitrary currencies (fallbacks to EUR)
-function fmtMoney(n, currency){
-  const v = Number(n);
-  const cur = (currency || (state.settings && state.settings.currency) || "EUR");
-  try{
-    return new Intl.NumberFormat("pt-PT", {
-      style: "currency",
-      currency: cur,
-      maximumFractionDigits: 2
-    }).format(Number.isFinite(v) ? v : 0);
-  }catch{
-    // Some brokers export non-ISO codes; fallback.
-    try{
-      return new Intl.NumberFormat("pt-PT", {
-        style: "currency",
-        currency: "EUR",
-        maximumFractionDigits: 2
-      }).format(Number.isFinite(v) ? v : 0);
-    }catch{
-      return (Number.isFinite(v) ? v.toFixed(2) : "0.00") + " " + cur;
-    }
-  }
-}
-
-function parseNum(x){
-  if (x === null || x === undefined) return 0;
-  if (typeof x === "number") return Number.isFinite(x) ? x : 0;
-
-  let s = String(x).trim();
-  if (!s) return 0;
-
-  // Normalise whitespace and strip common noise (€, $, USD, etc.).
-  s = s.replace(/\u00A0/g, " ").replace(/\s+/g, " ");
-
-  // Parentheses indicate negative values: (1 234,56)
-  let neg = false;
-  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
-
-  // Keep only digits, separators, minus and spaces.
-  let t = s.replace(/[^0-9,\.\- ]+/g, "");
-  t = t.replace(/\s/g, "");
-
-  const hasComma = t.includes(",");
-  const hasDot = t.includes(".");
-
-  if (hasComma && hasDot){
-    // Last separator decides decimal.
-    if (t.lastIndexOf(",") > t.lastIndexOf(".")){
-      // 1.234,56
-      t = t.replace(/\./g, "").replace(/,/g, ".");
-    }else{
-      // 1,234.56
-      t = t.replace(/,/g, "");
-    }
-  }else if (hasComma && !hasDot){
-    // Comma only: decimal if ends with ,d or ,dd; otherwise thousands.
-    if (/,[0-9]{1,2}$/.test(t)) t = t.replace(/,/g, ".");
-    else t = t.replace(/,/g, "");
-  }else if (!hasComma && hasDot){
-    // Dot only: if multiple dots and doesn't look like a decimal, strip dots.
-    const parts = t.split(".");
-    if (parts.length > 2 && !/\.[0-9]{1,2}$/.test(t)) t = t.replace(/\./g, "");
-  }
-
-  const n = Number(t);
-  const out = Number.isFinite(n) ? n : 0;
-  return neg ? -out : out;
-}
-
-async function loadStateAsync(){
-  try{
-    const raw = await storageGet();
-    if (!raw) return safeClone(DEFAULT_STATE);
-    const parsed = JSON.parse(raw);
-    return {
-      settings: parsed.settings || {currency:"EUR"},
-      assets: Array.isArray(parsed.assets) ? parsed.assets : [],
-      liabilities: Array.isArray(parsed.liabilities) ? parsed.liabilities : [],
-      transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
-      history: Array.isArray(parsed.history) ? parsed.history : []
-    };
-  }catch{
-    return safeClone(DEFAULT_STATE);
-  }
-}
-
-function showStorageWarningOnce(){
-  try{
-    if(sessionStorage.getItem("pf_storage_warned")) return;
-    sessionStorage.setItem("pf_storage_warned","1");
-  }catch{}
-  // Non-blocking toast
-  toast("Atenção: alguns browsers (modo privado / app do GitHub) podem não guardar. Abre no Safari e adiciona ao Ecrã principal para máxima fiabilidade.");
-}
-
-async function saveStateAsync(){
-  try{
-    await storageSet(JSON.stringify(state));
-  }catch(_){
-    showStorageWarningOnce();
-  }
-}
-
-// Backwards-compatible sync-ish wrapper (fire-and-forget)
-function saveState(){
-  void saveStateAsync();
-}
-
-function setView(view){
-  currentView = view;
-  for (const s of document.querySelectorAll(".view")){
-    s.hidden = s.dataset.view !== view;
-  }
-  for (const b of document.querySelectorAll(".navbtn")){
-    b.classList.toggle("navbtn--active", b.dataset.view === view);
-  }
-  // render on view switch
-  if (view === "dashboard") renderDashboard();
-  if (view === "assets") renderItems();
-  if (view === "cashflow") renderCashflow();
-  // ensure top of main content on switch (avoid manual scroll)
-  window.scrollTo({ top: 0, behavior: "instant" });
-}
-
-function openModal(id){ $(id).setAttribute("aria-hidden","false"); }
-function closeModal(id){ $(id).setAttribute("aria-hidden","true"); }
-
-function wireModalClosers(){
-  document.body.addEventListener("click", (e)=>{
-    const t = e.target;
-    if (!(t instanceof HTMLElement)) return;
-    const close = t.getAttribute("data-close");
-    if (close) closeModal(close);
-  });
-}
-
-function calcTotals(){
-  const assetsTotal = state.assets.reduce((a,x)=>a + parseNum(x.value), 0);
-  const liabsTotal = state.liabilities.reduce((a,x)=>a + parseNum(x.value), 0);
-  const net = assetsTotal - liabsTotal;
-  const passiveAnnual = state.assets.reduce((a,x)=>a + passiveFromItem(x), 0);
-  return {assetsTotal, liabsTotal, net, passiveAnnual};
-}
-
-function passiveFromItem(it){
-  const v = parseNum(it.value);
-  const yv = parseNum(it.yieldValue);
-  const yt = it.yieldType || "none";
-  if (yt === "yield_pct") return v * (yv/100);
-  if (yt === "yield_eur_year") return yv;
-  if (yt === "rent_month") return yv * 12;
-  return 0;
-}
-
-function renderDashboard(){
-  const t = calcTotals();
-  $("kpiNet").textContent = fmtEUR(t.net);
-  $("kpiAP").textContent = `Ativos ${fmtEUR(t.assetsTotal)} | Passivos ${fmtEUR(t.liabsTotal)}`;
-  $("kpiPassiveAnnual").textContent = fmtEUR(t.passiveAnnual);
-  $("kpiPassiveMonthly").textContent = fmtEUR(t.passiveAnnual/12);
-
-  renderSummary();
-  renderDistChart();
-  renderTrendChart();
-}
-
-function renderSummary(){
-  const list = $("summaryList");
-  list.innerHTML = "";
-  const items = [...state.assets].sort((a,b)=>parseNum(b.value)-parseNum(a.value));
-  if (items.length === 0){
-    const empty = document.createElement("div");
-    empty.className = "item";
-    empty.innerHTML = `<div class="item__l"><div class="item__t">Sem ativos</div><div class="item__s">Usa o botão + para adicionar.</div></div><div class="item__v">—</div>`;
-    list.appendChild(empty);
-    $("btnSummaryToggle").style.display = "none";
-    return;
-  }
-  const shown = summaryExpanded ? items : items.slice(0,10);
-  for (const it of shown){
-    list.appendChild(renderRow(it.name, it.class, parseNum(it.value)));
-  }
-  $("btnSummaryToggle").style.display = (items.length > 10) ? "inline-flex" : "none";
-  $("btnSummaryToggle").textContent = summaryExpanded ? "Ver menos" : "Ver o resto";
-}
-
-function renderRow(title, subtitle, value){
-  const d = document.createElement("div");
-  d.className = "item";
-  d.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(title||"—")}</div><div class="item__s">${escapeHtml(subtitle||"")}</div></div><div class="item__v">${fmtEUR(value)}</div>`;
-  return d;
-}
-
-function escapeHtml(s){
-  return String(s||"").replace(/[&<>"']/g, (c)=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
-}
-
-function renderDistChart(){
-  const by = {};
-  for (const a of state.assets){
-    const k = a.class || "Outros";
-    by[k] = (by[k]||0) + parseNum(a.value);
-  }
-  const labels = Object.keys(by);
-  const values = labels.map(k=>by[k]);
-
-  const ctx = $("distChart").getContext("2d");
-  if (distChart) distChart.destroy();
-
-  if (labels.length === 0){
-    distChart = new Chart(ctx, {
-      type:"doughnut",
-      data:{ labels:["Sem dados"], datasets:[{ data:[1] }] },
-      options:{ plugins:{ legend:{ display:false } }, cutout:"70%" }
-    });
-    return;
-  }
-
-  distChart = new Chart(ctx,{
-    type:"doughnut",
-    data:{ labels, datasets:[{ data: values, borderWidth:0 }] },
-    options:{
-      plugins:{
-        legend:{ display:false },
-        tooltip:{ callbacks:{ label:(c)=> `${c.label}: ${fmtEUR(c.raw)}` } }
-      },
-      cutout:"70%"
-    }
-  });
-}
-
-function renderTrendChart(){
-  const ctx = $("trendChart").getContext("2d");
-  if (trendChart) trendChart.destroy();
-
-  const h = state.history.slice().sort((a,b)=>String(a.dateISO).localeCompare(String(b.dateISO)));
-  if (h.length === 0){
-    $("historyHint").style.display = "block";
-    trendChart = new Chart(ctx, {
-      type:"line",
-      data:{ labels:["—"], datasets:[{ data:[0], tension:.35, pointRadius:0 }] },
-      options:{
-        plugins:{ legend:{ display:false } },
-        scales:{ x:{ display:false }, y:{ display:false } }
-      }
-    });
-    return;
-  }
-  $("historyHint").style.display = "none";
-  const labels = h.map(x=>x.dateISO.slice(0,7));
-  const data = h.map(x=>parseNum(x.net));
-
-  trendChart = new Chart(ctx,{
-    type:"line",
-    data:{ labels, datasets:[{ data, tension:.35, pointRadius:3 }] },
-    options:{
-      plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label:(c)=>fmtEUR(c.raw) } } },
-      scales:{ y:{ ticks:{ callback:(v)=>fmtEUR(v) } } }
-    }
-  });
-}
-
-function snapshotMonth(){
-  const t = calcTotals();
-  const now = new Date();
-  const dateISO = now.toISOString().slice(0,10);
-  state.history.push({ dateISO, net: t.net, assets: t.assetsTotal, liabilities: t.liabsTotal, passiveAnnual: t.passiveAnnual });
-  saveState();
-  renderDashboard();
-  alert("Snapshot registado.");
-}
-
-/* ITEMS view */
-function setModeLiabs(on){
-  showingLiabs = !!on;
-  $("segLiabs").classList.toggle("seg__btn--active", showingLiabs);
-  $("segAssets").classList.toggle("seg__btn--active", !showingLiabs);
-  $("itemsTitle").textContent = showingLiabs ? "Passivos" : "Ativos";
-  $("itemsSub").textContent = showingLiabs ? "Créditos, dívidas, cartões… (valor positivo = dívida)" : "Imobiliário, liquidez, ações/ETFs, metais, cripto, fundos, PPR, depósitos…";
-  $("btnAddItem").textContent = "Adicionar";
-  rebuildClassFilter();
-  renderItems();
-}
-
-function rebuildClassFilter(){
-  const sel = $("qClass");
-  const current = sel.value;
-  sel.innerHTML = `<option value="">Todas as classes</option>`;
-  const src = showingLiabs ? state.liabilities : state.assets;
-  const classes = Array.from(new Set(src.map(x=>x.class).filter(Boolean))).sort((a,b)=>String(a).localeCompare(String(b),"pt"));
-  for (const c of classes){
-    const o = document.createElement("option");
-    o.value = c; o.textContent = c;
-    sel.appendChild(o);
-  }
-  sel.value = current;
-}
-
-function renderItems(){
-  rebuildClassFilter();
-  const list = $("itemsList");
-  list.innerHTML = "";
-  const q = ($("qSearch").value||"").trim().toLowerCase();
-  const cfilter = $("qClass").value || "";
-  const sort = $("qSort").value;
-
-  let src = showingLiabs ? [...state.liabilities] : [...state.assets];
-  src = src.filter(it=>{
-    const hay = `${it.name||""} ${it.class||""}`.toLowerCase();
-    if (q && !hay.includes(q)) return false;
-    if (cfilter && (it.class||"") !== cfilter) return false;
-    return true;
-  });
-
-  if (sort === "value_desc") src.sort((a,b)=>parseNum(b.value)-parseNum(a.value));
-  if (sort === "value_asc") src.sort((a,b)=>parseNum(a.value)-parseNum(b.value));
-  if (sort === "name_asc") src.sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""),"pt"));
-
-  if (src.length === 0){
-    const empty = document.createElement("div");
-    empty.className = "item";
-    empty.innerHTML = `<div class="item__l"><div class="item__t">Sem ${showingLiabs ? "passivos" : "ativos"}</div><div class="item__s">Usa “Adicionar”.</div></div><div class="item__v">—</div>`;
-    list.appendChild(empty);
-    return;
-  }
-
-  for (const it of src){
-    const row = document.createElement("div");
-    row.className = "item";
-    row.innerHTML = `<div class="item__l">
-      <div class="item__t">${escapeHtml(it.name||"—")}</div>
-      <div class="item__s">${escapeHtml(it.class||"")}${showingLiabs ? "" : yieldBadge(it)}</div>
-    </div>
-    <div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
-    row.addEventListener("click", ()=>editItem(it.id));
-    list.appendChild(row);
-  }
-}
-
-function yieldBadge(it){
-  const yt = it.yieldType || "none";
-  const yv = parseNum(it.yieldValue);
-  if (yt === "yield_pct" && yv>0) return ` · yield ${yv}%`;
-  if (yt === "yield_eur_year" && yv>0) return ` · ${fmtEUR(yv)}/ano`;
-  if (yt === "rent_month" && yv>0) return ` · ${fmtEUR(yv)}/mês`;
-  return "";
-}
-
-/* modal item */
-const CLASSES_ASSETS = ["Imobiliário","Liquidez","Ações/ETFs","Cripto","Ouro","Prata","Arte","Fundos","PPR","Depósitos","Outros"];
-const CLASSES_LIABS  = ["Crédito habitação","Crédito pessoal","Cartão de crédito","Outros"];
-
-let editingItemId = null;
-
-function openItemModal(kind){
-  editingItemId = null;
-  $("mId").value = "";
-  $("mKind").value = kind;
-  const delBtn = document.getElementById("btnDeleteItem");
-  if (delBtn) delBtn.style.display = "none";
-  $("modalItemTitle").textContent = (kind === "liab") ? "Adicionar passivo" : "Adicionar ativo";
-  const sel = $("mClass");
-  sel.innerHTML = "";
-  const classes = (kind === "liab") ? CLASSES_LIABS : CLASSES_ASSETS;
-  for (const c of classes){
-    const o = document.createElement("option");
-    o.value=c; o.textContent=c;
-    sel.appendChild(o);
-  }
-  $("mName").value = "";
-  $("mValue").value = "";
-  $("mYieldType").value = "none";
-  $("mYieldValue").value = "";
-  $("mNotes").value = "";
-  $("mYieldType").disabled = (kind === "liab");
-  $("mYieldValue").disabled = (kind === "liab");
-  $("btnSaveItem").dataset.kind = kind;
-  openModal("modalItem");
-}
-
-function editItem(id){
-  const src = showingLiabs ? state.liabilities : state.assets;
-  const it = src.find(x=>x.id===id);
-  if (!it) return;
-
-  editingItemId = id;
-  const kind = showingLiabs ? "liab" : "asset";
-  $("mId").value = id;
-  $("mKind").value = kind;
-  const delBtn = document.getElementById("btnDeleteItem");
-  if (delBtn) delBtn.style.display = "";
-  $("modalItemTitle").textContent = showingLiabs ? "Editar passivo" : "Editar ativo";
-  const sel = $("mClass");
-  sel.innerHTML = "";
-  const classes = (kind === "liab") ? CLASSES_LIABS : CLASSES_ASSETS;
-  for (const c of classes){
-    const o=document.createElement("option"); o.value=c; o.textContent=c; sel.appendChild(o);
-  }
-  sel.value = it.class || classes[0];
-  $("mName").value = it.name || "";
-  $("mValue").value = String(parseNum(it.value) || "");
-  $("mNotes").value = it.notes || "";
-  $("mYieldType").disabled = showingLiabs;
-  $("mYieldValue").disabled = showingLiabs;
-  if (!showingLiabs){
-    $("mYieldType").value = it.yieldType || "none";
-    $("mYieldValue").value = (it.yieldValue!==undefined && it.yieldValue!==null) ? String(it.yieldValue) : "";
-  }else{
-    $("mYieldType").value = "none";
-    $("mYieldValue").value = "";
-  }
-  $("btnSaveItem").dataset.kind = kind;
-  openModal("modalItem");
-}
-
-function saveItemFromModal(){
-  const kind = $("btnSaveItem").dataset.kind;
-  const isLiab = (kind === "liab");
-  const obj = {
-    id: editingItemId || uid(),
-    class: $("mClass").value || (isLiab ? "Outros" : "Outros"),
-    name: ($("mName").value||"").trim(),
-    value: parseNum($("mValue").value),
-    notes: ($("mNotes").value||"").trim()
-  };
-
-  if (!obj.name){
-    alert("Nome é obrigatório.");
-    return;
-  }
-  if (!isLiab){
-    obj.yieldType = $("mYieldType").value || "none";
-    obj.yieldValue = parseNum($("mYieldValue").value);
-  }
-
-  if (isLiab){
-    const ix = state.liabilities.findIndex(x=>x.id===obj.id);
-    if (ix>=0) state.liabilities[ix] = obj; else state.liabilities.push(obj);
-  }else{
-    const ix = state.assets.findIndex(x=>x.id===obj.id);
-    if (ix>=0) state.assets[ix] = obj; else state.assets.push(obj);
-  }
-
-  saveState();
-  closeModal("modalItem");
-  renderDashboard();
-  renderItems();
-}
-
-/* CASHFLOW */
-function ensureMonthYearOptions(){
-  const now = new Date();
-  const yearNow = now.getFullYear();
-  const years = [];
-  for (let y=yearNow-3; y<=yearNow+1; y++) years.push(y);
-  $("cfYear").innerHTML = years.map(y=>`<option value="${y}">${y}</option>`).join("");
-  $("cfMonth").innerHTML = Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}">${String(m).padStart(2,"0")}</option>`).join("");
-  $("cfYear").value = String(yearNow);
-  $("cfMonth").value = String(now.getMonth()+1);
-
-  // default date in modal
-  $("tDate").value = now.toISOString().slice(0,10);
-}
-
-function monthKeyFromDateISO(d){
-  const s = String(d||"");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-  return s.slice(0,7);
-}
-
-function renderCashflow(){
-  ensureMonthYearOptions();
-
-  const y = $("cfYear").value;
-  const m = String($("cfMonth").value).padStart(2,"0");
-  const key = `${y}-${m}`;
-
-  const tx = expandRecurring(state.transactions).filter(t=>monthKeyFromDateISO(t.date)===key);
-  const totalIn = tx.filter(t=>t.type==="in").reduce((a,t)=>a+parseNum(t.amount),0);
-  const totalOut = tx.filter(t=>t.type==="out").reduce((a,t)=>a+parseNum(t.amount),0);
-  const net = totalIn - totalOut;
-  const rate = totalIn>0 ? (net/totalIn)*100 : 0;
-
-  $("cfIn").textContent = fmtEUR(totalIn);
-  $("cfOut").textContent = fmtEUR(totalOut);
-  $("cfNet").textContent = fmtEUR(net);
-  $("cfRate").textContent = `${Math.round(rate)}%`;
-
-  renderTxList();
-}
-
-// Compat: some codepaths (e.g., CSV import) call renderBalance().
-// In this build, the Balance tab is rendered via renderCashflow().
-function renderBalance(){
-  renderCashflow();
-}
-
-function expandRecurring(tx){
-  // Recorrentes contam para o mês selecionado e meses futuros; isto é uma aproximação.
-  // Mantemos também o item original para o mês da data.
-  const out = [];
-  const now = new Date();
-  const yearNow = now.getFullYear();
-  const monthNow = now.getMonth()+1;
-  for (const t of tx){
-    out.push(t);
-    const rec = t.recurring || "none";
-    if (rec === "none") continue;
-    const d0 = new Date(t.date+"T00:00:00");
-    if (isNaN(d0.getTime())) continue;
-    for (let i=1;i<=24;i++){ // expand up to 24 months
-      const d = new Date(d0);
-      if (rec === "monthly") d.setMonth(d.getMonth()+i);
-      if (rec === "yearly") d.setFullYear(d.getFullYear()+i);
-      if (d.getFullYear()>yearNow+2) break;
-      out.push({ ...t, id: t.id + "_r" + i, date: d.toISOString().slice(0,10) });
-    }
-  }
-  return out;
-}
-
-function openTxModal(){
-  $("tType").value = "in";
-  $("tCat").value = "";
-  $("tAmt").value = "";
-  $("tRec").value = "none";
-  $("tDate").value = new Date().toISOString().slice(0,10);
-  openModal("modalTx");
-}
-
-function saveTxFromModal(){
-  const type = $("tType").value;
-  const category = ($("tCat").value||"").trim() || "Outros";
-  const amount = parseNum($("tAmt").value);
-  const date = $("tDate").value;
-  const recurring = $("tRec").value || "none";
-
-  if (!amount || amount <= 0){
-    alert("Valor tem de ser > 0.");
-    return;
-  }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)){
-    alert("Data inválida.");
-    return;
-  }
-
-  state.transactions.push({ id: uid(), type, category, amount, date, recurring });
-  saveState();
-  closeModal("modalTx");
-  renderCashflow();
-}
-
-function renderTxList(){
-  const wrap = $("txList");
-  wrap.innerHTML = "";
-  const tx = expandRecurring(state.transactions)
-    .filter(t=>parseNum(t.amount) > 0)
-    .slice()
-    .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
-
-  if (tx.length === 0){
-    const empty = document.createElement("div");
-    empty.className = "item";
-    empty.innerHTML = `<div class="item__l"><div class="item__t">Sem movimentos</div><div class="item__s">Adiciona entradas/saídas para calcular o balanço.</div></div><div class="item__v">—</div>`;
-    wrap.appendChild(empty);
-    $("btnTxToggle").style.display = "none";
-    return;
-  }
-
-  const shown = txExpanded ? tx : tx.slice(0, TX_PREVIEW_COUNT);
-  for (const t of shown){
-    const sign = (t.type==="in") ? "+" : "−";
-    const row = document.createElement("div");
-    row.className = "item";
-    row.innerHTML = `<div class="item__l">
-      <div class="item__t">${sign} ${escapeHtml(t.category)}</div>
-      <div class="item__s">${escapeHtml(t.type==="in" ? "Entrada" : "Saída")} · ${escapeHtml(t.date)}</div>
-    </div>
-    <div class="item__v">${fmtEUR(parseNum(t.amount))}</div>`;
-    wrap.appendChild(row);
-  }
-
-  if (tx.length > TX_PREVIEW_COUNT){
-    $("btnTxToggle").style.display = "inline";
-    $("btnTxToggle").textContent = txExpanded ? "Ver menos" : "Ver todos";
-  }else{
-    $("btnTxToggle").style.display = "none";
-  }
-}
-
-/* IMPORT */
-function fileToRows(file){
-  return new Promise((resolve,reject)=>{
-    const name = file.name.toLowerCase();
-    const reader = new FileReader();
-    reader.onerror = ()=>reject(new Error("Erro a ler ficheiro."));
-    reader.onload = ()=>{
-      try{
-        const data = reader.result;
-        let rows = [];
-        if (name.endsWith(".csv")){
-          const text = data;
-          rows = csvToObjects(text);
-        }else{
-          const wb = XLSX.read(data, { type:"array" });
-          const ws = wb.Sheets[wb.SheetNames[0]];
-          rows = XLSX.utils.sheet_to_json(ws, { defval:"" });
-        }
-        resolve(rows);
-      }catch(e){
-        reject(e);
-      }
-    };
-    if (name.endsWith(".csv")) reader.readAsText(file);
-    else reader.readAsArrayBuffer(file);
-  });
-}
-
-function fileToText(file){
-  return new Promise((resolve,reject)=>{
-    const reader = new FileReader();
-    reader.onerror = ()=>reject(new Error("Erro a ler ficheiro."));
-    reader.onload = ()=>resolve(String(reader.result || ""));
-    reader.readAsText(file);
-  });
-}
-
-
-function csvToObjects(text){
-  // Robust CSV/TSV parser with delimiter + header detection and multi-section support (e.g., "Combined" exports).
-  const raw = String(text||"").replace(/^\uFEFF/,""); // strip BOM
-  const lines = raw.split(/\r?\n/);
-
-  const delims = [",",";","\t","|"];
-  const headerHints = [
-    "tipo","type","class","classe","nome","name","ticker","symbol","isin",
-    "shares","qty","quantity","units","valor","value","market","market_value",
-    "current","price","yield","dividend","amount","cash","data","date","categoria","category"
-  ];
-
-  function splitLine(line, delim){ return splitCSVLine(line, delim); }
-
-  function scoreHeader(line, delim){
-    const cols = splitLine(line, delim).map(c=>String(c||"").trim().toLowerCase());
-    if (cols.length < 3) return -1;
-    let hits = 0;
-    for (const c of cols){
-      for (const h of headerHints){
-        if (c === h || c.includes(h)) { hits++; break; }
-      }
-    }
-    return hits;
-  }
-
-  function bestDelimForLine(line){
-    let best = {d:",", score:-1, cols:0};
-    for (const d of delims){
-      const cols = splitLine(line, d);
-      const sc = scoreHeader(line, d);
-      if (sc > best.score || (sc === best.score && cols.length > best.cols)){
-        best = {d, score: sc, cols: cols.length};
-      }
-    }
-    return best;
-  }
-
-  // Identify header lines (supports multiple sections)
-  const headers = [];
-  for (let i=0;i<lines.length;i++){
-    const line = lines[i];
-    if (!line || !line.trim()) continue;
-    const b = bestDelimForLine(line);
-    if (b.score >= 2){
-      headers.push({idx:i, delim:b.d, header: splitLine(line, b.d).map(h=>String(h||"").trim())});
-    }
-  }
-
-  // Fallback: first non-empty line
-  if (!headers.length){
-    let first = -1;
-    for (let i=0;i<lines.length;i++){ if (lines[i] && lines[i].trim()){ first=i; break; } }
-    if (first === -1) return [];
-    const b = bestDelimForLine(lines[first]);
-    headers.push({idx:first, delim:b.d, header: splitLine(lines[first], b.d).map(h=>String(h||"").trim())});
-  }
-
-  const out = [];
-  for (let h=0; h<headers.length; h++){
-    const hinfo = headers[h];
-    const nextHeaderIdx = (h+1<headers.length) ? headers[h+1].idx : lines.length;
-    const header = hinfo.header;
-    const delim = hinfo.delim;
-
-    for (let i=hinfo.idx+1; i<nextHeaderIdx; i++){
-      const line = lines[i];
-      if (!line || !line.trim()) continue;
-
-      const cols = splitLine(line, delim);
-      if (!cols.length) continue;
-
-      // Skip section titles (single column)
-      if (cols.length === 1 && header.length > 2) continue;
-
-      // If line looks like a new header, stop this section
-      if (scoreHeader(line, delim) >= 2) break;
-
-      const obj = {};
-      for (let j=0;j<header.length;j++){
-        obj[header[j]] = (cols[j]!==undefined) ? cols[j] : "";
-      }
-
-      let any=false;
-      for (const k in obj){ if (String(obj[k]||"").trim()!==""){ any=true; break; } }
-      if (!any) continue;
-
-      out.push(obj);
-    }
-  }
-  return out;
-}
-
-function splitCSVLine(line, delim){
-  // supports quotes + escaped quotes
-  const out=[]; let cur=""; let q=false;
-  for (let i=0;i<line.length;i++){
-    const ch=line[i];
-    if (ch === '"'){
-      if (q && line[i+1] === '"'){ cur += '"'; i++; continue; }
-      q = !q; 
-      continue;
-    }
-    if (!q && ch===delim){ out.push(cur); cur=""; continue; }
+function splitCSVLine(line, delim) {
+  const out = []; let cur = "", q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { if (q && line[i + 1] === '"') { cur += '"'; i++; continue; } q = !q; continue; }
+    if (!q && ch === delim) { out.push(cur); cur = ""; continue; }
     cur += ch;
   }
   out.push(cur);
   return out;
 }
 
-function normKey(k){
-  return String(k||"")
-    .trim()
-    .toLowerCase()
-    .replace(/[\u00A0]/g," ")
-    .replace(/[^\p{L}\p{N}]+/gu,"_")
-    .replace(/^_+|_+$/g,"");
-}
+function csvToObjects(text) {
+  const raw = String(text || "").replace(/^\uFEFF/, "");
+  const lines = raw.split(/\r?\n/);
+  const headerHints = ["tipo","type","class","classe","nome","name","ticker","symbol","valor","value","market","yield","amount","data","date","categoria","category","shares","qty"];
 
-function normalizeRow(obj){
-  const out = {};
-  for (const k in (obj||{})){
-    out[normKey(k)] = String(obj[k] ?? "").trim();
+  function scoreHeader(line, delim) {
+    const cols = splitCSVLine(line, delim).map(c => String(c || "").trim().toLowerCase());
+    if (cols.length < 2) return -1;
+    let hits = 0;
+    for (const c of cols) for (const h of headerHints) if (c === h || c.includes(h)) { hits++; break; }
+    return hits;
+  }
+
+  let bestDelim = ",", bestScore = -1;
+  for (const d of [",", ";", "\t", "|"]) {
+    for (let i = 0; i < Math.min(5, lines.length); i++) {
+      if (!lines[i] || !lines[i].trim()) continue;
+      const s = scoreHeader(lines[i], d);
+      if (s > bestScore) { bestScore = s; bestDelim = d; }
+    }
+  }
+
+  let headerIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i] || !lines[i].trim()) continue;
+    if (scoreHeader(lines[i], bestDelim) >= 1) { headerIdx = i; break; }
+  }
+  if (headerIdx < 0) headerIdx = 0;
+
+  const header = splitCSVLine(lines[headerIdx], bestDelim).map(h => String(h || "").trim());
+  const out = [];
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || !line.trim()) continue;
+    const cols = splitCSVLine(line, bestDelim);
+    const obj = {};
+    for (let j = 0; j < header.length; j++) obj[header[j]] = (cols[j] !== undefined) ? cols[j] : "";
+    const any = Object.values(obj).some(v => String(v || "").trim() !== "");
+    if (any) out.push(obj);
   }
   return out;
 }
 
-function parseNumberSmart(x){
-  if (x===null || x===undefined) return NaN;
-  let s = String(x).trim();
-  if (!s) return NaN;
-  s = s.replace(/[%€$£]/g,"").replace(/\s/g,"");
-  let neg=false;
-  if (s.startsWith("(") && s.endsWith(")")){ neg=true; s=s.slice(1,-1); }
-  const hasComma = s.includes(",");
-  const hasDot = s.includes(".");
-  if (hasComma && hasDot){
-    const lastComma = s.lastIndexOf(",");
-    const lastDot = s.lastIndexOf(".");
-    if (lastComma > lastDot){
-      s = s.replace(/\./g,"").replace(",",".");
-    } else {
-      s = s.replace(/,/g,"");
-    }
-  } else if (hasComma && !hasDot){
-    s = s.replace(",",".");
-  } else {
-    s = s.replace(/,/g,"");
-  }
+function normKey(k) {
+  return String(k || "").trim().toLowerCase()
+    .replace(/[\u00A0]/g, " ").replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "");
+}
+
+function normalizeRow(obj) {
+  const out = {};
+  for (const k in (obj || {})) out[normKey(k)] = String(obj[k] ?? "").trim();
+  return out;
+}
+
+function parseNumberSmart(x) {
+  if (x === null || x === undefined) return NaN;
+  let s = String(x).trim().replace(/[%€$£]/g, "").replace(/\s/g, "");
+  let neg = false;
+  if (s.startsWith("(") && s.endsWith(")")) { neg = true; s = s.slice(1, -1); }
+  const hasComma = s.includes(","), hasDot = s.includes(".");
+  if (hasComma && hasDot) {
+    if (s.lastIndexOf(",") > s.lastIndexOf(".")) s = s.replace(/\./g, "").replace(",", ".");
+    else s = s.replace(/,/g, "");
+  } else if (hasComma && !hasDot) s = s.replace(",", ".");
+  else s = s.replace(/,/g, "");
   const n = Number(s);
-  if (Number.isFinite(n)) return neg ? -n : n;
-  return NaN;
+  return Number.isFinite(n) ? (neg ? -n : n) : NaN;
 }
 
-// === Importação de movimentos do banco (CSV/texto, PT) ===
-function escapeHtml(s){
-  return String(s||"")
-    .replace(/&/g,"&amp;")
-    .replace(/</g,"&lt;")
-    .replace(/>/g,"&gt;")
-    .replace(/\"/g,"&quot;")
-    .replace(/'/g,"&#39;");
-}
-
-async function importBankMovementsCsv(file){
-  const debugEl = document.getElementById("bankImportDebug");
-  const showDebug = (html) => {
-    if (!debugEl) return;
-    debugEl.style.display = "block";
-    debugEl.innerHTML = html;
-  };
-
-  if (!file) throw new Error("Sem ficheiro.");
-  const text = await fileToText(file);
-  const parsed = parseBankCsvLikeText(text);
-
-  if (!parsed.length){
-    const rows = String(text||"").split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
-    const head = rows[0] || "";
-    showToast("Importação concluída, mas 0 linhas reconhecidas.");
-    showDebug(`0 linhas reconhecidas. <br><br><b>Primeira linha:</b> ${escapeHtml(head).slice(0,220)}`);
-    return { added:0, dup:0, read:0 };
-  }
-
-  // dedupe por chave forte: data + dir + cents + descrição normalizada
-  const existing = new Set((state.txs||[]).map(tx => {
-    const iso = String(tx.date||"").slice(0,10);
-    const amt = Number(tx.amount||0);
-    const dir = tx.dir || (amt>=0?"in":"out");
-    const desc = normStr(tx.note||"");
-    return `${iso}|${dir}|${Math.round(Math.abs(amt)*100)}|${desc}`;
-  }));
-
-  let added = 0;
-  let dup = 0;
-
-  for (const r of parsed){
-    const dir = r.amount >= 0 ? "in" : "out";
-    const amount = Math.abs(r.amount);
-    const descN = normStr(r.desc);
-    const key = `${r.date}|${dir}|${Math.round(amount*100)}|${descN}`;
-    if (existing.has(key)) { dup++; continue; }
-    existing.add(key);
-    state.txs.push({
-      id: uid(),
-      date: r.date,
-      dir,
-      amount,
-      cat: "Banco",
-      note: r.desc
-    });
-    added++;
-  }
-
-  save();
-  renderAll();
-  showToast(`Importação concluída. Novos: ${added} | Duplicados: ${dup} | Linhas reconhecidas: ${parsed.length}`);
-  showDebug(`Linhas reconhecidas: <b>${parsed.length}</b> · Inseridos: <b>${added}</b> · Duplicados: <b>${dup}</b>`);
-  return { added, dup, read: parsed.length };
-}
-
-function classifyRow(r){
+function classifyRow(r) {
   const tipo = (r.tipo || r.type || "").toLowerCase();
   if (["ativo","asset","assets"].includes(tipo)) return "ativo";
   if (["passivo","liability","debt","liabilities"].includes(tipo)) return "passivo";
-  if (["movimento","transaction","movement","cashflow","cash_flow","tx","dividend"].includes(tipo)) return "movimento";
-
+  if (["movimento","transaction","movement","cashflow","tx","dividend"].includes(tipo)) return "movimento";
   const hasDate = !!(r.data || r.date || r.payment_date || r.trade_date);
-  const amount = parseNumberSmart(r.montante || r.amount || r.valor || r.value || r.cash || r.total || r.net || r.saldo);
-  const qty = parseNumberSmart(r.qty || r.quantity || r.shares || r.units || r.unidades);
-  const mv  = parseNumberSmart(r.market_value || r.current_value || r.position_value || r.total_value || r.value || r.valor);
-
-  // DivTracker/transactions-like CSV (Ticker, Quantity, Cost Per Share, Currency, Date, Commission...)
-  // This file is not a holdings snapshot; we derive positions by aggregating trades.
+  const amount = parseNumberSmart(r.montante || r.amount || r.valor || r.value || r.cash || r.total || r.net);
+  const qty = parseNumberSmart(r.qty || r.quantity || r.shares || r.units);
+  const mv = parseNumberSmart(r.market_value || r.current_value || r.total_value || r.value || r.valor);
   const hasTicker = !!(r.ticker || r.symbol);
-  const cps = parseNumberSmart(r.cost_per_share || r.costpershare || r.price || r.preco || r.unit_price);
-  // Date can be missing/blank in some exports; it's not required to build holdings.
+  const cps = parseNumberSmart(r.cost_per_share || r.price || r.preco);
   if (hasTicker && Number.isFinite(qty) && Number.isFinite(cps)) return "trade";
-
   if (hasDate && Number.isFinite(amount) && Math.abs(amount) > 0) return "movimento";
-
-  const cls = (r.classe || r.class || r.category || "").toLowerCase();
-  const name = (r.nome || r.name || r.instrument || r.security || r.asset || r.description || "").toLowerCase();
-  if (cls.includes("passiv") || cls.includes("dívid") || cls.includes("divid") || name.includes("loan") || name.includes("mortgage") || name.includes("cart")) {
-    if (Number.isFinite(mv) || Number.isFinite(amount)) return "passivo";
-  }
-
-  const hasId = !!(r.ticker || r.symbol || r.isin || r.nome || r.name || r.instrument || r.security);
-  if (hasId && Number.isFinite(mv) && mv>0) return "ativo";
-  if (hasId && Number.isFinite(qty) && Number.isFinite(parseNumberSmart(r.price || r.preco || r.unit_price))) return "ativo";
-  if (hasId && Number.isFinite(amount) && !hasDate && amount>0) return "ativo";
-  if (Number.isFinite(mv) && mv>0) return "ativo";
-
+  const hasId = !!(r.ticker || r.symbol || r.isin || r.nome || r.name);
+  if (hasId && Number.isFinite(mv) && mv > 0) return "ativo";
+  if (hasId && Number.isFinite(amount) && !hasDate && amount > 0) return "ativo";
+  if (Number.isFinite(mv) && mv > 0) return "ativo";
   return "unknown";
 }
 
-function importRows(rows){
-  let addedA=0, addedL=0, addedT=0, unknown=0;
-  let sampleUnknown=null;
+function importRows(rows) {
+  let addedA = 0, addedL = 0, addedT = 0, unknown = 0;
+  const posMap = new Map();
 
-  // Trade-style import aggregator (DivTracker_Combined, etc.)
-  // We derive positions (assets) from trades; we do NOT push thousands of rows to "Movimentos".
-  const posMap = new Map(); // key=ticker|ccy -> {ticker, ccy, qty, cost, comm}
-
-  for (const raw of rows){
+  for (const raw of rows) {
     const r = normalizeRow(raw);
     const kind = classifyRow(r);
 
-    if (kind === "trade"){
+    if (kind === "trade") {
       const ticker = String(r.ticker || r.symbol || "").trim();
-      const qty = parseNumberSmart(r.quantity || r.qty || r.shares || r.units || r.unidades);
-      const cps = parseNumberSmart(r.cost_per_share || r.costpershare || r.price || r.preco || r.unit_price);
-      const ccy = String(r.currency || r.ccy || r.moeda || "").trim().toUpperCase();
-      const comm = parseNumberSmart(r.commission || r.fee || r.commission_amount);
-      if(!ticker || !Number.isFinite(qty) || !Number.isFinite(cps)) {
-        unknown++; if(!sampleUnknown) sampleUnknown = r; 
-        continue;
-      }
-
-      const key = `${ticker}|${ccy||""}`;
-      const prev = posMap.get(key) || { ticker, ccy, qty:0, cost:0, comm:0 };
-      if(qty >= 0){
-        prev.qty += qty;
-        prev.cost += qty * cps;
-        if(Number.isFinite(comm) && comm>0) prev.comm += comm;
-      } else {
-        const sellQty = Math.abs(qty);
-        const avg = prev.qty>0 ? (prev.cost/prev.qty) : cps;
-        prev.qty = Math.max(0, prev.qty - sellQty);
-        prev.cost = Math.max(0, prev.cost - sellQty*avg);
-      }
+      const qty = parseNumberSmart(r.quantity || r.qty || r.shares || r.units);
+      const cps = parseNumberSmart(r.cost_per_share || r.price || r.preco);
+      const ccy = String(r.currency || r.ccy || "EUR").trim().toUpperCase();
+      const comm = parseNumberSmart(r.commission || r.fee);
+      if (!ticker || !Number.isFinite(qty) || !Number.isFinite(cps)) { unknown++; continue; }
+      const key = `${ticker}|${ccy}`;
+      const prev = posMap.get(key) || { ticker, ccy, qty: 0, cost: 0, comm: 0 };
+      if (qty >= 0) { prev.qty += qty; prev.cost += qty * cps; if (Number.isFinite(comm) && comm > 0) prev.comm += comm; }
+      else { const avg = prev.qty > 0 ? prev.cost / prev.qty : cps; prev.qty = Math.max(0, prev.qty - Math.abs(qty)); prev.cost = Math.max(0, prev.cost - Math.abs(qty) * avg); }
       posMap.set(key, prev);
       continue;
     }
 
-    if (kind === "movimento"){
-      const amtRaw = r.montante || r.amount || r.valor || r.value || r.cash || r.total || r.net || r.saldo;
+    if (kind === "movimento") {
+      const amtRaw = r.montante || r.amount || r.valor || r.value || r.cash || r.total || r.net;
       const amt = parseNumberSmart(amtRaw);
       if (!Number.isFinite(amt) || Math.abs(amt) < 1e-9) continue;
-
       const when = (r.data || r.date || r.payment_date || r.trade_date || "").trim();
-      const cat  = (r.categoria || r.category || r.classe || r.class || "Outros").trim() || "Outros";
-      const desc = (r.descricao || r.description || r.nome || r.name || r.memo || "").trim();
-
-      state.transactions.push({
-        id: uid(),
-        date: normalizeDate(when) || isoToday(),
-        kind: amt>=0 ? "Entrada" : "Saída",
-        category: cat,
-        description: desc,
-        amount: Math.abs(amt)
-      });
+      const cat = (r.categoria || r.category || r.classe || "Outros").trim() || "Outros";
+      state.transactions.push({ id: uid(), date: normalizeDate(when) || isoToday(), type: amt >= 0 ? "in" : "out", category: cat, amount: Math.abs(amt), recurring: "none", notes: "" });
       addedT++;
       continue;
     }
 
-    if (kind === "ativo" || kind === "passivo"){
+    if (kind === "ativo" || kind === "passivo") {
       const name = (r.nome || r.name || r.instrument || r.security || r.asset || r.description || r.ticker || r.symbol || "Item").trim();
-      const className = (r.classe || r.class || r.category || (kind==="passivo" ? "Dívida" : "Outros")).trim() || (kind==="passivo" ? "Dívida" : "Outros");
-      const value = parseNumberSmart(r.valor || r.value || r.market_value || r.current_value || r.total_value || r.position_value || r.amount || r.total);
+      const className = (r.classe || r.class || r.category || (kind === "passivo" ? "Dívida" : "Outros")).trim();
+      const value = parseNumberSmart(r.valor || r.value || r.market_value || r.current_value || r.amount || r.total);
       if (!Number.isFinite(value) || Math.abs(value) < 1e-9) continue;
-
-      const yieldType = (r.yield_tipo || r.yield_type || r.income_type || "").trim();
-      const yieldVal = (r.yield_valor || r.yield_value || r.yield || r.dividend_yield || r.div_yield || "").trim();
-      const yv = parseNumberSmart(yieldVal);
-
-      const item = {
-        id: uid(),
-        class: normalizeClassName(className),
-        name: name,
-        value: Math.abs(value),
-        yieldType: normalizeYieldType(yieldType),
-        yieldValue: Number.isFinite(yv) ? yv : 0,
-        notes: "",
-        favorite: false
-      };
-
-      if (kind === "passivo"){
-        state.liabilities.push(item);
-        addedL++;
-      } else {
-        state.assets.push(item);
-        addedA++;
-      }
+      const yv = parseNumberSmart(r.yield_valor || r.yield_value || r.yield || r.dividend_yield);
+      const item = { id: uid(), class: normalizeClassName(className), name, value: Math.abs(value), yieldType: normalizeYieldType(r.yield_tipo || r.yield_type || ""), yieldValue: Number.isFinite(yv) ? yv : 0, compoundFreq: 12, notes: "" };
+      if (kind === "passivo") { state.liabilities.push(item); addedL++; }
+      else { state.assets.push(item); addedA++; }
       continue;
     }
-
     unknown++;
-    if (!sampleUnknown) sampleUnknown = r;
   }
 
-  // Convert aggregated positions (trades) into Assets.
-  // NOTE: DivTracker_Combined is a trade ledger (buy/sell). We create ONE asset per ticker
-  // valued at cost basis (offline). This is still useful for portfolio structure and manual editing.
-  for (const p of posMap.values()){
+  // Convert trades to assets
+  for (const p of posMap.values()) {
     if (!(p.qty > 0) || !(p.cost > 0)) continue;
-    const avg = p.cost / p.qty;
-    const estValue = p.cost + (p.comm || 0);
-
     const upper = String(p.ticker).toUpperCase();
-    const sym = upper.replace(/\.CC$/, "");
-    const isCrypto = upper.endsWith(".CC") || ["BTC","ETH","SOL","ADA","XRP","DOT","BNB"].includes(sym);
+    const isCrypto = upper.endsWith(".CC") || ["BTC","ETH","SOL","ADA","XRP","DOT","BNB"].includes(upper.replace(/\.CC$/, ""));
     const cls = isCrypto ? "Cripto" : "Ações/ETFs";
-
-    const notes = `Importado (DivTracker trades). Qty=${fmt(p.qty)} · PM=${fmtMoney(avg, p.ccy||"EUR")} · Moeda=${p.ccy||"EUR"}`;
-
-    // Merge if already exists (same name+class)
-    const existingIx = state.assets.findIndex(a => (a.name||"").toUpperCase() === upper && (a.class||"") === cls);
-    const item = {
-      id: existingIx>=0 ? state.assets[existingIx].id : uid(),
-      class: cls,
-      name: p.ticker,
-      value: estValue,
-      yieldType: "",
-      yieldValue: 0,
-      notes,
-      favorite: existingIx>=0 ? !!state.assets[existingIx].favorite : false
-    };
-    if (existingIx>=0) state.assets[existingIx] = item; else state.assets.push(item);
+    const estValue = p.cost + (p.comm || 0);
+    const existingIx = state.assets.findIndex(a => (a.name || "").toUpperCase() === upper && a.class === cls);
+    const item = { id: existingIx >= 0 ? state.assets[existingIx].id : uid(), class: cls, name: p.ticker, value: estValue, yieldType: "none", yieldValue: 0, compoundFreq: 12, notes: `Importado trades. Qty=${fmt(p.qty)} · PM=${p.cost > 0 ? fmt(p.cost / p.qty, 4) : "—"} ${p.ccy}` };
+    if (existingIx >= 0) state.assets[existingIx] = item; else state.assets.push(item);
     addedA++;
   }
 
   saveState();
-  renderDashboard();
-  renderItems();
-  renderCashflow();
-  renderBalance();
+  renderAll();
 
-  // UI feedback
-  const hint = document.getElementById("importHint");
-  if (hint){
-    if (addedA+addedL+addedT > 0){
-      hint.textContent = `Importado: ${addedA} ativos, ${addedL} passivos, ${addedT} movimentos.`;
-    } else {
-      hint.textContent = `Importei ${rows.length} linhas mas não reconheci nenhum registo. (Ver detalhes no alerta.)`;
-    }
-  }
+  const hint = $("importHint");
+  if (hint) hint.textContent = addedA + addedL + addedT > 0 ? `Importado: ${addedA} ativos, ${addedL} passivos, ${addedT} movimentos.` : `Nenhum registo reconhecido (${rows.length} linhas).`;
 
-  if (addedA+addedL+addedT === 0){
-    const cols = rows.length ? Object.keys(rows[0]||{}) : [];
-    alert("Importação concluída, mas 0 registos reconhecidos.\n\n" +
-      "Isto costuma acontecer quando as colunas do CSV são diferentes do esperado.\n\n" +
-      "Diagnóstico:\n" +
-      `• linhas lidas: ${rows.length}\n` +
-      `• colunas (primeira linha): ${cols.slice(0,20).join(", ")}${cols.length>20?"…":""}\n\n` +
-      "Sugestão: exporta um 'CSV holdings/positions' com colunas tipo ticker/symbol/nome + value/market value, ou usa o botão 'Template CSV'.");
+  if (addedA + addedL + addedT === 0) {
+    const cols = rows.length ? Object.keys(rows[0] || {}) : [];
+    toast(`0 registos reconhecidos. Colunas: ${cols.slice(0,8).join(", ")}`);
   } else {
-    alert(`Importado com sucesso: ${addedA} ativos, ${addedL} passivos, ${addedT} movimentos. (linhas: ${rows.length})`);
+    toast(`Importado: ${addedA} ativos · ${addedL} passivos · ${addedT} movimentos`);
   }
 }
 
+async function fileToText(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onerror = () => rej(new Error("Erro a ler ficheiro."));
+    r.onload = () => res(String(r.result || ""));
+    r.readAsText(file);
+  });
+}
 
-function downloadTemplate(){
+async function importBankMovementsCsv(file) {
+  if (!file) throw new Error("Sem ficheiro.");
+  const text = await fileToText(file);
+  const parsed = parseBankCsvLikeText(text);
+
+  const debugEl = $("bankImportDebug");
+  if (!parsed.length) {
+    toast("0 linhas reconhecidas. Verifica o formato do ficheiro.");
+    if (debugEl && debugEl.style) { debugEl.style.display = "block"; debugEl.textContent = `Primeira linha: ${text.split("\n")[0].slice(0, 200)}`; }
+    return { added: 0, dup: 0, read: 0 };
+  }
+
+  const existing = new Set(state.transactions.map(tx => {
+    const dir = tx.type || "in";
+    return `${String(tx.date||"").slice(0,10)}|${dir}|${Math.round(Math.abs(parseNum(tx.amount))*100)}|${normStr(tx.category||"")}`;
+  }));
+
+  let added = 0, dup = 0;
+  for (const r of parsed) {
+    const dir = r.amount >= 0 ? "in" : "out";
+    const amount = Math.abs(r.amount);
+    const key = `${r.date}|${dir}|${Math.round(amount*100)}|${normStr(r.desc)}`;
+    if (existing.has(key)) { dup++; continue; }
+    existing.add(key);
+    state.transactions.push({ id: uid(), type: dir, category: r.desc || "Banco", amount, date: r.date, recurring: "none", notes: "" });
+    added++;
+  }
+
+  saveState();
+  renderCashflow();
+  toast(`Importação: ${added} novos · ${dup} duplicados · ${parsed.length} reconhecidos`);
+  if (debugEl && debugEl.style) { debugEl.style.display = "block"; debugEl.textContent = `Lidas: ${parsed.length} · Novas: ${added} · Dup: ${dup}`; }
+  return { added, dup, read: parsed.length };
+}
+
+function downloadTemplate() {
   const rows = [
     ["tipo","classe","nome","valor","yield_tipo","yield_valor","data","notas"],
     ["ativo","Ações/ETFs","VWCE",25000,"yield_pct",1.8,"",""],
-    ["ativo","Imobiliário","Apartamento",280000,"rent_month",700,"",""],
-    ["passivo","Crédito habitação","CH Casa",150000,"","","",""],
-    ["movimento","","Salário Pedro",2500,"","",new Date().toISOString().slice(0,10),""]
+    ["ativo","Imobiliário","Apartamento Lisboa",280000,"rent_month",900,"",""],
+    ["ativo","Depósitos","DP CGD 4.5%",50000,"yield_pct",4.5,"2026-12-31","Capitalização mensal"],
+    ["ativo","PPR","PPR Alves Ribeiro",15000,"yield_pct",5.2,"",""],
+    ["ativo","Ouro","Ouro físico",8000,"","","",""],
+    ["passivo","Crédito habitação","CH Millennium",150000,"","","",""],
+    ["movimento","","Salário Pedro",3500,"","",isoToday(),""],
+    ["movimento","","Supermercado",200,"","",isoToday(),""]
   ];
-  const csv = rows.map(r=>r.map(x=>String(x)).join(";")).join("\n");
-  const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+  const csv = rows.map(r => r.map(x => String(x)).join(";")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = "PF_template.csv";
   a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-/* JSON backup */
-function exportJSON(){
-  const blob = new Blob([JSON.stringify(state, null, 2)], {type:"application/json"});
+function exportJSON() {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "PF_backup.json";
+  a.download = `PF_backup_${isoToday()}.json`;
   a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-async function importJSON(file){
+async function importJSON(file) {
   const text = await file.text();
-  const parsed = JSON.parse(text);
+  const p = JSON.parse(text);
   state = {
-    settings: parsed.settings || {currency:"EUR"},
-    assets: Array.isArray(parsed.assets) ? parsed.assets : [],
-    liabilities: Array.isArray(parsed.liabilities) ? parsed.liabilities : [],
-    transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
-    history: Array.isArray(parsed.history) ? parsed.history : []
+    settings: p.settings || { currency: "EUR" },
+    assets: Array.isArray(p.assets) ? p.assets : [],
+    liabilities: Array.isArray(p.liabilities) ? p.liabilities : [],
+    transactions: Array.isArray(p.transactions) ? p.transactions : [],
+    history: Array.isArray(p.history) ? p.history : []
   };
   saveState();
-  renderDashboard();
-  renderItems();
-  renderCashflow();
-  alert("Backup importado.");
+  renderAll();
+  toast("Backup importado com sucesso.");
 }
 
-/* reset */
-function resetAll(){
-  if (!confirm("Apagar tudo deste dispositivo?")) return;
+function resetAll() {
+  if (!confirm("Apagar TODOS os dados deste dispositivo? Não pode ser desfeito.")) return;
   void storageClear();
   state = safeClone(DEFAULT_STATE);
   saveState();
-  renderDashboard();
-  renderItems();
-  renderCashflow();
-  alert("Dados apagados.");
+  renderAll();
+  toast("Dados apagados.");
 }
 
-/* WIRING */
-function wire(){
+/* ─── SETTINGS ────────────────────────────────────────────── */
+function setSettingsPane(which) {
+  const ps = document.getElementById("paneSettings"), pf = document.getElementById("paneFire");
+  const bs = $("segSettings"), bf = $("segFire");
+  if (!ps || !pf) return;
+  const isFire = which === "fire";
+  ps.style.display = isFire ? "none" : "";
+  pf.style.display = isFire ? "" : "none";
+  bs.classList.toggle("seg__btn--active", !isFire);
+  bf.classList.toggle("seg__btn--active", isFire);
+  if (isFire) renderFire();
+}
+
+/* ─── WIRING ──────────────────────────────────────────────── */
+function wire() {
   wireModalClosers();
 
-  // nav
-  $("navDashboard").addEventListener("click", ()=>setView("dashboard"));
-  $("navAssets").addEventListener("click", ()=>setView("assets"));
-  $("navImport").addEventListener("click", ()=>setView("import"));
-  $("navCashflow").addEventListener("click", ()=>setView("cashflow"));
-  $("navSettings").addEventListener("click", ()=>setView("settings"));
+  // Nav
+  ["dashboard","assets","import","cashflow","analysis","settings"].forEach(v => {
+    const btn = document.getElementById("nav" + v.charAt(0).toUpperCase() + v.slice(1));
+    if (btn) btn.addEventListener("click", () => setView(v));
+  });
 
-  // fab
-  $("btnFab").addEventListener("click", ()=>{
-    // open item modal based on current view / mode
+  // FAB
+  $("btnFab").addEventListener("click", () => {
     if (currentView === "cashflow") openTxModal();
     else if (currentView === "assets") openItemModal(showingLiabs ? "liab" : "asset");
+    else if (currentView === "analysis") openTxModal();
     else openItemModal("asset");
   });
 
-
-// distribuição detalhe
-const distBtn = document.getElementById("btnDistDetail");
-if (distBtn){
-  distBtn.addEventListener("click", ()=>{ distDetailExpanded = false; openDistDetail(); });
-}
-const distTog = document.getElementById("btnDistToggle");
-if (distTog){
-  distTog.addEventListener("click", ()=>{ distDetailExpanded = !distDetailExpanded; openDistDetail(true); });
-}
-
-// apagar item (ativo/passivo)
-const delBtn = document.getElementById("btnDeleteItem");
-if (delBtn){
-  delBtn.addEventListener("click", ()=>deleteCurrentItem());
-}
-
-// settings segmented: Definições vs Projeção
-const segS = document.getElementById("segSettings");
-const segF = document.getElementById("segFire");
-if (segS && segF){
-  segS.addEventListener("click", ()=>setSettingsPane("settings"));
-  segF.addEventListener("click", ()=>setSettingsPane("fire"));
-}
-const recalc = document.getElementById("btnRecalcFire");
-if (recalc){
-  recalc.addEventListener("click", ()=>renderFire());
-}
-const fw = document.getElementById("fireWindow");
-const fh = document.getElementById("fireHorizon");
-if (fw) fw.addEventListener("change", ()=>renderFire());
-if (fh) fh.addEventListener("change", ()=>renderFire());
-
-  // dashboard buttons  // dashboard buttons
+  // Dashboard
   $("btnSnapshot").addEventListener("click", snapshotMonth);
-  $("btnClearHistory").addEventListener("click", ()=>{
+  $("btnClearHistory").addEventListener("click", () => {
     if (!confirm("Limpar histórico de snapshots?")) return;
-    state.history = [];
-    saveState();
-    renderDashboard();
+    state.history = []; saveState(); renderDashboard();
   });
-  $("btnTrendClear").addEventListener("click", ()=>{
-    if (!confirm("Limpar histórico de snapshots?")) return;
-    state.history = [];
-    saveState();
-    renderDashboard();
+  $("btnTrendClear").addEventListener("click", () => {
+    if (!confirm("Limpar histórico?")) return;
+    state.history = []; saveState(); renderDashboard();
   });
+  $("btnSummaryAll").addEventListener("click", () => setView("assets"));
+  $("btnSummaryToggle").addEventListener("click", () => { summaryExpanded = !summaryExpanded; renderSummary(); });
 
-  $("btnSummaryAll").addEventListener("click", ()=>setView("assets"));
-  $("btnSummaryToggle").addEventListener("click", ()=>{
-    summaryExpanded = !summaryExpanded;
-    renderSummary();
-  });
+  // Distribution detail
+  const distBtn = document.getElementById("btnDistDetail");
+  if (distBtn) distBtn.addEventListener("click", () => { distDetailExpanded = false; openDistDetail(); });
+  const distTog = document.getElementById("btnDistToggle");
+  if (distTog) distTog.addEventListener("click", () => { distDetailExpanded = !distDetailExpanded; openDistDetail(true); });
 
-  // seg
-  $("segAssets").addEventListener("click", ()=>setModeLiabs(false));
-  $("segLiabs").addEventListener("click", ()=>setModeLiabs(true));
-
-  // assets filters
+  // Assets
+  $("segAssets").addEventListener("click", () => setModeLiabs(false));
+  $("segLiabs").addEventListener("click", () => setModeLiabs(true));
   $("qSearch").addEventListener("input", renderItems);
   $("qClass").addEventListener("change", renderItems);
   $("qSort").addEventListener("change", renderItems);
-  $("btnAddItem").addEventListener("click", ()=>openItemModal(showingLiabs ? "liab" : "asset"));
-
-  // modal item save
+  $("btnAddItem").addEventListener("click", () => openItemModal(showingLiabs ? "liab" : "asset"));
   $("btnSaveItem").addEventListener("click", saveItemFromModal);
+  $("btnDeleteItem").addEventListener("click", deleteCurrentItem);
 
-  // cashflow
+  // Sync compound fields from asset
+  const compAsset = document.getElementById("compAsset");
+  if (compAsset) compAsset.addEventListener("change", syncCompoundFromAsset);
+  const btnCalcComp = document.getElementById("btnCalcCompound");
+  if (btnCalcComp) btnCalcComp.addEventListener("click", calcAndRenderCompound);
+
+  // Analysis tabs
+  const analysisTabs = document.getElementById("analysisTab");
+  if (analysisTabs) analysisTabs.addEventListener("change", () => renderAnalysis());
+
+  // Forecast years
+  const fyears = document.getElementById("forecastYears");
+  if (fyears) fyears.addEventListener("change", renderForecastPanel);
+
+  // Compare
+  const cmode = document.getElementById("compareMode");
+  if (cmode) cmode.addEventListener("change", renderComparePanel);
+
+  // FIRE
+  const segS = document.getElementById("segSettings"), segF = document.getElementById("segFire");
+  if (segS && segF) {
+    segS.addEventListener("click", () => setSettingsPane("settings"));
+    segF.addEventListener("click", () => setSettingsPane("fire"));
+  }
+  const recalc = document.getElementById("btnRecalcFire");
+  if (recalc) recalc.addEventListener("click", renderFire);
+  ["fireWindow","fireHorizon"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("change", renderFire);
+  });
+
+  // Cashflow
   $("btnAddTx").addEventListener("click", openTxModal);
   $("btnSaveTx").addEventListener("click", saveTxFromModal);
   $("cfMonth").addEventListener("change", renderCashflow);
   $("cfYear").addEventListener("change", renderCashflow);
-  $("btnTxToggle").addEventListener("click", ()=>{
-    txExpanded = !txExpanded;
-    renderTxList();
-  });
+  $("btnTxToggle").addEventListener("click", () => { txExpanded = !txExpanded; renderTxList(); });
+  const cfGran = document.getElementById("cfGranularity");
+  if (cfGran) cfGran.addEventListener("change", renderCashflow);
 
-  // import
-  $("fileInput").addEventListener("change", ()=>{
-    $("btnImport").disabled = !$("fileInput").files || !$("fileInput").files.length;
-  });
-  $("btnImport").addEventListener("click", async ()=>{
+  // Import CSV
+  $("fileInput").addEventListener("change", () => { $("btnImport").disabled = !($("fileInput").files && $("fileInput").files.length); });
+  $("btnImport").addEventListener("click", async () => {
     const f = $("fileInput").files && $("fileInput").files[0];
     if (!f) return;
-    try{
-      const rows = await fileToRows(f);
+    try {
+      const text = await fileToText(f);
+      const rows = csvToObjects(text);
       importRows(rows);
-      const hint = $("importHint").textContent || "Importado.";
-      const n = Math.max(0, (rows.length||0) - 1);
-      alert(`${hint}  (linhas: ${n})`);
-    }catch(e){
-      alert("Falha no import: " + (e && e.message ? e.message : String(e)));
-    }
+    } catch (e) { toast("Falha no import: " + (e && e.message ? e.message : String(e))); }
   });
   $("btnTemplate").addEventListener("click", downloadTemplate);
 
-  // --- Importar movimentos do banco (CSV) ---
-// Nota (iOS/WebView): não confiar apenas em input.files no clique, porque o input pode ser recriado
-// por re-render e perder o File handle. Guardamos uma referência.
-(function bindBankCsvImport(){
-  const input = $("bankCsvFile");
-  const btn = $("btnImportBankCsv");
-  const nameEl = $("bankCsvName");
+  // Bank CSV import
+  (function bindBankCsvImport() {
+    const input = $("bankCsvFile"), btn = $("btnImportBankCsv"), nameEl = $("bankCsvName");
+    if (!input || !btn) return;
+    if (nameEl && nameEl.textContent !== undefined) nameEl.textContent = "";
+    btn.disabled = true;
+    input.addEventListener("change", () => {
+      bankCsvSelectedFile = (input.files && input.files[0]) ? input.files[0] : null;
+      if (nameEl && nameEl.textContent !== undefined) nameEl.textContent = bankCsvSelectedFile ? bankCsvSelectedFile.name : "";
+      btn.disabled = !bankCsvSelectedFile;
+    });
+    btn.addEventListener("click", async e => {
+      e.preventDefault(); e.stopPropagation();
+      try {
+        const f = bankCsvSelectedFile || (input.files && input.files[0]) || null;
+        if (!f) { toast("Escolhe primeiro o ficheiro CSV do banco."); return; }
+        await importBankMovementsCsv(f);
+      } catch (err) { toast("Falhou a importação do CSV."); console.error(err); }
+    });
+  })();
 
-  if (!input || !btn) return;
-
-  // Inicial
-  if (nameEl) nameEl.textContent = "";
-  btn.disabled = true;
-
-  input.addEventListener("change", () => {
-    bankCsvSelectedFile = (input.files && input.files[0]) ? input.files[0] : null;
-    if (nameEl) nameEl.textContent = bankCsvSelectedFile ? bankCsvSelectedFile.name : "";
-    btn.disabled = !bankCsvSelectedFile;
-  });
-
-  btn.addEventListener("click", async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    try {
-      const f = bankCsvSelectedFile || (input.files && input.files[0]) || null;
-      if (!f) return showModal("Escolhe primeiro o ficheiro CSV do banco.");
-      await importBankMovementsCsv(f);
-    } catch (err) {
-      console.error(err);
-      showModal("Falhou a importação do CSV. Se possível, abre a consola para detalhes.");
-    }
-  });
-})();
-// json backup
+  // JSON backup
   $("btnExportJSON").addEventListener("click", exportJSON);
-  $("jsonInput").addEventListener("change", ()=>{
-    $("btnImportJSON").disabled = !$("jsonInput").files || !$("jsonInput").files.length;
-  });
-  $("btnImportJSON").addEventListener("click", async ()=>{
+  $("jsonInput").addEventListener("change", () => { $("btnImportJSON").disabled = !($("jsonInput").files && $("jsonInput").files.length); });
+  $("btnImportJSON").addEventListener("click", async () => {
     const f = $("jsonInput").files && $("jsonInput").files[0];
     if (!f) return;
-    try{ await importJSON(f); }catch(e){ alert("Erro a importar JSON."); }
+    try { await importJSON(f); } catch (e) { toast("Erro a importar JSON."); }
   });
-
   $("btnReset").addEventListener("click", resetAll);
 
-  // settings
+  // Settings
   $("baseCurrency").value = state.settings.currency || "EUR";
-  $("baseCurrency").addEventListener("change", ()=>{
+  $("baseCurrency").addEventListener("change", () => {
     state.settings.currency = $("baseCurrency").value;
-    saveState();
-    renderDashboard();
-    renderItems();
-    renderCashflow();
+    saveState(); renderAll();
   });
 
-  // init
+  // Init
   setModeLiabs(false);
   setView("dashboard");
-  renderCashflow();
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -1531,199 +1587,3 @@ document.addEventListener("DOMContentLoaded", async () => {
   wire();
   renderAll();
 });
-
-
-function openDistDetail(keepOpen=false){
-  // build class distribution list (assets)
-  const by = {};
-  for (const a of state.assets){
-    const k = a.class || "Outros";
-    by[k] = (by[k]||0) + parseNum(a.value);
-  }
-  const entries = Object.entries(by).sort((a,b)=>b[1]-a[1]);
-  const list = document.getElementById("distDetailList");
-  const tog = document.getElementById("btnDistToggle");
-  if (!list) return;
-
-  list.innerHTML = "";
-  if (entries.length === 0){
-    const row = document.createElement("div");
-    row.className="item";
-    row.innerHTML = `<div class="item__l"><div class="item__t">Sem dados</div><div class="item__s">Adiciona ativos para ver a distribuição.</div></div><div class="item__v">—</div>`;
-    list.appendChild(row);
-  } else {
-    const shown = distDetailExpanded ? entries : entries.slice(0,10);
-    for (const [cls,val] of shown){
-      const row = document.createElement("div");
-      row.className="item";
-      row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(cls)}</div><div class="item__s">Tocar para filtrar</div></div><div class="item__v">${fmtEUR(val)}</div>`;
-      row.addEventListener("click", ()=>{
-        // switch to assets and filter by class
-        setView("assets");
-        $("qClass").value = cls;
-        renderItems();
-        closeModal("modalDist");
-      });
-      list.appendChild(row);
-    }
-  }
-
-  if (tog){
-    if (entries.length > 10){
-      tog.style.display = "";
-      tog.textContent = distDetailExpanded ? "Ver menos" : "Ver o resto";
-    } else {
-      tog.style.display = "none";
-    }
-  }
-  if (!keepOpen) openModal("modalDist");
-}
-
-function deleteCurrentItem(){
-  if (!editingItemId) return;
-  const kind = $("mKind").value || $("btnSaveItem").dataset.kind || (showingLiabs ? "liab" : "asset");
-  const ok = confirm("Apagar este item? Esta ação não pode ser anulada.");
-  if (!ok) return;
-  if (kind === "liab"){
-    state.liabilities = state.liabilities.filter(x=>x.id!==editingItemId);
-  } else {
-    state.assets = state.assets.filter(x=>x.id!==editingItemId);
-  }
-  editingItemId = null;
-  saveStateAsync();
-  closeModal("modalItem");
-  renderAll();
-}
-
-function setSettingsPane(which){
-  const ps = document.getElementById("paneSettings");
-  const pf = document.getElementById("paneFire");
-  const bs = document.getElementById("segSettings");
-  const bf = document.getElementById("segFire");
-  if (!ps || !pf || !bs || !bf) return;
-
-  const isFire = which === "fire";
-  ps.style.display = isFire ? "none" : "";
-  pf.style.display = isFire ? "" : "none";
-  bs.classList.toggle("seg__btn--active", !isFire);
-  bf.classList.toggle("seg__btn--active", isFire);
-
-  if (isFire) renderFire();
-}
-
-function renderFire(){
-  const capEl = document.getElementById("fireCap");
-  const expEl = document.getElementById("fireExp");
-  const пасEl = document.getElementById("firePass");
-  const list = document.getElementById("fireResults");
-  const canvas = document.getElementById("fireChart");
-  if (!capEl || !expEl || !пасEl || !list || !canvas) return;
-
-  const W = parseInt(document.getElementById("fireWindow")?.value || "6",10);
-  const H = parseInt(document.getElementById("fireHorizon")?.value || "30",10);
-
-  // Capital investível: exclui casa própria (classe Imobiliário + nome com casa/habitação/home)
-  const isHome = (a)=>{
-    const name = (a.name||"").toLowerCase();
-    const cls = (a.class||"").toLowerCase();
-    return cls.includes("imob") && (name.includes("casa") || name.includes("habita") || name.includes("home"));
-  };
-  const investible = state.assets.filter(a=>!isHome(a)).reduce((s,a)=>s+parseNum(a.value),0);
-  const debt = state.liabilities.reduce((s,a)=>s+Math.abs(parseNum(a.value)),0);
-  const cap0 = investible - debt;
-
-  // Cashflow mensal médio (últimos W meses) + passivo mensal médio (heurística)
-  const byMonth = new Map();
-  for (const t of (state.transactions||[])){
-    const d = t.date || "";
-    if (d.length < 7) continue;
-    const ym = d.slice(0,7);
-    const cur = byMonth.get(ym) || {inc:0, out:0, pass:0};
-    const v = parseNum(t.value);
-    const type = t.type || (v<0 ? "out":"in");
-    const abs = Math.abs(v);
-    if (type === "out") cur.out += abs;
-    else cur.inc += abs;
-
-    const cat = (t.category||"").toLowerCase();
-    if (type !== "out" && (cat.includes("div") || cat.includes("juros") || cat.includes("reit") || cat.includes("renda") || cat.includes("passiv"))){
-      cur.pass += abs;
-    }
-    byMonth.set(ym, cur);
-  }
-  const months = Array.from(byMonth.keys()).sort();
-  const last = months.slice(-W);
-  const avg = (key)=>{
-    if (last.length===0) return 0;
-    return last.reduce((s,m)=>s+(byMonth.get(m)?.[key]||0),0)/last.length;
-  };
-  const incM = avg("inc");
-  const outM = avg("out");
-  const passM = avg("pass");
-  const saveM = Math.max(0, incM - outM);
-
-  const exp0 = outM*12;
-  const pass0 = passM*12;
-
-  const y = (cap0>0 && pass0>0) ? (pass0/cap0) : 0;
-
-  capEl.textContent = fmtEUR(cap0);
-  expEl.textContent = fmtEUR(exp0);
-  пасEl.textContent = fmtEUR(pass0);
-
-  const scenarios = [
-    {name:"Conservador", r:0.04, inf:0.03, swr:0.0325},
-    {name:"Base", r:0.06, inf:0.025, swr:0.0375},
-    {name:"Otimista", r:0.08, inf:0.02, swr:0.04}
-  ];
-
-  const results = [];
-  for (const sc of scenarios){
-    let cap = cap0, exp = exp0;
-    let hit = null;
-    for (let t=0; t<=H; t++){
-      const pass = y*cap;
-      const fireNum = sc.swr>0 ? (exp/sc.swr) : Infinity;
-      if (cap >= fireNum && pass >= exp){ hit = {t, cap, exp, pass, fireNum}; break; }
-      cap = cap*(1+sc.r) + saveM*12;
-      exp = exp*(1+sc.inf);
-    }
-    results.push({sc, hit});
-  }
-
-  list.innerHTML = "";
-  for (const r of results){
-    const row = document.createElement("div");
-    row.className = "item";
-    const right = r.hit ? `FIRE em ${r.hit.t}a` : "Sem FIRE";
-    row.innerHTML = `<div class="item__l"><div class="item__t">${r.sc.name}</div><div class="item__s">r ${(r.sc.r*100).toFixed(1)}% · inflação ${(r.sc.inf*100).toFixed(1)}% · SWR ${(r.sc.swr*100).toFixed(2)}%</div></div><div class="item__v">${right}</div>`;
-    list.appendChild(row);
-  }
-
-  // chart: base scenario capital vs fire number
-  const base = scenarios[1];
-  let cap=cap0, exp=exp0;
-  const labels=[], capS=[], fireS=[];
-  for (let t=0; t<=H; t++){
-    labels.push("+"+t+"a");
-    capS.push(cap);
-    fireS.push(base.swr>0 ? (exp/base.swr) : null);
-    cap = cap*(1+base.r) + saveM*12;
-    exp = exp*(1+base.inf);
-  }
-
-  const ctx = canvas.getContext("2d");
-  if (fireChart) fireChart.destroy();
-  fireChart = new Chart(ctx,{
-    type:"line",
-    data:{labels, datasets:[
-      {label:"Capital (Base)", data:capS, tension:.25, borderWidth:2, pointRadius:0},
-      {label:"FIRE # (Base)", data:fireS, tension:.25, borderWidth:2, pointRadius:0},
-    ]},
-    options:{
-      responsive:true,
-      plugins:{ legend:{ display:true } },
-      scales:{ y:{ ticks:{ callback:(v)=>fmtEUR(v) } } }
-    }
-  });
-}
