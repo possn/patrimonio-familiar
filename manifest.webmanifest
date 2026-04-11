@@ -1,0 +1,26 @@
+{
+  "name": "Património Familiar",
+  "short_name": "Património",
+  "description": "Net worth · Rendimento passivo · Juro composto · FIRE",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#eef1f6",
+  "theme_color": "#5b5ce6",
+  "lang": "pt-PT",
+  "icons": [
+    {
+      "src": "icon192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
