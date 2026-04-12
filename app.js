@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260502").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260503").catch(() => {});
     });
   }
 } catch (_) {}
@@ -1164,16 +1164,17 @@ function renderCashflowChart() {
 function renderTxList() {
   const wrap = $("txList");
   wrap.innerHTML = "";
-  const y = $("cfYear") ? $("cfYear").value : new Date().getFullYear();
+  const y = $("cfYear") ? $("cfYear").value : String(new Date().getFullYear());
   const m = $("cfMonth") ? String($("cfMonth").value).padStart(2,"0") : String(new Date().getMonth()+1).padStart(2,"0");
   const key = `${y}-${m}`;
 
-  const tx = expandRecurring(state.transactions)
+  // Mostrar TODOS os movimentos originais (não expandidos) do mês seleccionado
+  const tx = state.transactions
     .filter(t => monthKeyFromDateISO(t.date) === key && parseNum(t.amount) > 0)
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
   if (!tx.length) {
-    wrap.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem movimentos</div><div class="item__s">Adiciona entradas/saídas ou importa o extracto.</div></div><div class="item__v">—</div></div>`;
+    wrap.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem movimentos</div><div class="item__s">Importa o extracto ou adiciona manualmente.</div></div><div class="item__v">—</div></div>`;
     $("btnTxToggle").style.display = "none";
     return;
   }
@@ -1181,26 +1182,67 @@ function renderTxList() {
   const shown = txExpanded ? tx : tx.slice(0, TX_PREVIEW_COUNT);
   for (const t of shown) {
     const isTransfer = isInterAccountTransfer(t);
-    const isRecurringInstance = t.id && t.id.includes("_r");
     const sign = isTransfer ? "⇄" : (t.type === "in" ? "+" : "−");
-    const signColor = isTransfer ? "#667085" : (t.type === "in" ? "#059669" : "#dc2626");
-    const typeLabel = isTransfer ? "Transferência interna" : (t.type === "in" ? "Entrada" : "Saída");
-    const notesTxt = t.notes && t.notes !== t.category ? ` · ${t.notes.slice(0,40)}` : "";
+    const signColor = isTransfer ? "#94a3b8" : (t.type === "in" ? "#059669" : "#dc2626");
+    const typeLabel = isTransfer ? "⇄ Transf. interna (neutra)" : (t.type === "in" ? "Entrada" : "Saída");
+    const notesTxt = t.notes && t.notes !== t.category ? t.notes.slice(0,50) : "";
 
     const row = document.createElement("div");
     row.className = "item";
-    row.style.cursor = isRecurringInstance ? "default" : "pointer";
+    row.style.cssText = "position:relative;overflow:hidden;cursor:pointer;";
+
     row.innerHTML = `
-      <div class="item__l">
-        <div class="item__t" style="color:${signColor}">${sign} ${escapeHtml(t.category)}</div>
-        <div class="item__s">${escapeHtml(typeLabel)} · ${escapeHtml(t.date)}${t.recurring !== "none" ? " · ↻" : ""}${isRecurringInstance ? " · cópia" : ""}${escapeHtml(notesTxt)}</div>
+      <div class="item__l" style="flex:1;min-width:0">
+        <div class="item__t" style="color:${signColor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+          ${sign} ${escapeHtml(t.category)}
+        </div>
+        <div class="item__s">${escapeHtml(typeLabel)} · ${escapeHtml(t.date)}${t.recurring !== "none" ? " · ↻" : ""}${notesTxt ? `<br><span style="opacity:.7">${escapeHtml(notesTxt)}</span>` : ""}</div>
       </div>
-      <div class="item__v" style="color:${signColor}">${fmtEUR(parseNum(t.amount))}</div>`;
-    if (!isRecurringInstance) {
-      row.addEventListener("click", () => openTxModal(t.id));
-    }
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+        <div class="item__v" style="color:${signColor}">${fmtEUR(parseNum(t.amount))}</div>
+        <button data-txid="${t.id}" class="tx-del-btn" style="
+          border:0;background:#fee2e2;color:#dc2626;border-radius:10px;
+          padding:6px 10px;font-weight:900;font-size:16px;cursor:pointer;flex-shrink:0
+        " title="Apagar">🗑</button>
+      </div>`;
+
+    // Clicar na área de texto abre edição
+    row.querySelector(".item__l").addEventListener("click", () => openTxModal(t.id));
+
+    // Botão apagar inline — sem modal, com confirmação rápida
+    row.querySelector(".tx-del-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      if (btn.dataset.confirm === "1") {
+        // Segunda vez — apagar
+        state.transactions = state.transactions.filter(x => x.id !== t.id);
+        saveState();
+        renderCashflow();
+        toast("Movimento apagado.");
+      } else {
+        // Primeira vez — pedir confirmação visual
+        btn.dataset.confirm = "1";
+        btn.textContent = "✓ Confirmar";
+        btn.style.background = "#dc2626";
+        btn.style.color = "#fff";
+        btn.style.padding = "6px 8px";
+        btn.style.fontSize = "12px";
+        setTimeout(() => {
+          if (btn.dataset.confirm === "1") {
+            btn.dataset.confirm = "0";
+            btn.textContent = "🗑";
+            btn.style.background = "#fee2e2";
+            btn.style.color = "#dc2626";
+            btn.style.padding = "6px 10px";
+            btn.style.fontSize = "16px";
+          }
+        }, 3000);
+      }
+    });
+
     wrap.appendChild(row);
   }
+
   if (tx.length > TX_PREVIEW_COUNT) {
     $("btnTxToggle").style.display = "inline";
     $("btnTxToggle").textContent = txExpanded ? "Ver menos" : `Ver todos (${tx.length})`;
