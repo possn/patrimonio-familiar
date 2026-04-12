@@ -8,9 +8,9 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="icon192.png">
-  <link rel="stylesheet" href="styles.css?v=20260416">
+  <link rel="stylesheet" href="styles.css?v=20260420">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script defer src="app.js?v=20260416"></script>
+  <script defer src="app.js?v=20260420"></script>
 </head>
 <body>
 
@@ -38,7 +38,10 @@
   <section class="view" data-view="dashboard" id="viewDashboard">
 
     <div class="card hero">
-      <div class="hero__label">Património líquido</div>
+      <div class="hero__label">
+        Património líquido
+        <button class="info-btn" onclick="openTip('netWorth')" title="Saber mais">ℹ️</button>
+      </div>
       <div class="hero__value" id="kpiNet">0 €</div>
       <div class="hero__sub" id="kpiAP">Ativos 0 € | Passivos 0 €</div>
     </div>
@@ -74,11 +77,11 @@
     <div class="card">
       <div class="pillRow">
         <div class="pill">
-          <div class="pill__k">Rendimento passivo (anual)</div>
+          <div class="pill__k">Rendimento passivo (anual) <button class="info-btn" onclick="openTip('passiveIncome')" title="Saber mais">ℹ️</button></div>
           <div class="pill__v" id="kpiPassiveAnnual">0 €</div>
         </div>
         <div class="pill pill--aqua">
-          <div class="pill__k">Dividendos YTD (líquido)</div>
+          <div class="pill__k">Dividendos YTD (líquido) <button class="info-btn" onclick="openTip('passiveIncome')" title="Saber mais">ℹ️</button></div>
           <div class="pill__v" id="kpiDivYTD">0 €</div>
         </div>
       </div>
@@ -213,7 +216,7 @@
       <!-- Taxa de poupança -->
       <div id="savingsRateWrap" style="margin-top:12px;display:none">
         <div class="row" style="justify-content:space-between;margin-bottom:5px">
-          <span class="card__muted">Taxa de poupança</span>
+          <span class="card__muted">Taxa de poupança <button class="info-btn" onclick="openTip('savingsRate')" title="Saber mais">ℹ️</button></span>
           <span style="font-weight:900;color:#059669" id="savingsRatePct">0%</span>
         </div>
         <div class="progress-bar-bg"><div class="progress-bar-fill progress-bar-fill--green" id="savingsRateFill"></div></div>
@@ -245,24 +248,222 @@
 
   <!-- DIVIDENDOS -->
   <section class="view" data-view="dividends" id="viewDividends" hidden>
-    <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Dividendos</div><div class="card__muted">Rendimento passivo real recebido</div></div>
-        <button class="btn btn--primary" id="btnAddDiv2">+ Dividendo</button>
+
+    <!-- Selector de modo -->
+    <div class="seg">
+      <button class="seg__btn seg__btn--active" id="segDivSummary">📊 Resumo anual</button>
+      <button class="seg__btn" id="segDivDetail">📋 Por dividendo</button>
+    </div>
+
+    <!-- MODO 1: Resumo anual (dados da corretora) -->
+    <div id="paneDivSummary">
+      <div class="card">
+        <div class="card__head">
+          <div>
+            <div class="card__title">Rendimento de dividendos</div>
+            <div class="card__muted">Introduz os dados da tua corretora</div>
+          </div>
+          <button class="info-btn" onclick="openTip('passiveIncome')" style="font-size:20px">ℹ️</button>
+        </div>
+
+        <!-- Ano -->
+        <label class="lbl">Ano</label>
+        <select class="input" id="divSummaryYear" style="max-width:140px"></select>
+
+        <!-- Modo de entrada -->
+        <label class="lbl" style="margin-top:14px">O que tens disponível? <span class="card__muted" style="font-weight:600;font-size:12px">(escolhe o que a corretora mostra)</span></label>
+        <div class="div-input-modes">
+          <label class="div-mode-opt">
+            <input type="radio" name="divInputMode" value="gross_tax" checked>
+            <span>💶 Bruto + Retenção</span>
+          </label>
+          <label class="div-mode-opt">
+            <input type="radio" name="divInputMode" value="net_only">
+            <span>✅ Só líquido</span>
+          </label>
+          <label class="div-mode-opt">
+            <input type="radio" name="divInputMode" value="portfolio_yield">
+            <span>📈 Carteira + Yield %</span>
+          </label>
+          <label class="div-mode-opt">
+            <input type="radio" name="divInputMode" value="yield_only">
+            <span>% Só o Yield</span>
+          </label>
+        </div>
+
+        <!-- Campos dinâmicos por modo -->
+        <div id="divInputFields" style="margin-top:10px">
+
+          <!-- MODO: Bruto + Retenção -->
+          <div id="divFields_gross_tax">
+            <div class="filters" style="grid-template-columns:1fr 1fr;margin-top:0">
+              <div>
+                <label class="lbl">Total recebido bruto (€)</label>
+                <input class="input" id="divSummaryGross" inputmode="decimal" placeholder="ex: 4.250,00">
+              </div>
+              <div>
+                <label class="lbl">Retenção na fonte (€)</label>
+                <input class="input" id="divSummaryTax" inputmode="decimal" placeholder="ex: 637,50">
+              </div>
+            </div>
+            <label class="lbl">Yield médio (% — da corretora ou calculado)</label>
+            <input class="input" id="divSummaryYield_gt" inputmode="decimal" placeholder="ex: 3.2">
+          </div>
+
+          <!-- MODO: Só líquido -->
+          <div id="divFields_net_only" style="display:none">
+            <label class="lbl">Total líquido recebido (€)</label>
+            <input class="input" id="divSummaryNet" inputmode="decimal" placeholder="ex: 3.612,50">
+            <label class="lbl">Taxa de retenção aplicada (%)</label>
+            <input class="input" id="divSummaryRetRate" inputmode="decimal" placeholder="ex: 15 (Portugal: 28%)">
+            <label class="lbl">Yield médio (%)</label>
+            <input class="input" id="divSummaryYield_net" inputmode="decimal" placeholder="ex: 3.2">
+          </div>
+
+          <!-- MODO: Carteira + Yield -->
+          <div id="divFields_portfolio_yield" style="display:none">
+            <div class="note" style="margin-bottom:10px">
+              A app calcula automaticamente o bruto estimado com base no valor da tua carteira e o yield da corretora.
+            </div>
+            <div class="filters" style="grid-template-columns:1fr 1fr;margin-top:0">
+              <div>
+                <label class="lbl">Valor da carteira com dividendos (€)</label>
+                <input class="input" id="divSummaryPortfolio" inputmode="decimal" placeholder="ex: 132.000">
+              </div>
+              <div>
+                <label class="lbl">Dividend Yield da corretora (%)</label>
+                <input class="input" id="divSummaryYield_py" inputmode="decimal" placeholder="ex: 3.2">
+              </div>
+            </div>
+            <label class="lbl">Retenção estimada (%)</label>
+            <input class="input" id="divSummaryRetRate_py" inputmode="decimal" placeholder="ex: 15 (Portugal: 28%)" value="28">
+          </div>
+
+          <!-- MODO: Só Yield -->
+          <div id="divFields_yield_only" style="display:none">
+            <div class="note" style="margin-bottom:10px">
+              A app usa o valor total da tua carteira de ativos com dividendos para estimar o rendimento.
+            </div>
+            <label class="lbl">Dividend Yield da corretora (%)</label>
+            <input class="input" id="divSummaryYield_yo" inputmode="decimal" placeholder="ex: 3.2">
+            <label class="lbl">Retenção estimada (%)</label>
+            <input class="input" id="divSummaryRetRate_yo" inputmode="decimal" placeholder="ex: 28" value="28">
+            <div class="note" style="margin-top:8px">
+              Carteira usada: <b id="divYoPortfolioVal">—</b> (todos os ativos com yield configurado)
+            </div>
+          </div>
+        </div>
+
+        <label class="lbl" style="margin-top:10px">Notas (opcional)</label>
+        <input class="input" id="divSummaryNotes" placeholder="ex: DEGIRO 2025 — VWCE + FWRG">
+
+        <!-- Live preview -->
+        <div id="divSummaryLive" class="note" style="margin-top:12px;display:none;background:#f0fdf4;border-color:#86efac">
+          <div style="font-size:13px;color:#166534">
+            💶 Bruto est.: <b id="divSummaryLiveGross">—</b> &nbsp;·&nbsp;
+            ✅ Líquido: <b id="divSummaryLiveNet">—</b> &nbsp;·&nbsp;
+            📅 Mensal: <b id="divSummaryLiveMth">—</b> &nbsp;·&nbsp;
+            🔖 Retenção: <b id="divSummaryLiveRet">—</b>
+          </div>
+        </div>
+
+        <div class="row row--wrap" style="margin-top:12px;gap:8px">
+          <button class="btn btn--primary" id="btnSaveDivSummary" style="flex:1">Guardar resumo anual</button>
+          <button class="btn btn--danger" id="btnDeleteDivSummary" style="display:none">Apagar</button>
+        </div>
+      </div>
+
+      <!-- KPIs do resumo -->
+      <div id="divSummaryKPIs"></div>
+
+      <!-- Histórico de resumos anuais -->
+      <div class="card">
+        <div class="card__head">
+          <div><div class="card__title">Histórico anual</div><div class="card__muted">Clica para editar</div></div>
+        </div>
+        <div id="divSummaryList" class="list"></div>
+      </div>
+
+      <!-- Gráfico evolução anual -->
+      <div class="card">
+        <div class="card__title" style="margin-bottom:10px">Evolução do rendimento anual</div>
+        <div class="chartWrap"><canvas id="divSummaryChart" height="220"></canvas></div>
+      </div>
+
+      <!-- Projeção futura -->
+      <div class="card">
+        <div class="card__head">
+          <div>
+            <div class="card__title">Projeção futura</div>
+            <div class="card__muted">Mantendo o mesmo yield e assumindo crescimento da carteira</div>
+          </div>
+        </div>
+
+        <div class="note" style="margin-bottom:10px">
+          Parte do <b>yield atual</b> da corretora e projeta o que receberás à medida que a carteira cresce — com ou sem contribuições adicionais.
+        </div>
+
+        <div class="filters" style="grid-template-columns:1fr 1fr">
+          <div>
+            <label class="lbl">Yield mantido (%/ano) <button class="info-btn" onclick="openTip('yieldPct')">ℹ️</button></label>
+            <input class="input" id="divProjYield" inputmode="decimal" placeholder="ex: 3.2">
+          </div>
+          <div>
+            <label class="lbl">Crescimento carteira/ano (%)</label>
+            <input class="input" id="divProjGrowth" inputmode="decimal" placeholder="ex: 7" value="7">
+          </div>
+        </div>
+        <div class="filters" style="grid-template-columns:1fr 1fr">
+          <div>
+            <label class="lbl">Contribuição mensal (€)</label>
+            <input class="input" id="divProjContrib" inputmode="decimal" placeholder="ex: 500" value="0">
+          </div>
+          <div>
+            <label class="lbl">Horizonte (anos)</label>
+            <input class="input" id="divProjYears" type="number" min="1" max="40" value="20">
+          </div>
+        </div>
+        <div class="filters" style="grid-template-columns:1fr 1fr">
+          <div>
+            <label class="lbl">Retenção estimada (%)</label>
+            <input class="input" id="divProjRet" inputmode="decimal" placeholder="ex: 28" value="28">
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button class="btn btn--primary" id="btnDivProject" style="width:100%">Calcular projeção</button>
+          </div>
+        </div>
+
+        <!-- 3 cenários: yield mantido / yield -1% / yield +1% -->
+        <div id="divProjScenarios" style="margin-top:12px;display:none">
+          <div class="kpiRow" id="divProjKPIs"></div>
+        </div>
+        <div class="chartWrap" style="margin-top:12px"><canvas id="divProjChart" height="240"></canvas></div>
+        <div id="divProjMilestones" class="list" style="margin-top:10px"></div>
       </div>
     </div>
-    <div id="divKPIs"></div>
-    <div class="card">
-      <div class="card__title" style="margin-bottom:10px">Por mês (últimos 24)</div>
-      <div class="chartWrap"><canvas id="divChart" height="220"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Histórico</div><div class="card__muted">Clica para editar</div></div>
-        <button class="link" id="btnDivToggle" style="display:none">Ver todos</button>
+
+    <!-- MODO 2: Por dividendo individual -->
+    <div id="paneDivDetail" style="display:none">
+      <div class="card">
+        <div class="card__head">
+          <div><div class="card__title">Dividendos individuais</div><div class="card__muted">Registo detalhado por pagamento</div></div>
+          <button class="btn btn--primary" id="btnAddDiv2">+ Dividendo</button>
+        </div>
       </div>
-      <div id="divList" class="list"></div>
+      <div id="divKPIs"></div>
+      <div class="card">
+        <div class="card__title" style="margin-bottom:10px">Por mês (últimos 24)</div>
+        <div class="chartWrap"><canvas id="divChart" height="220"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card__head">
+          <div><div class="card__title">Histórico</div><div class="card__muted">Clica para editar</div></div>
+          <button class="link" id="btnDivToggle" style="display:none">Ver todos</button>
+        </div>
+        <div id="divList" class="list"></div>
+      </div>
     </div>
+
   </section>
 
   <!-- ANÁLISE -->
@@ -278,7 +479,7 @@
     </div>
     <div class="analysisPanelTab" id="analysisPanelTab_compound">
       <div class="card">
-        <div class="card__title" style="margin-bottom:12px">Simulador de Juro Composto</div>
+        <div class="card__title" style="margin-bottom:12px">Simulador de Juro Composto <button class="info-btn" onclick="openTip('compound')" title="O que é o juro composto?">ℹ️</button></div>
         <label class="lbl">Base de cálculo</label>
         <select class="input" id="compAsset"><option value="__portfolio__">📊 Carteira completa (automático)</option></select>
         <!-- Nota automática da carteira -->
@@ -331,7 +532,7 @@
     </div>
     <div class="analysisPanelTab" id="analysisPanelTab_fire" style="display:none">
       <div class="card">
-        <div class="card__title" style="margin-bottom:10px">Projeção FIRE</div>
+        <div class="card__title" style="margin-bottom:10px">Projeção FIRE <button class="info-btn" onclick="openTip('fire')" title="O que é FIRE?">ℹ️</button></div>
         <div class="card__muted">3 cenários · Capital ≥ Despesas/SWR e Rendimento passivo ≥ Despesas</div>
         <div class="row row--wrap" style="margin-top:12px;gap:10px">
           <div><label class="lbl" style="margin:0 0 4px">Janela cashflow</label>
@@ -407,7 +608,7 @@
 <!-- PASSIVE BAR -->
 <div class="passivebar" id="passivebar">
   <div class="passivebar__item">
-    <div class="passivebar__label">Rendimento passivo anual</div>
+    <div class="passivebar__label">Rendimento passivo anual <button class="info-btn" onclick="openTip('passiveIncome')" title="Saber mais">ℹ️</button></div>
     <div class="passivebar__value passivebar__value--green" id="barPassiveAnnual">0 €</div>
   </div>
   <div class="passivebar__item" style="text-align:right">
@@ -545,6 +746,19 @@
         <button class="btn" data-close="modalGoal">Cancelar</button>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- MODAL: Tip / Explicação -->
+<div class="modal" id="tipModal" aria-hidden="true">
+  <div class="modal__bg" data-close="tipModal"></div>
+  <div class="modal__panel">
+    <div class="modal__head">
+      <div class="modal__title" id="tipTitle">Explicação</div>
+      <button class="modal__close" data-close="tipModal">Fechar</button>
+    </div>
+    <div id="tipBody" style="line-height:1.7;font-weight:600;color:#334155;padding-bottom:8px"></div>
+    <button class="btn" data-close="tipModal" style="margin-top:12px;width:100%">Entendi</button>
   </div>
 </div>
 

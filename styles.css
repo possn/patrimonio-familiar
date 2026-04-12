@@ -309,6 +309,45 @@ textarea.input { resize: vertical; }
   .passivebar { bottom: 76px; }
 }
 
+/* ─── DIV INPUT MODES ─── */
+.div-input-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 6px;
+}
+.div-mode-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 13px;
+  transition: border-color .15s, background .15s;
+}
+.div-mode-opt:has(input:checked) {
+  border-color: var(--vio);
+  background: rgba(91,92,230,.07);
+  color: var(--vio);
+}
+.div-mode-opt input[type="radio"] {
+  accent-color: var(--vio);
+  width: 16px; height: 16px;
+}
+.info-btn {
+  border: 0; background: transparent; cursor: pointer;
+  font-size: 14px; padding: 0 2px; vertical-align: middle;
+  opacity: 0.6; transition: opacity .15s;
+  line-height: 1;
+}
+.info-btn:hover { opacity: 1; }
+
+/* ─── HERO LABEL with info ─── */
+.hero__label { display: flex; align-items: center; gap: 4px; }
+
 /* ─── PROGRESS BAR ─── */
 .progress-bar-bg {
   width: 100%; height: 10px;
@@ -317,9 +356,13 @@ textarea.input { resize: vertical; }
 .progress-bar-fill {
   height: 100%; border-radius: 999px;
   background: var(--vio);
-  transition: width .4s ease;
+  transition: width .5s cubic-bezier(.4,0,.2,1);
 }
 .progress-bar-fill--green { background: #10b981; }
+
+/* ─── ITEM hover improve ─── */
+.item { transition: box-shadow .15s, border-color .15s, transform .1s; }
+.item:active { transform: scale(0.99); }
 
 @media (max-width: 380px) {
   .hero__value { font-size: 36px; }

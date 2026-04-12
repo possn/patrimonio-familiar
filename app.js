@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260416").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260420").catch(() => {});
     });
   }
 } catch (_) {}
@@ -113,7 +113,103 @@ function normalizeYieldType(s) {
   return "none";
 }
 
-/* ─── TOAST ───────────────────────────────────────────────── */
+/* ─── INFO TIPS (explicações contextuais) ─────────────────── */
+const TIPS = {
+  compound: {
+    title: "O que é o Juro Composto?",
+    body: `O juro composto é o fenómeno em que os juros gerados também geram juros.<br><br>
+<b>Exemplo:</b> 10.000€ a 5%/ano:<br>
+• Juro simples: +500€/ano → 15.000€ em 10 anos<br>
+• Juro composto: +500€ no ano 1, +525€ no ano 2… → 16.289€ em 10 anos<br><br>
+A diferença cresce exponencialmente com o tempo — por isso Einstein terá dito que o juro composto é "a oitava maravilha do mundo".`
+  },
+  yieldPct: {
+    title: "O que é o Yield?",
+    body: `O <b>yield</b> (rendimento) é a percentagem de retorno anual de um ativo.<br><br>
+<b>Exemplos:</b><br>
+• ETF VWCE: yield dividendo ≈ 1.5–2%/ano<br>
+• Certificados de aforro: taxa fixa definida pelo Estado<br>
+• Depósito a prazo: taxa acordada com o banco<br>
+• Imobiliário: renda mensal / valor do imóvel × 12<br><br>
+Na app, o yield ponderado da carteira é calculado automaticamente com base nos yields individuais de cada ativo.`
+  },
+  passiveIncome: {
+    title: "Rendimento Passivo",
+    body: `O <b>rendimento passivo</b> é o dinheiro que a tua carteira gera automaticamente, sem trabalho ativo.<br><br>
+<b>Fontes:</b><br>
+• Dividendos de ações/ETFs<br>
+• Juros de depósitos e obrigações<br>
+• Rendas de imóveis<br>
+• Juros de PPR e fundos<br><br>
+A app calcula dois valores:<br>
+• <b>Teórico</b>: baseado nos yields que introduziste<br>
+• <b>Real</b>: baseado nos dividendos que registaste (mais preciso)`
+  },
+  fire: {
+    title: "O que é FIRE?",
+    body: `<b>FIRE</b> = Financial Independence, Retire Early.<br><br>
+O objetivo é acumular capital suficiente para que os rendimentos passivos cubram as despesas, tornando o trabalho opcional.<br><br>
+<b>Regra dos 4% (SWR):</b><br>
+Se retirares 4% do teu portfólio por ano, historicamente o capital dura mais de 30 anos. Isso significa que precisas de 25× as tuas despesas anuais.<br><br>
+<b>Exemplo:</b> Despesas de 2.000€/mês = 24.000€/ano → precisas de 600.000€ investidos.`
+  },
+  weightedYield: {
+    title: "Yield Médio Ponderado",
+    body: `O <b>yield médio ponderado</b> é a taxa de retorno média da carteira, tendo em conta o peso de cada ativo.<br><br>
+<b>Exemplo:</b><br>
+• 80.000€ em ETFs com 5% → contribui 4.000€/ano<br>
+• 20.000€ em depósitos com 3% → contribui 600€/ano<br>
+• Total: 100.000€ → 4.600€/ano → yield ponderado = 4,6%<br><br>
+É mais preciso do que fazer a média simples dos yields porque tem em conta o tamanho de cada posição.`
+  },
+  savingsRate: {
+    title: "Taxa de Poupança",
+    body: `A <b>taxa de poupança</b> é a percentagem do rendimento que guardas (não gastas).<br><br>
+<b>Fórmula:</b> (Entradas − Saídas) / Entradas × 100<br><br>
+<b>Referências:</b><br>
+• < 10%: baixa — difícil acumular capital<br>
+• 10–20%: razoável<br>
+• 20–40%: boa — acelera a independência financeira<br>
+• > 50%: excelente — caminho rápido para FIRE<br><br>
+Com 50% de taxa de poupança, podes reformar-te em ~17 anos (partindo do zero).`
+  },
+  netWorth: {
+    title: "Património Líquido",
+    body: `O <b>património líquido</b> (net worth) é a diferença entre tudo o que tens e tudo o que deves.<br><br>
+<b>Fórmula:</b> Ativos − Passivos<br><br>
+<b>Ativos:</b> imóveis, ações, depósitos, cripto, ouro…<br>
+<b>Passivos:</b> crédito habitação, crédito pessoal, cartões…<br><br>
+É a métrica mais importante para medir a saúde financeira. O objetivo é aumentá-lo todos os meses através de poupança e valorização dos ativos.`
+  },
+  diversification: {
+    title: "Diversificação",
+    body: `A <b>diversificação</b> consiste em distribuir o capital por diferentes tipos de ativos para reduzir o risco.<br><br>
+<b>Princípio:</b> "Não coloques todos os ovos no mesmo cesto."<br><br>
+<b>Dimensões de diversificação:</b><br>
+• <b>Geográfica:</b> Portugal, Europa, Mundo<br>
+• <b>Classe de ativo:</b> ações, obrigações, imóveis, ouro<br>
+• <b>Moeda:</b> EUR, USD, GBP<br>
+• <b>Temporal:</b> investir regularmente (DCA)<br><br>
+Um ETF global (ex: VWCE) oferece diversificação em mais de 3.000 empresas de uma vez.`
+  }
+};
+
+function openTip(key) {
+  const tip = TIPS[key];
+  if (!tip) return;
+  const el = document.getElementById("tipModal");
+  const titleEl = document.getElementById("tipTitle");
+  const bodyEl = document.getElementById("tipBody");
+  if (!el || !titleEl || !bodyEl) return;
+  titleEl.textContent = tip.title;
+  bodyEl.innerHTML = tip.body;
+  openModal("tipModal");
+}
+
+// Helper to create an info button
+function infoBtn(key) {
+  return `<button class="info-btn" onclick="openTip('${key}')" title="Saber mais">ℹ️</button>`;
+}
 function toast(msg, duration = 3000) {
   let el = document.getElementById("toastEl");
   if (!el) {
@@ -201,6 +297,7 @@ const DEFAULT_STATE = {
   liabilities: [],
   transactions: [],
   dividends: [],
+  divSummaries: [], // {id, year, gross, tax, yieldPct, notes}
   history: []
 };
 
@@ -240,6 +337,7 @@ async function loadStateAsync() {
       liabilities: Array.isArray(p.liabilities) ? p.liabilities : [],
       transactions: Array.isArray(p.transactions) ? p.transactions : [],
       dividends: Array.isArray(p.dividends) ? p.dividends : [],
+      divSummaries: Array.isArray(p.divSummaries) ? p.divSummaries : [],
       history: Array.isArray(p.history) ? p.history : []
     };
   } catch { return safeClone(DEFAULT_STATE); }
@@ -260,18 +358,32 @@ function calcTotals() {
   const assetsTotal = state.assets.reduce((a, x) => a + parseNum(x.value), 0);
   const liabsTotal = state.liabilities.reduce((a, x) => a + parseNum(x.value), 0);
   const net = assetsTotal - liabsTotal;
-  // passiveAnnual: yield teórico dos ativos + dividendos reais dos últimos 12 meses
   const theoreticalPassive = state.assets.reduce((a, x) => a + passiveFromItem(x), 0);
+
   const now = new Date();
-  const cutoff = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0,10);
+  const currentYear = now.getFullYear();
+  const cutoff12m = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0,10);
+
+  // From annual summaries (net = gross - tax) — prefer most recent year
+  const latestSummary = (state.divSummaries || [])
+    .filter(s => s.year >= currentYear - 1)
+    .sort((a, b) => b.year - a.year)[0];
+  const summaryNet = latestSummary
+    ? parseNum(latestSummary.gross) - parseNum(latestSummary.tax)
+    : 0;
+
+  // From individual dividends (last 12 months)
   const realDividends12m = (state.dividends || [])
-    .filter(d => d.date >= cutoff)
-    .reduce((a, d) => a + parseNum(d.amount), 0);
-  // Se há dividendos reais registados usamos esses; senão o teórico
-  const passiveAnnual = realDividends12m > 0
-    ? Math.max(realDividends12m, theoreticalPassive)
+    .filter(d => d.date >= cutoff12m)
+    .reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
+
+  // Priority: summary > individual > theoretical
+  const realPassive = summaryNet > 0 ? summaryNet : realDividends12m;
+  const passiveAnnual = realPassive > 0
+    ? Math.max(realPassive, theoreticalPassive)
     : theoreticalPassive;
-  return { assetsTotal, liabsTotal, net, passiveAnnual, theoreticalPassive, realDividends12m };
+
+  return { assetsTotal, liabsTotal, net, passiveAnnual, theoreticalPassive, realDividends12m, summaryNet };
 }
 
 /* ─── COMPOUND INTEREST ENGINE ────────────────────────────── */
@@ -607,6 +719,40 @@ function renderSearchResults(q) {
   }
 }
 
+function renderDivYTD() {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const yearStart = currentYear + "-01-01";
+
+  // Prefer divSummaries for current year
+  const currentSummary = (state.divSummaries || []).find(s => s.year === currentYear);
+  const prevSummary = (state.divSummaries || []).find(s => s.year === currentYear - 1);
+
+  let divYTD = 0;
+  let label = "";
+
+  if (currentSummary) {
+    divYTD = parseNum(currentSummary.gross) - parseNum(currentSummary.tax);
+    label = `Yield ${fmtPct(parseNum(currentSummary.yieldPct))} · Dados ${currentYear}`;
+  } else if (prevSummary) {
+    // Use last year as reference
+    divYTD = parseNum(prevSummary.gross) - parseNum(prevSummary.tax);
+    label = `Ref. ${currentYear - 1} · Atualiza em Dividendos`;
+  } else {
+    // Fall back to individual dividends
+    divYTD = (state.dividends || [])
+      .filter(d => d.date >= yearStart)
+      .reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
+    const count = (state.dividends || []).filter(d => d.date >= yearStart).length;
+    label = count > 0 ? `${count} pagamento${count !== 1 ? "s" : ""} em ${currentYear}` : "";
+  }
+
+  const divEl = $("kpiDivYTD");
+  if (divEl) divEl.textContent = fmtEUR(divYTD);
+  const divCountEl = $("kpiDivCount");
+  if (divCountEl) divCountEl.textContent = label;
+}
+
 function renderDashboard() {
   const t = calcTotals();
   $("kpiNet").textContent = fmtEUR(t.net);
@@ -616,20 +762,7 @@ function renderDashboard() {
   updatePassiveBar();
   renderGoal();
   renderAlerts();
-
-  // Dividendos YTD
-  const yearStart = new Date().getFullYear() + "-01-01";
-  const divYTD = (state.dividends || [])
-    .filter(d => d.date >= yearStart)
-    .reduce((a, d) => a + parseNum(d.amount), 0);
-  const divEl = $("kpiDivYTD");
-  if (divEl) divEl.textContent = fmtEUR(divYTD);
-  const divCountEl = $("kpiDivCount");
-  if (divCountEl) {
-    const count = (state.dividends || []).filter(d => d.date >= yearStart).length;
-    divCountEl.textContent = `${count} pagamento${count !== 1 ? "s" : ""} em ${new Date().getFullYear()}`;
-  }
-
+  renderDivYTD();
   renderSummary();
   renderDistChart();
   renderTrendChart();
@@ -1048,7 +1181,482 @@ function renderTxList() {
   }
 }
 
-/* ─── DIVIDENDOS ──────────────────────────────────────────── */
+/* ─── DIVIDENDOS — MODO RESUMO ANUAL ─────────────────────── */
+let divMode = "summary"; // "summary" | "detail"
+let editingDivSummaryId = null;
+let divProjChart = null;
+let divSummaryChart = null;
+
+function initDivSummaryYearSelect() {
+  const sel = $("divSummaryYear");
+  if (!sel) return;
+  const now = new Date().getFullYear();
+  sel.innerHTML = "";
+  for (let y = now; y >= now - 10; y--) {
+    const o = document.createElement("option");
+    o.value = y; o.textContent = y;
+    sel.appendChild(o);
+  }
+  // Pre-fill from existing summary for selected year
+  sel.addEventListener("change", () => prefillDivSummaryFromYear(parseInt(sel.value)));
+  prefillDivSummaryFromYear(now);
+}
+
+function prefillDivSummaryFromYear(year) {
+  const existing = (state.divSummaries || []).find(s => s.year === year);
+  const delBtn = document.getElementById("btnDeleteDivSummary");
+  const saveBtn = $("btnSaveDivSummary");
+
+  if (existing) {
+    const radio = document.querySelector('input[name="divInputMode"][value="gross_tax"]');
+    if (radio) { radio.checked = true; showDivFields("gross_tax"); }
+    $("divSummaryGross").value = String(parseNum(existing.gross) || "");
+    $("divSummaryTax").value = String(parseNum(existing.tax) || "");
+    const yv = String(parseNum(existing.yieldPct) || "");
+    ["divSummaryYield_gt","divSummaryYield_net","divSummaryYield_py","divSummaryYield_yo"].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = yv;
+    });
+    $("divSummaryNotes").value = existing.notes || "";
+    editingDivSummaryId = existing.id;
+    if (saveBtn) saveBtn.textContent = `Atualizar ${year}`;
+    if (delBtn) delBtn.style.display = "";
+    updateDivSummaryLive();
+  } else {
+    $("divSummaryGross").value = "";
+    $("divSummaryTax").value = "";
+    $("divSummaryNet").value = "";
+    const prevSummary = (state.divSummaries || [])
+      .filter(s => s.year < year).sort((a, b) => b.year - a.year)[0];
+    const yieldVal = prevSummary
+      ? String(parseNum(prevSummary.yieldPct))
+      : (calcPortfolioYield().weightedYield > 0 ? fmt(calcPortfolioYield().weightedYield, 2) : "");
+    ["divSummaryYield_gt","divSummaryYield_net","divSummaryYield_py","divSummaryYield_yo"].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = yieldVal;
+    });
+    $("divSummaryNotes").value = "";
+    editingDivSummaryId = null;
+    if (saveBtn) saveBtn.textContent = `Guardar resumo ${year}`;
+    if (delBtn) delBtn.style.display = "none";
+    const liveEl = document.getElementById("divSummaryLive");
+    if (liveEl) liveEl.style.display = "none";
+  }
+  const pEl = $("divProjYield");
+  if (pEl && !pEl.value && existing) pEl.value = String(parseNum(existing.yieldPct));
+}
+
+function getDivInputMode() {
+  const checked = document.querySelector('input[name="divInputMode"]:checked');
+  return checked ? checked.value : "gross_tax";
+}
+
+function showDivFields(mode) {
+  ["gross_tax","net_only","portfolio_yield","yield_only"].forEach(m => {
+    const el = document.getElementById("divFields_" + m);
+    if (el) el.style.display = m === mode ? "" : "none";
+  });
+  // Update portfolio value display for yield_only mode
+  if (mode === "yield_only") {
+    const p = calcPortfolioYield();
+    const el = document.getElementById("divYoPortfolioVal");
+    if (el) el.textContent = p.totalValue > 0 ? fmtEUR(p.totalValue) : "Sem ativos com yield";
+  }
+}
+
+function calcDivFromInputs() {
+  const mode = getDivInputMode();
+  let gross = 0, tax = 0, net = 0, yieldPct = 0;
+
+  if (mode === "gross_tax") {
+    gross = parseNum($("divSummaryGross").value);
+    tax = parseNum($("divSummaryTax").value);
+    net = gross - tax;
+    yieldPct = parseNum($("divSummaryYield_gt").value);
+
+  } else if (mode === "net_only") {
+    net = parseNum($("divSummaryNet").value);
+    const retRate = parseNum($("divSummaryRetRate").value) || 0;
+    gross = retRate > 0 ? net / (1 - retRate / 100) : net;
+    tax = gross - net;
+    yieldPct = parseNum($("divSummaryYield_net").value);
+
+  } else if (mode === "portfolio_yield") {
+    const portfolio = parseNum($("divSummaryPortfolio").value);
+    yieldPct = parseNum($("divSummaryYield_py").value);
+    const retRate = parseNum($("divSummaryRetRate_py").value) || 28;
+    gross = portfolio * (yieldPct / 100);
+    tax = gross * (retRate / 100);
+    net = gross - tax;
+
+  } else if (mode === "yield_only") {
+    const p = calcPortfolioYield();
+    yieldPct = parseNum($("divSummaryYield_yo").value);
+    const retRate = parseNum($("divSummaryRetRate_yo").value) || 28;
+    gross = p.totalValue * (yieldPct / 100);
+    tax = gross * (retRate / 100);
+    net = gross - tax;
+  }
+
+  return { gross, tax, net, yieldPct };
+}
+
+function updateDivSummaryLive() {
+  const { gross, tax, net, yieldPct } = calcDivFromInputs();
+  const liveEl = document.getElementById("divSummaryLive");
+  if (!liveEl) return;
+  if (!gross && !net) { liveEl.style.display = "none"; return; }
+  liveEl.style.display = "";
+  const retPct = gross > 0 ? (tax / gross * 100) : 0;
+  const setT = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  setT("divSummaryLiveGross", fmtEUR2(gross));
+  setT("divSummaryLiveNet", fmtEUR2(net));
+  setT("divSummaryLiveMth", fmtEUR2(net / 12));
+  setT("divSummaryLiveRet", tax > 0 ? `${fmtEUR2(tax)} (${fmtPct(retPct)})` : "Sem retenção");
+}
+
+function deleteDivSummary() {
+  if (!editingDivSummaryId) return;
+  const s = (state.divSummaries || []).find(x => x.id === editingDivSummaryId);
+  if (!s) return;
+  if (!confirm(`Apagar resumo de ${s.year}?`)) return;
+  state.divSummaries = state.divSummaries.filter(x => x.id !== editingDivSummaryId);
+  editingDivSummaryId = null;
+  saveState();
+  renderDividends();
+  renderDashboard();
+  initDivSummaryYearSelect();
+  toast("Resumo apagado.");
+}
+
+function saveDivSummary() {
+  const year = parseInt($("divSummaryYear").value);
+  const { gross, tax, net, yieldPct } = calcDivFromInputs();
+  const notes = ($("divSummaryNotes").value || "").trim();
+
+  if (!gross || gross <= 0) { toast("Não foi possível calcular o bruto. Verifica os valores."); return; }
+  if (!yieldPct || yieldPct <= 0) { toast("Introduz o Dividend Yield da corretora."); return; }
+
+  if (!Array.isArray(state.divSummaries)) state.divSummaries = [];
+
+  const obj = { id: editingDivSummaryId || uid(), year, gross, tax: tax || 0, yieldPct, notes };
+  const ix = state.divSummaries.findIndex(s => s.id === obj.id || s.year === year);
+  if (ix >= 0) state.divSummaries[ix] = obj;
+  else state.divSummaries.push(obj);
+
+  saveState();
+  renderDividends();
+  renderDashboard();
+  // Auto-fill projection yield field
+  const projYieldEl = $("divProjYield");
+  if (projYieldEl && !projYieldEl.value) projYieldEl.value = String(yieldPct);
+  toast(`Resumo ${year} guardado. Líquido: ${fmtEUR2(net)}`);
+}
+
+function renderDivSummaryKPIs() {
+  const el = $("divSummaryKPIs");
+  if (!el) return;
+  const summaries = (state.divSummaries || []).slice().sort((a, b) => b.year - a.year);
+  if (!summaries.length) { el.innerHTML = ""; return; }
+
+  const latest = summaries[0];
+  const net = parseNum(latest.gross) - parseNum(latest.tax);
+  const t = calcTotals();
+  const portfolioVal = t.assetsTotal;
+
+  // Yield implícito: gross / valor carteira no momento (aprox)
+  const impliedYield = portfolioVal > 0 ? (parseNum(latest.gross) / portfolioVal * 100) : parseNum(latest.yieldPct);
+
+  // Crescimento YoY
+  let yoyGrowth = null;
+  if (summaries.length >= 2) {
+    const prev = summaries[1];
+    yoyGrowth = ((parseNum(latest.gross) - parseNum(prev.gross)) / Math.max(1, parseNum(prev.gross))) * 100;
+  }
+
+  el.innerHTML = `
+    <div class="kpiRow" style="margin-top:0">
+      <div class="kpi kpi--in">
+        <div class="kpi__k">Recebido ${latest.year} (líquido)</div>
+        <div class="kpi__v">${fmtEUR2(net)}</div>
+        <div class="kpi__s">Bruto ${fmtEUR2(parseNum(latest.gross))}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi__k">Yield médio (corretora)</div>
+        <div class="kpi__v">${fmtPct(parseNum(latest.yieldPct))}</div>
+        <div class="kpi__s">Implícito: ${fmtPct(impliedYield)}</div>
+      </div>
+      <div class="kpi kpi--out">
+        <div class="kpi__k">Retenção ${latest.year}</div>
+        <div class="kpi__v">${fmtEUR2(parseNum(latest.tax))}</div>
+        <div class="kpi__s">${parseNum(latest.gross) > 0 ? fmtPct(parseNum(latest.tax)/parseNum(latest.gross)*100) : "—"} do bruto</div>
+      </div>
+    </div>
+    <div class="kpiRow" style="margin-top:10px">
+      <div class="kpi kpi--net">
+        <div class="kpi__k">Mensal médio (líquido)</div>
+        <div class="kpi__v">${fmtEUR2(net / 12)}</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi__k">Crescimento YoY</div>
+        <div class="kpi__v" style="color:${yoyGrowth === null ? '#667085' : yoyGrowth >= 0 ? '#059669' : '#dc2626'}">
+          ${yoyGrowth === null ? "—" : (yoyGrowth >= 0 ? "+" : "") + fmtPct(yoyGrowth)}
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="kpi__k">Anos registados</div>
+        <div class="kpi__v">${summaries.length}</div>
+      </div>
+    </div>`;
+}
+
+function renderDivSummaryList() {
+  const list = $("divSummaryList");
+  if (!list) return;
+  const summaries = (state.divSummaries || []).slice().sort((a, b) => b.year - a.year);
+  if (!summaries.length) {
+    list.innerHTML = `<div class="item" style="cursor:default"><div class="item__l"><div class="item__t">Sem resumos registados</div><div class="item__s">Preenche o formulário acima com os dados da corretora.</div></div></div>`;
+    return;
+  }
+  list.innerHTML = summaries.map((s, i) => {
+    const net = parseNum(s.gross) - parseNum(s.tax);
+    const prev = summaries[i + 1];
+    const yoy = prev ? ((parseNum(s.gross) - parseNum(prev.gross)) / Math.max(1, parseNum(prev.gross)) * 100) : null;
+    return `<div class="item" data-summary-id="${s.id}" style="cursor:pointer">
+      <div class="item__l">
+        <div class="item__t">${s.year} ${s.notes ? `· ${escapeHtml(s.notes)}` : ""}</div>
+        <div class="item__s">Yield ${fmtPct(parseNum(s.yieldPct))} · Bruto ${fmtEUR2(parseNum(s.gross))}${parseNum(s.tax) > 0 ? ` · Ret. ${fmtEUR2(parseNum(s.tax))}` : ""}${yoy !== null ? ` · YoY ${yoy >= 0 ? "+" : ""}${fmtPct(yoy)}` : ""}</div>
+      </div>
+      <div class="item__v" style="text-align:right">
+        <div>${fmtEUR2(net)}</div>
+        <div class="item__s">${fmtEUR2(net/12)}/mês</div>
+      </div>
+    </div>`;
+  }).join("");
+
+  // Click to edit
+  list.querySelectorAll(".item[data-summary-id]").forEach(row => {
+    row.addEventListener("click", () => {
+      const id = row.dataset.summaryId;
+      const s = (state.divSummaries || []).find(x => x.id === id);
+      if (!s) return;
+      $("divSummaryYear").value = String(s.year);
+      $("divSummaryGross").value = String(parseNum(s.gross));
+      $("divSummaryTax").value = String(parseNum(s.tax));
+      $("divSummaryYield").value = String(parseNum(s.yieldPct));
+      $("divSummaryNotes").value = s.notes || "";
+      editingDivSummaryId = s.id;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      toast(`A editar ${s.year} — altera e guarda.`);
+    });
+  });
+}
+
+function renderDivSummaryChart() {
+  const ctx = $("divSummaryChart") && $("divSummaryChart").getContext("2d");
+  if (!ctx) return;
+  if (divSummaryChart) divSummaryChart.destroy();
+
+  const summaries = (state.divSummaries || []).slice().sort((a, b) => a.year - b.year);
+  if (!summaries.length) return;
+
+  const labels = summaries.map(s => String(s.year));
+  const grossData = summaries.map(s => parseNum(s.gross));
+  const netData = summaries.map(s => parseNum(s.gross) - parseNum(s.tax));
+  const taxData = summaries.map(s => parseNum(s.tax));
+  const yieldData = summaries.map(s => parseNum(s.yieldPct));
+
+  divSummaryChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        { label: "Líquido", data: netData, backgroundColor: "#10b981", stack: "s" },
+        { label: "Retenção", data: taxData, backgroundColor: "#f59e0b", stack: "s" },
+        {
+          label: "Yield (%)",
+          data: yieldData,
+          type: "line",
+          yAxisID: "y2",
+          borderColor: "#5b5ce6",
+          backgroundColor: "transparent",
+          pointRadius: 5,
+          pointBackgroundColor: "#5b5ce6",
+          borderWidth: 2,
+          tension: 0.3
+        }
+      ]
+    },
+    options: {
+      plugins: {
+        legend: { labels: { boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            label: c => c.dataset.yAxisID === "y2"
+              ? `${c.dataset.label}: ${fmtPct(c.raw)}`
+              : `${c.dataset.label}: ${fmtEUR2(c.raw)}`
+          }
+        }
+      },
+      scales: {
+        x: { stacked: true },
+        y: { stacked: true, ticks: { callback: v => fmtEUR(v) } },
+        y2: {
+          position: "right",
+          grid: { drawOnChartArea: false },
+          ticks: { callback: v => fmtPct(v) }
+        }
+      }
+    }
+  });
+}
+
+function renderDivProjection() {
+  const summaries = (state.divSummaries || []).slice().sort((a, b) => b.year - a.year);
+  const latest = summaries[0];
+
+  // Get yield from projection field (user can override) or from latest summary
+  const projYieldField = parseNum($("divProjYield").value);
+  const baseYield = projYieldField > 0 ? projYieldField
+    : (latest ? parseNum(latest.yieldPct) : calcPortfolioYield().weightedYield);
+
+  if (!baseYield) { toast("Introduz o Dividend Yield no campo acima."); return; }
+
+  const portfolioGrowth = parseNum($("divProjGrowth").value) || 7;
+  const contrib = parseNum($("divProjContrib").value) || 0;
+  const years = parseInt($("divProjYears").value) || 20;
+  const retRate = parseNum($("divProjRet").value) || 28;
+
+  const t = calcTotals();
+  // Base portfolio: from assets or estimated from latest summary
+  let portfolioVal = t.assetsTotal;
+  if (!portfolioVal && latest) {
+    portfolioVal = parseNum(latest.gross) / Math.max(0.001, baseYield / 100);
+  }
+  if (!portfolioVal) { toast("Adiciona ativos ou guarda um resumo anual primeiro."); return; }
+
+  const baseNet = latest
+    ? parseNum(latest.gross) - parseNum(latest.tax)
+    : portfolioVal * (baseYield / 100) * (1 - retRate / 100);
+
+  // 3 cenários: yield -1%, yield mantido, yield +1%
+  const scenarios = [
+    { name: "Conservador", yield: Math.max(0.1, baseYield - 1), color: "#f59e0b" },
+    { name: "Base (yield mantido)", yield: baseYield, color: "#10b981" },
+    { name: "Otimista", yield: baseYield + 1, color: "#5b5ce6" }
+  ];
+
+  const allData = scenarios.map(sc => {
+    const labels = [], netArr = [], grossArr = [];
+    let curPortfolio = portfolioVal;
+    for (let y = 0; y <= years; y++) {
+      labels.push(y === 0 ? (latest ? String(latest.year) : "Hoje") : `+${y}a`);
+      const projGross = curPortfolio * (sc.yield / 100);
+      const projNet = projGross * (1 - retRate / 100);
+      grossArr.push(projGross);
+      netArr.push(projNet);
+      curPortfolio = curPortfolio * (1 + portfolioGrowth / 100) + contrib * 12;
+    }
+    return { ...sc, labels, netArr, grossArr };
+  });
+
+  const base = allData[1]; // cenário base
+  const finalNet = base.netArr[years];
+  const doubleYear = base.netArr.findIndex(v => v >= baseNet * 2);
+  const tripleYear = base.netArr.findIndex(v => v >= baseNet * 3);
+
+  // KPIs
+  const kpiEl = $("divProjKPIs");
+  const scenEl = document.getElementById("divProjScenarios");
+  if (kpiEl && scenEl) {
+    scenEl.style.display = "";
+    kpiEl.innerHTML = `
+      <div class="kpi kpi--in">
+        <div class="kpi__k">Dividendo anual em ${years}a</div>
+        <div class="kpi__v">${fmtEUR2(finalNet)}</div>
+        <div class="kpi__s">${fmtEUR2(finalNet/12)}/mês líquido</div>
+      </div>
+      <div class="kpi kpi--net">
+        <div class="kpi__k">Duplica em</div>
+        <div class="kpi__v">${doubleYear > 0 ? doubleYear + " anos" : "> " + years + "a"}</div>
+        <div class="kpi__s">Yield ${fmtPct(baseYield)} mantido</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi__k">Triplica em</div>
+        <div class="kpi__v">${tripleYear > 0 ? tripleYear + " anos" : "> " + years + "a"}</div>
+        <div class="kpi__s">vs ${fmtEUR2(baseNet)} hoje</div>
+      </div>`;
+  }
+
+  // Milestones
+  const mlEl = document.getElementById("divProjMilestones");
+  if (mlEl) {
+    const targets = [1,2,5,10,15,20].filter(y => y <= years);
+    mlEl.innerHTML = targets.map(y => {
+      const net = base.netArr[y];
+      const growth = baseNet > 0 ? ((net - baseNet) / baseNet * 100) : 0;
+      return `<div class="item" style="cursor:default">
+        <div class="item__l">
+          <div class="item__t">+${y} ano${y>1?"s":""}</div>
+          <div class="item__s">+${fmtPct(growth)} vs hoje · ${fmtEUR2(net/12)}/mês</div>
+        </div>
+        <div class="item__v">${fmtEUR2(net)}/ano</div>
+      </div>`;
+    }).join("");
+  }
+
+  // Chart — 3 cenários
+  const ctx = $("divProjChart") && $("divProjChart").getContext("2d");
+  if (!ctx) return;
+  if (divProjChart) divProjChart.destroy();
+
+  divProjChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: base.labels,
+      datasets: allData.map((sc, i) => ({
+        label: `${sc.name} (${fmtPct(sc.yield)})`,
+        data: sc.netArr,
+        borderColor: sc.color,
+        backgroundColor: i === 1 ? "rgba(16,185,129,.07)" : "transparent",
+        fill: i === 1,
+        tension: .4,
+        pointRadius: 0,
+        borderWidth: i === 1 ? 2.5 : 1.5,
+        borderDash: i === 1 ? [] : [5, 4]
+      }))
+    },
+    options: {
+      plugins: {
+        legend: { labels: { boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            label: c => `${c.dataset.label}: ${fmtEUR2(c.raw)}/ano (${fmtEUR2(c.raw/12)}/mês)`
+          }
+        }
+      },
+      scales: { y: { ticks: { callback: v => fmtEUR(v) } } }
+    }
+  });
+}
+
+function setDivMode(mode) {
+  divMode = mode;
+  const summary = document.getElementById("paneDivSummary");
+  const detail = document.getElementById("paneDivDetail");
+  const segS = $("segDivSummary");
+  const segD = $("segDivDetail");
+  if (summary) summary.style.display = mode === "summary" ? "" : "none";
+  if (detail) detail.style.display = mode === "detail" ? "" : "none";
+  segS.classList.toggle("seg__btn--active", mode === "summary");
+  segD.classList.toggle("seg__btn--active", mode === "detail");
+  if (mode === "summary") {
+    initDivSummaryYearSelect();
+    renderDivSummaryKPIs();
+    renderDivSummaryList();
+    renderDivSummaryChart();
+  }
+}
+
+/* ─── DIVIDENDOS — MODO INDIVIDUAL (existente) ──────────── */
 let divExpanded = false;
 let editingDivId = null;
 
@@ -1124,6 +1732,14 @@ function deleteDivEntry() {
 }
 
 function renderDividends() {
+  if (divMode === "summary") {
+    initDivSummaryYearSelect();
+    renderDivSummaryKPIs();
+    renderDivSummaryList();
+    renderDivSummaryChart();
+    return;
+  }
+  // Detail mode
   const wrap = $("divList");
   if (!wrap) return;
   wrap.innerHTML = "";
@@ -1454,31 +2070,73 @@ function calcAndRenderCompound() {
     }).join("");
   }
 
-  // Chart — 3 linhas: capital+juros, sem reinvestimento, apenas capital
+  // Chart — 3 linhas correctas:
+  // Juro composto: reinveste os juros (exponencial) — deve ser SEMPRE a maior
+  // Juro simples: juros calculados sempre sobre o capital inicial (linear)
+  // Só capital: capital + contribuições sem qualquer juro
   const ctx = $("compoundChart") && $("compoundChart").getContext("2d");
   if (!ctx) return;
   if (compoundChart) compoundChart.destroy();
 
-  // Linha sem reinvestimento (juro simples)
-  const simpleLine = data.map((d, i) => principal + (principal * rate / 100) * i + contrib * 12 * i);
+  // Juro simples: capital_inicial * (1 + r*t) + contribuições (sem reinvestimento dos juros)
+  const simpleAnnualInterest = principal * (rate / 100); // juro anual sobre capital original
+  const simpleLine = data.map((_, i) => {
+    // juros simples: sempre sobre o principal original, não reinvestidos
+    return principal + simpleAnnualInterest * i + contrib * 12 * i;
+  });
+
+  // Só capital: sem qualquer rendimento, apenas contribuições
   const contribLine = data.map((_, i) => principal + contrib * 12 * i);
 
+  // Verificação: composto deve ser >= simples >= capital
+  // Se não for (taxa muito baixa / poucos anos), pode não ser visível — ok
   compoundChart = new Chart(ctx, {
     type: "line",
     data: {
       labels: data.map(d => `+${d.year}a`),
       datasets: [
-        { label: "Juro composto", data: data.map(d => d.value), tension: .4, borderColor: "#5b5ce6", backgroundColor: "rgba(91,92,230,.08)", fill: true, pointRadius: 0, borderWidth: 2.5 },
-        { label: "Juro simples", data: simpleLine, tension: .2, borderDash: [4, 4], borderColor: "#f59e0b", borderWidth: 1.5, pointRadius: 0 },
-        { label: "Só capital", data: contribLine, tension: 0, borderDash: [2, 6], borderColor: "#94a3b8", borderWidth: 1.5, pointRadius: 0 }
+        {
+          label: "Juro composto ↑",
+          data: data.map(d => d.value),
+          tension: .4, borderColor: "#5b5ce6",
+          backgroundColor: "rgba(91,92,230,.07)", fill: true,
+          pointRadius: 0, borderWidth: 2.5, order: 1
+        },
+        {
+          label: "Juro simples",
+          data: simpleLine,
+          tension: 0, borderDash: [6, 4], borderColor: "#f59e0b",
+          borderWidth: 1.8, pointRadius: 0, fill: false, order: 2
+        },
+        {
+          label: "Só capital",
+          data: contribLine,
+          tension: 0, borderDash: [2, 6], borderColor: "#94a3b8",
+          borderWidth: 1.5, pointRadius: 0, fill: false, order: 3
+        }
       ]
     },
     options: {
       plugins: {
-        legend: { display: true, labels: { boxWidth: 12 } },
-        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } }
+        legend: { display: true, labels: { boxWidth: 12, font: { weight: "bold" } } },
+        tooltip: {
+          callbacks: {
+            label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}`,
+            afterBody: (items) => {
+              const yr = items[0]?.dataIndex || 0;
+              if (yr === 0) return [];
+              const comp = data[yr]?.value || 0;
+              const simp = simpleLine[yr] || 0;
+              const diff = comp - simp;
+              return diff > 0 ? [`Vantagem do composto: +${fmtEUR(diff)}`] : [];
+            }
+          }
+        }
       },
-      scales: { y: { ticks: { callback: v => fmtEUR(v) } } }
+      scales: {
+        y: { ticks: { callback: v => fmtEUR(v) } },
+        x: { ticks: { maxTicksLimit: 10 } }
+      }
     }
   });
 }
@@ -2031,11 +2689,12 @@ async function importJSON(file) {
   const text = await file.text();
   const p = JSON.parse(text);
   state = {
-    settings: p.settings || { currency: "EUR" },
+    settings: { currency: "EUR", goalMonthly: 0, ...(p.settings || {}) },
     assets: Array.isArray(p.assets) ? p.assets : [],
     liabilities: Array.isArray(p.liabilities) ? p.liabilities : [],
     transactions: Array.isArray(p.transactions) ? p.transactions : [],
     dividends: Array.isArray(p.dividends) ? p.dividends : [],
+    divSummaries: Array.isArray(p.divSummaries) ? p.divSummaries : [],
     history: Array.isArray(p.history) ? p.history : []
   };
   saveState();
@@ -2227,7 +2886,40 @@ function wire() {
   const btnDeleteTx = document.getElementById("btnDeleteTx");
   if (btnDeleteTx) btnDeleteTx.addEventListener("click", deleteTxEntry);
 
-  // Dividendos
+  // Dividendos — radio buttons de modo
+  document.querySelectorAll('input[name="divInputMode"]').forEach(r => {
+    r.addEventListener("change", () => { showDivFields(r.value); updateDivSummaryLive(); });
+  });
+  // Live calc em todos os campos de input de dividendos
+  [
+    "divSummaryGross","divSummaryTax",
+    "divSummaryNet","divSummaryRetRate",
+    "divSummaryPortfolio","divSummaryYield_py","divSummaryRetRate_py",
+    "divSummaryYield_yo","divSummaryRetRate_yo",
+    "divSummaryYield_gt","divSummaryYield_net"
+  ].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", updateDivSummaryLive);
+  });
+
+  // Dividendos — modo selector
+  const segDivS = document.getElementById("segDivSummary");
+  const segDivD = document.getElementById("segDivDetail");
+  if (segDivS) segDivS.addEventListener("click", () => setDivMode("summary"));
+  if (segDivD) segDivD.addEventListener("click", () => setDivMode("detail"));
+  const btnSaveDivSummary = document.getElementById("btnSaveDivSummary");
+  if (btnSaveDivSummary) btnSaveDivSummary.addEventListener("click", saveDivSummary);
+  const btnDeleteDivSummary = document.getElementById("btnDeleteDivSummary");
+  if (btnDeleteDivSummary) btnDeleteDivSummary.addEventListener("click", deleteDivSummary);
+  const btnDivProject = document.getElementById("btnDivProject");
+  if (btnDivProject) btnDivProject.addEventListener("click", renderDivProjection);
+  // Live calc
+  ["divSummaryGross","divSummaryTax"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", updateDivSummaryLive);
+  });
+
+  // Dividendos individuais
   const btnAddDiv = document.getElementById("btnAddDiv");
   if (btnAddDiv) btnAddDiv.addEventListener("click", () => openDivModal(null));
   const btnAddDiv2 = document.getElementById("btnAddDiv2");
