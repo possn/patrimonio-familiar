@@ -1,12 +1,6 @@
-/* Património Familiar — Service Worker v6 */
-const CACHE_NAME = "pf-cache-20260412";
-const ASSETS = [
-  "./",
-  "./index.html",
-  "./styles.css",
-  "./app.js",
-  "./manifest.webmanifest"
-];
+/* Património Familiar — Service Worker v7 — network-first para garantir updates */
+const CACHE_NAME = "pf-cache-20260413";
+const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest"];
 
 self.addEventListener("install", event => {
   self.skipWaiting();
@@ -17,47 +11,24 @@ self.addEventListener("install", event => {
 
 self.addEventListener("activate", event => {
   event.waitUntil((async () => {
-    try {
-      const keys = await caches.keys();
-      await Promise.all(keys.map(k => k !== CACHE_NAME ? caches.delete(k) : Promise.resolve()));
-    } catch (_) {}
+    const keys = await caches.keys();
+    await Promise.all(keys.map(k => k !== CACHE_NAME ? caches.delete(k) : Promise.resolve()));
     await self.clients.claim();
   })());
 });
 
+// Network-first para todos os pedidos — garante sempre versão mais recente
 self.addEventListener("fetch", event => {
-  const req = event.request;
-  if (req.method !== "GET") return;
-  const url = new URL(req.url);
-  const isSameOrigin = url.origin === self.location.origin;
-
-  if (req.mode === "navigate") {
-    event.respondWith((async () => {
-      try {
-        const fresh = await fetch(req);
-        const cache = await caches.open(CACHE_NAME);
-        cache.put("./index.html", fresh.clone()).catch(() => {});
-        return fresh;
-      } catch {
-        const cached = await caches.match("./index.html");
-        return cached || new Response("Offline", { status: 503, headers: { "Content-Type": "text/plain" } });
-      }
-    })());
-    return;
-  }
-
+  if (event.request.method !== "GET") return;
   event.respondWith((async () => {
-    const cached = await caches.match(req);
-    if (cached) return cached;
     try {
-      const fresh = await fetch(req);
-      if (isSameOrigin) {
-        const cache = await caches.open(CACHE_NAME);
-        cache.put(req, fresh.clone()).catch(() => {});
-      }
+      const fresh = await fetch(event.request);
+      const cache = await caches.open(CACHE_NAME);
+      cache.put(event.request, fresh.clone()).catch(() => {});
       return fresh;
     } catch {
-      return cached || new Response("", { status: 504 });
+      const cached = await caches.match(event.request);
+      return cached || new Response("Offline", { status: 503 });
     }
   })());
 });
