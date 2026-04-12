@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#eef1f6" />
+  <meta name="theme-color" content="#5b5ce6" />
   <title>Património Familiar</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="icon192.png">
-  <link rel="stylesheet" href="styles.css?v=20260413">
+  <link rel="stylesheet" href="styles.css?v=20260415">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script defer src="app.js?v=20260413"></script>
+  <script defer src="app.js?v=20260415"></script>
 </head>
 <body>
 
@@ -22,18 +22,53 @@
       <div class="brand__sub">Net worth · Rendimento · Projeção</div>
     </div>
   </div>
+  <button class="btn btn--ghost" id="btnSearchToggle" style="padding:10px 14px;border-radius:14px;font-size:18px" aria-label="Pesquisar">🔍</button>
   <button class="fab" id="btnFab" aria-label="Adicionar">+</button>
 </header>
 
+<!-- Barra de pesquisa global -->
+<div id="searchBar" style="display:none;padding:8px 14px 12px;background:#fff;border-bottom:1px solid var(--line)">
+  <input class="input" id="globalSearch" placeholder="Pesquisar ativos, movimentos, dividendos…" autocomplete="off">
+  <div id="searchResults" class="list" style="margin-top:10px;max-height:260px;overflow-y:auto"></div>
+</div>
+
 <main class="main">
 
-  <!-- ═══════════════ DASHBOARD ═══════════════ -->
+  <!-- DASHBOARD -->
   <section class="view" data-view="dashboard" id="viewDashboard">
 
     <div class="card hero">
       <div class="hero__label">Património líquido</div>
       <div class="hero__value" id="kpiNet">0 €</div>
       <div class="hero__sub" id="kpiAP">Ativos 0 € | Passivos 0 €</div>
+    </div>
+
+    <!-- Objetivo de rendimento passivo -->
+    <div class="card" id="goalCard">
+      <div class="card__head">
+        <div>
+          <div class="card__title">Objetivo de rendimento</div>
+          <div class="card__muted" id="goalSubtitle">Define um objetivo mensal</div>
+        </div>
+        <button class="link" id="btnEditGoal">Definir</button>
+      </div>
+      <div id="goalProgressWrap" style="display:none">
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="goalProgressFill"></div></div>
+        <div class="row" style="justify-content:space-between;margin-top:6px">
+          <span class="card__muted" id="goalCurrent"></span>
+          <span class="card__muted" id="goalTarget"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Alertas de vencimentos -->
+    <div id="alertsCard" style="display:none">
+      <div class="card" style="border-color:#f59e0b;background:#fffbeb">
+        <div class="card__head">
+          <div><div class="card__title" style="font-size:17px;color:#92400e">⚠️ Vencimentos próximos</div></div>
+        </div>
+        <div id="alertsList" class="list"></div>
+      </div>
     </div>
 
     <div class="card">
@@ -57,10 +92,7 @@
 
     <div class="card">
       <div class="card__head">
-        <div>
-          <div class="card__title">Top ativos</div>
-          <div class="card__muted">Por valor · clica para editar</div>
-        </div>
+        <div><div class="card__title">Top ativos</div><div class="card__muted">Por valor · clica para editar</div></div>
         <button class="link" id="btnSummaryAll">Ver tudo</button>
       </div>
       <div id="summaryList" class="list"></div>
@@ -71,10 +103,7 @@
 
     <div class="card">
       <div class="card__head">
-        <div>
-          <div class="card__title">Distribuição</div>
-          <div class="card__muted">Por classe (Ativos)</div>
-        </div>
+        <div><div class="card__title">Distribuição</div><div class="card__muted">Por classe (Ativos)</div></div>
         <button class="link" id="btnDistDetail">Detalhe</button>
       </div>
       <div class="chartWrap"><canvas id="distChart" height="240"></canvas></div>
@@ -82,10 +111,7 @@
 
     <div class="card">
       <div class="card__head">
-        <div>
-          <div class="card__title">Tendência</div>
-          <div class="card__muted">Histórico de snapshots</div>
-        </div>
+        <div><div class="card__title">Tendência</div><div class="card__muted">Histórico de snapshots</div></div>
         <button class="link" id="btnTrendClear">Limpar</button>
       </div>
       <div class="chartWrap"><canvas id="trendChart" height="240"></canvas></div>
@@ -94,19 +120,15 @@
 
   </section>
 
-  <!-- ═══════════════ ASSETS ═══════════════ -->
+  <!-- ASSETS -->
   <section class="view" data-view="assets" id="viewAssets" hidden>
     <div class="seg">
       <button class="seg__btn seg__btn--active" id="segAssets">Ativos</button>
       <button class="seg__btn" id="segLiabs">Passivos</button>
     </div>
-
     <div class="card">
       <div class="card__head">
-        <div>
-          <div class="card__title" id="itemsTitle">Ativos</div>
-          <div class="card__muted" id="itemsSub">Imobiliário, liquidez, ações/ETFs, metais, cripto, fundos, PPR, depósitos…</div>
-        </div>
+        <div><div class="card__title" id="itemsTitle">Ativos</div><div class="card__muted" id="itemsSub">Imobiliário, liquidez, ações/ETFs, metais, cripto, fundos, PPR, depósitos…</div></div>
         <button class="btn btn--primary" id="btnAddItem">Adicionar</button>
       </div>
       <div class="filters">
@@ -119,19 +141,14 @@
         </select>
       </div>
     </div>
-
     <div id="itemsList" class="list"></div>
   </section>
 
-  <!-- ═══════════════ IMPORT ═══════════════ -->
+  <!-- IMPORT -->
   <section class="view" data-view="import" id="viewImport" hidden>
-
     <div class="card">
       <div class="card__head">
-        <div>
-          <div class="card__title">Importar CSV</div>
-          <div class="card__muted">Ativos, passivos e movimentos. Lê localmente.</div>
-        </div>
+        <div><div class="card__title">Importar CSV</div><div class="card__muted">Ativos, passivos e movimentos. Lê localmente.</div></div>
       </div>
       <div class="row row--wrap" style="gap:10px">
         <input id="fileInput" type="file" class="input" accept=".csv,text/csv">
@@ -144,13 +161,9 @@
       </div>
       <div class="hint" id="importHint">Nenhum ficheiro importado nesta sessão.</div>
     </div>
-
     <div class="card">
       <div class="card__head">
-        <div>
-          <div class="card__title">Importar movimentos do banco</div>
-          <div class="card__muted">CSV exportado do banco (CGD, Millennium, BPI…). Duplicados ignorados.</div>
-        </div>
+        <div><div class="card__title">Importar movimentos do banco</div><div class="card__muted">CSV do banco (CGD, Millennium, BPI…). Duplicados ignorados.</div></div>
       </div>
       <div class="row" style="gap:10px; flex-wrap:wrap">
         <input class="input" id="bankCsvFile" type="file" accept=".csv,text/csv,application/csv">
@@ -159,13 +172,9 @@
       <div id="bankCsvName" class="card__muted" style="margin-top:6px;font-size:12px"></div>
       <div id="bankImportDebug" class="card__muted" style="margin-top:10px;display:none"></div>
     </div>
-
     <div class="card">
       <div class="card__head">
-        <div>
-          <div class="card__title">Backup JSON</div>
-          <div class="card__muted">Exporta/importa todos os dados (iCloud, Drive…).</div>
-        </div>
+        <div><div class="card__title">Backup JSON</div><div class="card__muted">Exporta/importa todos os dados (iCloud, Drive…).</div></div>
       </div>
       <div class="row row--wrap" style="gap:10px">
         <button class="btn btn--primary" id="btnExportJSON">Exportar JSON</button>
@@ -173,25 +182,17 @@
         <button class="btn" id="btnImportJSON" disabled>Importar JSON</button>
       </div>
     </div>
-
     <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Reset</div><div class="card__muted">Apaga dados deste dispositivo.</div></div>
-      </div>
+      <div class="card__head"><div><div class="card__title">Reset</div><div class="card__muted">Apaga dados deste dispositivo.</div></div></div>
       <button class="btn btn--danger" id="btnReset">Reset total</button>
     </div>
-
   </section>
 
-  <!-- ═══════════════ CASHFLOW ═══════════════ -->
+  <!-- CASHFLOW -->
   <section class="view" data-view="cashflow" id="viewCashflow" hidden>
-
     <div class="card">
       <div class="card__head">
-        <div>
-          <div class="card__title">Balanço</div>
-          <div class="card__muted">Entradas, saídas e saldo.</div>
-        </div>
+        <div><div class="card__title">Balanço</div><div class="card__muted">Entradas, saídas e saldo.</div></div>
         <button class="btn btn--primary" id="btnAddTx">+ Movimento</button>
       </div>
       <div class="filters" style="grid-template-columns:1fr 1fr 1fr">
@@ -209,45 +210,52 @@
         <div class="kpi kpi--out"><div class="kpi__k">Saídas</div><div class="kpi__v" id="cfOut">0 €</div></div>
         <div class="kpi kpi--net"><div class="kpi__k">Saldo</div><div class="kpi__v" id="cfNet">0 €</div><div class="kpi__s" id="cfRate">0%</div></div>
       </div>
+      <!-- Taxa de poupança -->
+      <div id="savingsRateWrap" style="margin-top:12px;display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:5px">
+          <span class="card__muted">Taxa de poupança</span>
+          <span style="font-weight:900;color:#059669" id="savingsRatePct">0%</span>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill progress-bar-fill--green" id="savingsRateFill"></div></div>
+      </div>
+    </div>
+
+    <!-- Categorias de despesa -->
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">Categorias de despesa</div><div class="card__muted" id="catSubtitle">Saídas por categoria</div></div>
+      </div>
+      <div class="chartWrap"><canvas id="catChart" height="180"></canvas></div>
+      <div id="catList" class="list" style="margin-top:10px"></div>
     </div>
 
     <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Fluxo</div><div class="card__muted">Entradas vs. Saídas</div></div>
-      </div>
+      <div class="card__head"><div><div class="card__title">Fluxo</div><div class="card__muted">Entradas vs. Saídas</div></div></div>
       <div class="chartWrap"><canvas id="cfChart" height="200"></canvas></div>
     </div>
 
     <div class="card">
       <div class="card__head">
-        <div><div class="card__title">Movimentos</div></div>
+        <div><div class="card__title">Movimentos</div><div class="card__muted">Clica para editar ou apagar</div></div>
         <button class="link" id="btnTxToggle" style="display:none">Ver todos</button>
       </div>
       <div id="txList" class="list"></div>
     </div>
-
   </section>
 
-  <!-- ═══════════════ DIVIDENDOS ═══════════════ -->
+  <!-- DIVIDENDOS -->
   <section class="view" data-view="dividends" id="viewDividends" hidden>
-
     <div class="card">
       <div class="card__head">
-        <div>
-          <div class="card__title">Dividendos</div>
-          <div class="card__muted">Rendimento passivo real recebido</div>
-        </div>
+        <div><div class="card__title">Dividendos</div><div class="card__muted">Rendimento passivo real recebido</div></div>
         <button class="btn btn--primary" id="btnAddDiv2">+ Dividendo</button>
       </div>
     </div>
-
     <div id="divKPIs"></div>
-
     <div class="card">
       <div class="card__title" style="margin-bottom:10px">Por mês (últimos 24)</div>
       <div class="chartWrap"><canvas id="divChart" height="220"></canvas></div>
     </div>
-
     <div class="card">
       <div class="card__head">
         <div><div class="card__title">Histórico</div><div class="card__muted">Clica para editar</div></div>
@@ -255,16 +263,12 @@
       </div>
       <div id="divList" class="list"></div>
     </div>
-
   </section>
 
-  <!-- ═══════════════ ANÁLISE ═══════════════ -->
+  <!-- ANÁLISE -->
   <section class="view" data-view="analysis" id="viewAnalysis" hidden>
-
     <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Análise</div><div class="card__muted">Juro composto · Previsão · Comparação · FIRE</div></div>
-      </div>
+      <div class="card__head"><div><div class="card__title">Análise</div><div class="card__muted">Juro composto · Previsão · Comparação · FIRE</div></div></div>
       <select class="input" id="analysisTab">
         <option value="compound">Juro Composto</option>
         <option value="forecast">Previsão de Rentabilidade</option>
@@ -272,162 +276,91 @@
         <option value="fire">Projeção FIRE</option>
       </select>
     </div>
-
-    <!-- ── Juro Composto ── -->
     <div class="analysisPanelTab" id="analysisPanelTab_compound">
       <div class="card">
         <div class="card__title" style="margin-bottom:12px">Simulador de Juro Composto</div>
-        <label class="lbl">Ativo base (ou personalizado)</label>
-        <select class="input" id="compAsset">
-          <option value="__custom__">Personalizado…</option>
-        </select>
+        <label class="lbl">Ativo base</label>
+        <select class="input" id="compAsset"><option value="__custom__">Personalizado…</option></select>
         <div class="filters" style="margin-top:10px">
-          <div>
-            <label class="lbl">Capital inicial (€)</label>
-            <input class="input" id="compPrincipal" inputmode="decimal" placeholder="ex: 50000">
-          </div>
-          <div>
-            <label class="lbl">Taxa nominal (%/ano)</label>
-            <input class="input" id="compRate" inputmode="decimal" placeholder="ex: 4.5">
-          </div>
-          <div>
-            <label class="lbl">Anos</label>
-            <input class="input" id="compYears" type="number" min="1" max="50" value="20">
-          </div>
+          <div><label class="lbl">Capital inicial (€)</label><input class="input" id="compPrincipal" inputmode="decimal" placeholder="ex: 50000"></div>
+          <div><label class="lbl">Taxa (%/ano)</label><input class="input" id="compRate" inputmode="decimal" placeholder="ex: 4.5"></div>
+          <div><label class="lbl">Anos</label><input class="input" id="compYears" type="number" min="1" max="50" value="20"></div>
         </div>
         <div class="filters" style="margin-top:10px">
-          <div>
-            <label class="lbl">Capitalização</label>
+          <div><label class="lbl">Capitalização</label>
             <select class="input" id="compFreq">
-              <option value="1">Anual</option>
-              <option value="2">Semestral</option>
-              <option value="4">Trimestral</option>
-              <option value="12" selected>Mensal</option>
-              <option value="365">Diária</option>
+              <option value="1">Anual</option><option value="2">Semestral</option>
+              <option value="4">Trimestral</option><option value="12" selected>Mensal</option><option value="365">Diária</option>
             </select>
           </div>
-          <div>
-            <label class="lbl">Contribuição mensal (€)</label>
-            <input class="input" id="compContrib" inputmode="decimal" placeholder="ex: 200" value="0">
-          </div>
-          <div style="display:flex;align-items:flex-end">
-            <button class="btn btn--primary" id="btnCalcCompound" style="width:100%">Calcular</button>
-          </div>
+          <div><label class="lbl">Contrib. mensal (€)</label><input class="input" id="compContrib" inputmode="decimal" value="0"></div>
+          <div style="display:flex;align-items:flex-end"><button class="btn btn--primary" id="btnCalcCompound" style="width:100%">Calcular</button></div>
         </div>
       </div>
-
       <div id="compoundTable" class="card" style="padding:16px"></div>
-
-      <div class="card">
-        <div class="card__title" style="margin-bottom:10px">Evolução do capital</div>
-        <div class="chartWrap"><canvas id="compoundChart" height="240"></canvas></div>
-      </div>
-
-      <div class="card">
-        <div class="card__title" style="margin-bottom:10px">Marcos temporais</div>
-        <div id="compoundMilestones" class="list"></div>
-      </div>
+      <div class="card"><div class="card__title" style="margin-bottom:10px">Evolução do capital</div><div class="chartWrap"><canvas id="compoundChart" height="240"></canvas></div></div>
+      <div class="card"><div class="card__title" style="margin-bottom:10px">Marcos temporais</div><div id="compoundMilestones" class="list"></div></div>
     </div>
-
-    <!-- ── Previsão de Rentabilidade ── -->
     <div class="analysisPanelTab" id="analysisPanelTab_forecast" style="display:none">
       <div class="card">
-        <div class="card__title" style="margin-bottom:12px">Previsão de Rentabilidade por Ativo</div>
+        <div class="card__title" style="margin-bottom:12px">Previsão de Rentabilidade</div>
         <div class="row" style="gap:12px;align-items:center">
           <label class="lbl" style="margin:0;white-space:nowrap">Horizonte:</label>
           <select class="input" id="forecastYears" style="max-width:160px">
-            <option value="5">5 anos</option>
-            <option value="10" selected>10 anos</option>
-            <option value="15">15 anos</option>
-            <option value="20">20 anos</option>
-            <option value="30">30 anos</option>
+            <option value="5">5 anos</option><option value="10" selected>10 anos</option>
+            <option value="15">15 anos</option><option value="20">20 anos</option><option value="30">30 anos</option>
           </select>
         </div>
-        <div class="note" style="margin-top:10px">Projeção com juro composto individual por ativo. Apenas ativos com yield/taxa configurada.</div>
       </div>
-
-      <div class="card">
-        <div class="card__title" style="margin-bottom:10px">Por ativo</div>
-        <div id="forecastTable" class="list"></div>
-      </div>
-
-      <div class="card">
-        <div class="card__title" style="margin-bottom:10px">Portfólio total projetado</div>
-        <div class="chartWrap"><canvas id="forecastChart" height="240"></canvas></div>
-      </div>
+      <div class="card"><div class="card__title" style="margin-bottom:10px">Por ativo</div><div id="forecastTable" class="list"></div></div>
+      <div class="card"><div class="card__title" style="margin-bottom:10px">Portfólio projetado</div><div class="chartWrap"><canvas id="forecastChart" height="240"></canvas></div></div>
     </div>
-
-    <!-- ── Comparação de Períodos ── -->
     <div class="analysisPanelTab" id="analysisPanelTab_compare" style="display:none">
       <div class="card">
         <div class="card__title" style="margin-bottom:12px">Comparação YoY / MoM</div>
-        <select class="input" id="compareMode">
-          <option value="mom">Mensal (MoM)</option>
-          <option value="yoy">Anual (YoY)</option>
-        </select>
-        <div class="note" style="margin-top:10px">Baseado em snapshots registados. Usa "Registar mês" no Dashboard para acumular dados.</div>
+        <select class="input" id="compareMode"><option value="mom">Mensal (MoM)</option><option value="yoy">Anual (YoY)</option></select>
+        <div class="note" style="margin-top:10px">Baseado em snapshots. Usa "Registar mês" no Dashboard.</div>
       </div>
-
-      <div class="card">
-        <div class="card__title" style="margin-bottom:10px">Variação</div>
-        <div class="chartWrap"><canvas id="compareChart" height="220"></canvas></div>
-      </div>
-
-      <div class="card">
-        <div class="card__title" style="margin-bottom:10px">Detalhe</div>
-        <div id="compareTable" class="list"></div>
-      </div>
+      <div class="card"><div class="chartWrap"><canvas id="compareChart" height="220"></canvas></div></div>
+      <div class="card"><div id="compareTable" class="list"></div></div>
     </div>
-
-    <!-- ── FIRE ── -->
     <div class="analysisPanelTab" id="analysisPanelTab_fire" style="display:none">
       <div class="card">
-        <div class="card__title" style="margin-bottom:12px">Projeção FIRE</div>
-        <div class="card__muted">3 cenários · critério: Capital investível ≥ Despesas / SWR e Rendimento passivo ≥ Despesas</div>
+        <div class="card__title" style="margin-bottom:10px">Projeção FIRE</div>
+        <div class="card__muted">3 cenários · Capital ≥ Despesas/SWR e Rendimento passivo ≥ Despesas</div>
         <div class="row row--wrap" style="margin-top:12px;gap:10px">
-          <div>
-            <label class="lbl" style="margin:0 0 4px">Janela cashflow</label>
+          <div><label class="lbl" style="margin:0 0 4px">Janela cashflow</label>
             <select class="input" id="fireWindow" style="max-width:160px">
-              <option value="3">3 meses</option>
-              <option value="6" selected>6 meses</option>
-              <option value="12">12 meses</option>
+              <option value="3">3 meses</option><option value="6" selected>6 meses</option><option value="12">12 meses</option>
             </select>
           </div>
-          <div>
-            <label class="lbl" style="margin:0 0 4px">Horizonte</label>
+          <div><label class="lbl" style="margin:0 0 4px">Horizonte</label>
             <select class="input" id="fireHorizon" style="max-width:160px">
-              <option value="20">20 anos</option>
-              <option value="30" selected>30 anos</option>
-              <option value="40">40 anos</option>
+              <option value="20">20 anos</option><option value="30" selected>30 anos</option><option value="40">40 anos</option>
             </select>
           </div>
-          <div style="display:flex;align-items:flex-end">
-            <button class="btn btn--primary" id="btnRecalcFire">Recalcular</button>
-          </div>
+          <div style="display:flex;align-items:flex-end"><button class="btn btn--primary" id="btnRecalcFire">Recalcular</button></div>
         </div>
         <div class="kpiRow" style="margin-top:12px">
           <div class="kpi"><div class="kpi__k">Capital investível</div><div class="kpi__v" id="fireCap">—</div></div>
           <div class="kpi kpi--out"><div class="kpi__k">Despesas anuais</div><div class="kpi__v" id="fireExp">—</div></div>
-          <div class="kpi kpi--in"><div class="kpi__k">Rendimento passivo/ano</div><div class="kpi__v" id="firePass">—</div></div>
+          <div class="kpi kpi--in"><div class="kpi__k">Rendimento passivo</div><div class="kpi__v" id="firePass">—</div></div>
         </div>
       </div>
-
       <div class="card">
         <div class="card__title" style="margin-bottom:10px">Resultados</div>
         <div id="fireResults" class="list"></div>
         <div class="chartWrap" style="margin-top:12px"><canvas id="fireChart" height="240"></canvas></div>
       </div>
     </div>
-
   </section>
 
-  <!-- ═══════════════ SETTINGS ═══════════════ -->
+  <!-- SETTINGS -->
   <section class="view" data-view="settings" id="viewSettings" hidden>
     <div class="seg">
       <button class="seg__btn seg__btn--active" id="segSettings">Definições</button>
-      <button class="seg__btn" id="segFire">FIRE (legado)</button>
+      <button class="seg__btn" id="segFire">FIRE</button>
     </div>
-
     <div id="paneSettings">
       <div class="card">
         <div class="card__title" style="margin-bottom:12px">Preferências</div>
@@ -437,47 +370,48 @@
           <option value="USD">USD — Dólar</option>
           <option value="GBP">GBP — Libra</option>
         </select>
+        <label class="lbl" style="margin-top:14px">Objetivo de rendimento passivo mensal (€)</label>
+        <input class="input" id="settingsGoal" inputmode="decimal" placeholder="ex: 2000">
+        <button class="btn btn--primary" style="margin-top:10px;width:100%" id="btnSaveGoal">Guardar objetivo</button>
       </div>
-
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Metodologia de Rendimento</div>
         <div class="note">
-          <b>Yield %/ano</b> — Percentagem sobre o valor atual (ex: ETF, ação, PPR, depósito).<br><br>
-          <b>€/ano</b> — Montante fixo anual (ex: obrigação com cupão fixo).<br><br>
-          <b>Renda mensal</b> — Rendimento imobiliário; a app anualiza automaticamente (×12).<br><br>
-          <b>Capitalização composta</b> — Define a frequência no campo "Capitalização" ao editar o ativo. Usa a aba "Análise → Juro Composto" para simular o crescimento.
+          <b>Yield %/ano</b> — Ex: ETF, ação, PPR, depósito.<br><br>
+          <b>€/ano</b> — Montante fixo (ex: obrigação com cupão fixo).<br><br>
+          <b>Renda mensal</b> — Imobiliário; a app anualiza (×12).<br><br>
+          <b>Capitalização</b> — Define a frequência ao editar o ativo.
         </div>
       </div>
-
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Importar / Exportar</div>
-        <div class="row row--wrap" style="gap:10px">
-          <button class="btn btn--primary" id="btnGoImport">⇅ Ir para Importar</button>
-        </div>
+        <button class="btn btn--primary" id="btnGoImport">⇅ Ir para Importar</button>
       </div>
-
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Sobre</div>
-        <div class="card__muted">Património Familiar v7 · PWA · Dados guardados apenas neste dispositivo (IndexedDB + localStorage fallback).<br><br>Compatível com Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.</div>
+        <div class="card__muted">Património Familiar v8 · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.</div>
       </div>
     </div>
-
     <div id="paneFire" style="display:none">
-      <div class="note">A projeção FIRE foi movida para a aba <b>Análise → FIRE</b>. Esta secção mantém-se por compatibilidade.</div>
-      <div class="card">
-        <div class="kpiRow">
-          <div class="kpi"><div class="kpi__k">Capital investível</div><div class="kpi__v" id="fireCap2">—</div></div>
-          <div class="kpi kpi--out"><div class="kpi__k">Despesas anuais</div><div class="kpi__v" id="fireExp2">—</div></div>
-          <div class="kpi kpi--in"><div class="kpi__k">Rendimento passivo</div><div class="kpi__v" id="firePass2">—</div></div>
-        </div>
-      </div>
+      <div class="note">A projeção FIRE está em <b>Análise → FIRE</b>.</div>
     </div>
-
   </section>
 
 </main>
 
-<!-- ══════════ BOTTOM NAV ══════════ -->
+<!-- PASSIVE BAR -->
+<div class="passivebar" id="passivebar">
+  <div class="passivebar__item">
+    <div class="passivebar__label">Rendimento passivo anual</div>
+    <div class="passivebar__value passivebar__value--green" id="barPassiveAnnual">0 €</div>
+  </div>
+  <div class="passivebar__item" style="text-align:right">
+    <div class="passivebar__label">Mensal estimado</div>
+    <div class="passivebar__value" id="barPassiveMonthly">0 €</div>
+  </div>
+</div>
+
+<!-- BOTTOM NAV -->
 <nav class="bottomnav" aria-label="Navegação">
   <button class="navbtn navbtn--active" data-view="dashboard" id="navDashboard"><span class="navico">▣</span><span class="navlbl">Início</span></button>
   <button class="navbtn" data-view="assets" id="navAssets"><span class="navico">≡</span><span class="navlbl">Ativos</span></button>
@@ -487,55 +421,33 @@
   <button class="navbtn" data-view="analysis" id="navAnalysis"><span class="navico">📈</span><span class="navlbl">Análise</span></button>
 </nav>
 
-<!-- ══════════ MODAL: Adicionar/Editar Item ══════════ -->
+<!-- MODAL: Item -->
 <div class="modal" id="modalItem" aria-hidden="true">
   <div class="modal__bg" data-close="modalItem"></div>
   <div class="modal__panel">
-    <div class="modal__head">
-      <div class="modal__title" id="modalItemTitle">Adicionar</div>
-      <button class="modal__close" data-close="modalItem">Fechar</button>
-    </div>
+    <div class="modal__head"><div class="modal__title" id="modalItemTitle">Adicionar</div><button class="modal__close" data-close="modalItem">Fechar</button></div>
     <div class="form">
-      <input type="hidden" id="mId">
-      <input type="hidden" id="mKind">
-
-      <label class="lbl">Classe</label>
-      <select class="input" id="mClass"></select>
-
-      <label class="lbl">Nome</label>
-      <input class="input" id="mName" placeholder="ex: VWCE, Apartamento, Ouro físico">
-
-      <label class="lbl">Valor atual (€)</label>
-      <input class="input" id="mValue" inputmode="decimal" placeholder="ex: 12500">
-
+      <input type="hidden" id="mId"><input type="hidden" id="mKind">
+      <label class="lbl">Classe</label><select class="input" id="mClass"></select>
+      <label class="lbl">Nome</label><input class="input" id="mName" placeholder="ex: VWCE, Apartamento, Ouro físico">
+      <label class="lbl">Valor atual (€)</label><input class="input" id="mValue" inputmode="decimal" placeholder="ex: 12500">
       <div id="yieldRow">
         <label class="lbl">Rendimento passivo</label>
         <select class="input" id="mYieldType">
-          <option value="none">Sem rendimento</option>
-          <option value="yield_pct">Yield %/ano</option>
-          <option value="yield_eur_year">€ / ano</option>
-          <option value="rent_month">Renda mensal (€)</option>
+          <option value="none">Sem rendimento</option><option value="yield_pct">Yield %/ano</option>
+          <option value="yield_eur_year">€ / ano</option><option value="rent_month">Renda mensal (€)</option>
         </select>
-
         <label class="lbl">Valor do rendimento</label>
-        <input class="input" id="mYieldValue" inputmode="decimal" placeholder="ex: 3.2 (yield%) ou 700 (renda)">
-
+        <input class="input" id="mYieldValue" inputmode="decimal" placeholder="ex: 3.2 (%) ou 700 (renda)">
         <label class="lbl">Capitalização</label>
         <select class="input" id="mCompound">
-          <option value="1">Anual</option>
-          <option value="2">Semestral</option>
-          <option value="4">Trimestral</option>
-          <option value="12" selected>Mensal</option>
-          <option value="365">Diária</option>
+          <option value="1">Anual</option><option value="2">Semestral</option>
+          <option value="4">Trimestral</option><option value="12" selected>Mensal</option><option value="365">Diária</option>
         </select>
-
-        <label class="lbl">Maturidade / Vencimento (opcional)</label>
+        <label class="lbl">Maturidade / Vencimento</label>
         <input class="input" id="mMaturity" type="date">
       </div>
-
-      <label class="lbl">Notas</label>
-      <textarea class="input" id="mNotes" rows="2" placeholder="opcional"></textarea>
-
+      <label class="lbl">Notas</label><textarea class="input" id="mNotes" rows="2" placeholder="opcional"></textarea>
       <div class="row row--wrap" style="margin-top:14px">
         <button class="btn btn--primary" id="btnSaveItem">Guardar</button>
         <button class="btn btn--danger" id="btnDeleteItem" style="display:none">Apagar</button>
@@ -545,56 +457,41 @@
   </div>
 </div>
 
-<!-- ══════════ MODAL: Movimento ══════════ -->
+<!-- MODAL: Movimento -->
 <div class="modal" id="modalTx" aria-hidden="true">
   <div class="modal__bg" data-close="modalTx"></div>
   <div class="modal__panel">
-    <div class="modal__head">
-      <div class="modal__title">Adicionar movimento</div>
-      <button class="modal__close" data-close="modalTx">Fechar</button>
-    </div>
+    <div class="modal__head"><div class="modal__title" id="modalTxTitle">Adicionar movimento</div><button class="modal__close" data-close="modalTx">Fechar</button></div>
     <div class="form">
       <label class="lbl">Tipo</label>
-      <select class="input" id="tType">
-        <option value="in">Entrada</option>
-        <option value="out">Saída</option>
-      </select>
-
+      <select class="input" id="tType"><option value="in">Entrada</option><option value="out">Saída</option></select>
       <label class="lbl">Categoria</label>
-      <input class="input" id="tCat" placeholder="ex: Salário, Renda, Supermercado">
-
-      <label class="lbl">Valor (€)</label>
-      <input class="input" id="tAmt" inputmode="decimal" placeholder="ex: 2000">
-
-      <label class="lbl">Data</label>
-      <input class="input" id="tDate" type="date">
-
+      <input class="input" id="tCat" placeholder="ex: Salário, Supermercado" list="catSuggestions">
+      <datalist id="catSuggestions">
+        <option value="Salário"><option value="Renda"><option value="Dividendos"><option value="Juros">
+        <option value="Supermercado"><option value="Restaurantes"><option value="Transportes">
+        <option value="Habitação"><option value="Saúde"><option value="Educação">
+        <option value="Lazer"><option value="Seguros"><option value="Comunicações"><option value="Poupança">
+      </datalist>
+      <label class="lbl">Valor (€)</label><input class="input" id="tAmt" inputmode="decimal" placeholder="ex: 2000">
+      <label class="lbl">Data</label><input class="input" id="tDate" type="date">
       <label class="lbl">Recorrente</label>
-      <select class="input" id="tRec">
-        <option value="none">Não</option>
-        <option value="monthly">Mensal</option>
-        <option value="yearly">Anual</option>
-      </select>
-
-      <label class="lbl">Notas</label>
-      <input class="input" id="tNotes" placeholder="opcional">
-
+      <select class="input" id="tRec"><option value="none">Não</option><option value="monthly">Mensal</option><option value="yearly">Anual</option></select>
+      <label class="lbl">Notas</label><input class="input" id="tNotes" placeholder="opcional">
       <div class="row row--wrap" style="margin-top:14px">
         <button class="btn btn--primary" id="btnSaveTx">Guardar</button>
+        <button class="btn btn--danger" id="btnDeleteTx" style="display:none">Apagar</button>
         <button class="btn" data-close="modalTx">Cancelar</button>
       </div>
     </div>
   </div>
 </div>
 
-<!-- ══════════ MODAL: Distribuição detalhe ══════════ -->
+<!-- MODAL: Distribuição -->
 <div class="modal" id="modalDist" aria-hidden="true">
   <div class="modal__bg" data-close="modalDist"></div>
   <div class="modal__panel">
-    <div class="modal__head">
-      <div class="modal__title">Distribuição por classe</div>
-      <button class="modal__close" data-close="modalDist">Fechar</button>
-    </div>
+    <div class="modal__head"><div class="modal__title">Distribuição por classe</div><button class="modal__close" data-close="modalDist">Fechar</button></div>
     <div id="distDetailList" class="list" style="margin-top:0"></div>
     <div class="row row--wrap" style="margin-top:12px">
       <button class="btn" id="btnDistToggle" style="display:none">Ver o resto</button>
@@ -603,36 +500,23 @@
   </div>
 </div>
 
-<!-- ══════════ MODAL: Dividendo ══════════ -->
+<!-- MODAL: Dividendo -->
 <div class="modal" id="modalDiv" aria-hidden="true">
   <div class="modal__bg" data-close="modalDiv"></div>
   <div class="modal__panel">
-    <div class="modal__head">
-      <div class="modal__title" id="modalDivTitle">Registar dividendo</div>
-      <button class="modal__close" data-close="modalDiv">Fechar</button>
-    </div>
+    <div class="modal__head"><div class="modal__title" id="modalDivTitle">Registar dividendo</div><button class="modal__close" data-close="modalDiv">Fechar</button></div>
     <div class="form">
       <label class="lbl">Ativo</label>
-      <select class="input" id="dAsset">
-        <option value="">-- Seleciona ativo (opcional) --</option>
-      </select>
-
+      <select class="input" id="dAsset"><option value="">-- Seleciona ativo (opcional) --</option></select>
       <label class="lbl">Montante bruto recebido (€)</label>
       <input class="input" id="dAmount" inputmode="decimal" placeholder="ex: 142.50">
-
-      <label class="lbl">Retenção na fonte (€, se houver)</label>
+      <label class="lbl">Retenção na fonte (€)</label>
       <input class="input" id="dTax" inputmode="decimal" placeholder="ex: 21.37 (deixa vazio se não houve)">
-
       <label class="lbl">Data de pagamento</label>
       <input class="input" id="dDate" type="date">
-
-      <label class="lbl">Notas (opcional)</label>
-      <input class="input" id="dNotes" placeholder="ex: Q1 2026, VWCE dividend">
-
-      <div class="note" style="margin-top:10px">
-        O montante <b>líquido</b> (bruto − retenção) entra no cálculo do rendimento passivo real.
-      </div>
-
+      <label class="lbl">Notas</label>
+      <input class="input" id="dNotes" placeholder="ex: Q1 2026, VWCE">
+      <div class="note" style="margin-top:10px">O montante <b>líquido</b> (bruto − retenção) entra no rendimento passivo real.</div>
       <div class="row row--wrap" style="margin-top:14px">
         <button class="btn btn--primary" id="btnSaveDiv">Guardar</button>
         <button class="btn btn--danger" id="btnDeleteDiv" style="display:none">Apagar</button>
@@ -642,7 +526,23 @@
   </div>
 </div>
 
-<!-- PWA update -->
+<!-- MODAL: Objetivo -->
+<div class="modal" id="modalGoal" aria-hidden="true">
+  <div class="modal__bg" data-close="modalGoal"></div>
+  <div class="modal__panel">
+    <div class="modal__head"><div class="modal__title">Objetivo de rendimento passivo</div><button class="modal__close" data-close="modalGoal">Fechar</button></div>
+    <div class="form">
+      <label class="lbl">Objetivo mensal (€)</label>
+      <input class="input" id="goalInput" inputmode="decimal" placeholder="ex: 2000">
+      <div class="note" style="margin-top:10px">O dashboard mostrará o progresso em tempo real.</div>
+      <div class="row row--wrap" style="margin-top:14px">
+        <button class="btn btn--primary" id="btnSaveGoalModal">Guardar</button>
+        <button class="btn" data-close="modalGoal">Cancelar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.getRegistration().then(reg => { if (reg) reg.update(); });
@@ -652,6 +552,5 @@
     });
   }
 </script>
-
 </body>
 </html>

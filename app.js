@@ -1,6 +1,10 @@
-/* Património Familiar — v6 FINAL
-   Fase 1: bug fixes (XLSX removido, state.txs→transactions, funções em falta, escapeHtml deduplicado, renderAll definido, FIRE usa t.amount)
-   Fase 2: juro composto por ativo, balanço diário/semanal/mensal/anual, comparação de períodos YoY/MoM, previsão de rentabilidade por ativo e carteira
+/* Património Familiar — v8 FINAL
+   + Objetivo de rendimento passivo com barra de progresso
+   + Alertas de vencimentos próximos (30 dias)
+   + Editar/apagar movimentos de cashflow
+   + Categorias de despesa com gráfico de pizza
+   + Taxa de poupança mensal com barra visual
+   + Pesquisa global (ativos, movimentos, dividendos)
 */
 "use strict";
 
@@ -8,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260413").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260415").catch(() => {});
     });
   }
 } catch (_) {}
@@ -192,12 +196,12 @@ async function storageClear() {
 
 /* ─── STATE ───────────────────────────────────────────────── */
 const DEFAULT_STATE = {
-  settings: { currency: "EUR" },
-  assets: [],       // {id, class, name, value, yieldType, yieldValue, maturityDate, compoundFreq, notes}
-  liabilities: [],  // {id, class, name, value, rate, notes}
-  transactions: [], // {id, type:'in'|'out', category, amount, date, recurring:'none'|'monthly'|'yearly', notes}
-  dividends: [],    // {id, assetId, assetName, amount, date, notes, taxWithheld}
-  history: []       // {dateISO, net, assets, liabilities, passiveAnnual}
+  settings: { currency: "EUR", goalMonthly: 0 },
+  assets: [],
+  liabilities: [],
+  transactions: [],
+  dividends: [],
+  history: []
 };
 
 let state = safeClone(DEFAULT_STATE);
@@ -231,7 +235,7 @@ async function loadStateAsync() {
     if (!raw) return safeClone(DEFAULT_STATE);
     const p = JSON.parse(raw);
     return {
-      settings: p.settings || { currency: "EUR" },
+      settings: { currency: "EUR", goalMonthly: 0, ...( p.settings || {}) },
       assets: Array.isArray(p.assets) ? p.assets : [],
       liabilities: Array.isArray(p.liabilities) ? p.liabilities : [],
       transactions: Array.isArray(p.transactions) ? p.transactions : [],
@@ -323,15 +327,295 @@ function renderAll() {
   renderItems();
   renderCashflow();
   renderDividends();
+  updatePassiveBar();
 }
 
 /* ─── DASHBOARD ───────────────────────────────────────────── */
+function updatePassiveBar() {
+  const t = calcTotals();
+  const barA = document.getElementById("barPassiveAnnual");
+  const barM = document.getElementById("barPassiveMonthly");
+  if (barA) barA.textContent = fmtEUR(t.passiveAnnual);
+  if (barM) barM.textContent = fmtEUR(t.passiveAnnual / 12);
+}
+
+/* ─── 1. OBJETIVO DE RENDIMENTO PASSIVO ───────────────────── */
+function renderGoal() {
+  const goal = parseNum(state.settings.goalMonthly || 0);
+  const t = calcTotals();
+  const monthly = t.passiveAnnual / 12;
+  const subtitle = $("goalSubtitle");
+  const wrap = $("goalProgressWrap");
+  const fill = $("goalProgressFill");
+  const cur = $("goalCurrent");
+  const tgt = $("goalTarget");
+
+  if (!goal) {
+    if (subtitle) subtitle.textContent = "Define um objetivo mensal de rendimento passivo";
+    if (wrap) wrap.style.display = "none";
+    return;
+  }
+  const pct = Math.min(100, (monthly / goal) * 100);
+  const done = monthly >= goal;
+  if (subtitle) subtitle.textContent = done ? "🎯 Objetivo atingido!" : `${fmtPct(pct)} do objetivo`;
+  if (wrap) wrap.style.display = "";
+  if (fill) {
+    fill.style.width = pct + "%";
+    fill.style.background = done ? "#10b981" : "#5b5ce6";
+  }
+  if (cur) cur.textContent = `${fmtEUR(monthly)}/mês atual`;
+  if (tgt) tgt.textContent = `Objetivo: ${fmtEUR(goal)}/mês`;
+
+  // update settings input
+  const si = $("settingsGoal");
+  if (si && !si.value) si.value = String(goal);
+}
+
+function saveGoal(val) {
+  const n = parseNum(val);
+  if (n < 0) { toast("Valor inválido."); return; }
+  state.settings.goalMonthly = n;
+  saveState();
+  renderGoal();
+  closeModal("modalGoal");
+  toast(n > 0 ? `Objetivo definido: ${fmtEUR(n)}/mês` : "Objetivo removido.");
+}
+
+/* ─── 2. ALERTAS DE VENCIMENTOS ──────────────────────────── */
+function renderAlerts() {
+  const card = document.getElementById("alertsCard");
+  const list = document.getElementById("alertsList");
+  if (!card || !list) return;
+
+  const today = new Date();
+  const soon = new Date(today); soon.setDate(today.getDate() + 30);
+  const todayISO = today.toISOString().slice(0, 10);
+  const soonISO = soon.toISOString().slice(0, 10);
+
+  const alerts = state.assets.filter(a => {
+    const m = a.maturityDate;
+    return m && m >= todayISO && m <= soonISO;
+  }).sort((a, b) => a.maturityDate.localeCompare(b.maturityDate));
+
+  if (!alerts.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  list.innerHTML = alerts.map(a => {
+    const days = Math.round((new Date(a.maturityDate) - today) / 86400000);
+    return `<div class="item">
+      <div class="item__l">
+        <div class="item__t">${escapeHtml(a.name)}</div>
+        <div class="item__s">${escapeHtml(a.class)} · Vence em ${days} dia${days !== 1 ? "s" : ""} (${a.maturityDate})</div>
+      </div>
+      <div class="item__v">${fmtEUR(parseNum(a.value))}</div>
+    </div>`;
+  }).join("");
+}
+
+/* ─── 3. EDITAR / APAGAR MOVIMENTOS ──────────────────────── */
+let editingTxId = null;
+
+function openTxModal(txId) {
+  editingTxId = txId || null;
+  const existing = txId ? state.transactions.find(t => t.id === txId) : null;
+  const titleEl = $("modalTxTitle");
+  const delBtn = $("btnDeleteTx");
+
+  if (existing) {
+    if (titleEl) titleEl.textContent = "Editar movimento";
+    if (delBtn) delBtn.style.display = "";
+    $("tType").value = existing.type || "in";
+    $("tCat").value = existing.category || "";
+    $("tAmt").value = String(parseNum(existing.amount));
+    $("tDate").value = existing.date || isoToday();
+    $("tRec").value = existing.recurring || "none";
+    $("tNotes").value = existing.notes || "";
+  } else {
+    if (titleEl) titleEl.textContent = "Adicionar movimento";
+    if (delBtn) delBtn.style.display = "none";
+    $("tType").value = "in";
+    $("tCat").value = "";
+    $("tAmt").value = "";
+    $("tDate").value = isoToday();
+    $("tRec").value = "none";
+    $("tNotes").value = "";
+  }
+  openModal("modalTx");
+}
+
+function saveTxFromModal() {
+  const type = $("tType").value;
+  const category = ($("tCat").value || "").trim() || "Outros";
+  const amount = parseNum($("tAmt").value);
+  const date = $("tDate").value;
+  const recurring = $("tRec").value || "none";
+  const notes = ($("tNotes").value || "").trim();
+  if (!amount || amount <= 0) { toast("Valor tem de ser > 0."); return; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { toast("Data inválida."); return; }
+  const obj = { id: editingTxId || uid(), type, category, amount, date, recurring, notes };
+  const ix = state.transactions.findIndex(t => t.id === obj.id);
+  if (ix >= 0) state.transactions[ix] = obj; else state.transactions.push(obj);
+  saveState();
+  closeModal("modalTx");
+  renderCashflow();
+  toast(ix >= 0 ? "Movimento atualizado." : "Movimento guardado.");
+}
+
+function deleteTxEntry() {
+  if (!editingTxId) return;
+  if (!confirm("Apagar este movimento?")) return;
+  state.transactions = state.transactions.filter(t => t.id !== editingTxId);
+  editingTxId = null;
+  saveState();
+  closeModal("modalTx");
+  renderCashflow();
+  toast("Movimento apagado.");
+}
+
+/* ─── 4. CATEGORIAS DE DESPESA ───────────────────────────── */
+let catChart = null;
+function renderCatChart() {
+  const y = $("cfYear").value;
+  const m = String($("cfMonth").value).padStart(2, "0");
+  const key = `${y}-${m}`;
+  const gran = ($("cfGranularity") && $("cfGranularity").value) || "month";
+
+  // Aggregate by category for selected period
+  let txs;
+  if (gran === "month") {
+    txs = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === key && t.type === "out");
+  } else if (gran === "year") {
+    txs = expandRecurring(state.transactions).filter(t => String(t.date || "").slice(0,4) === y && t.type === "out");
+  } else {
+    txs = expandRecurring(state.transactions).filter(t => t.type === "out");
+  }
+
+  const byCat = {};
+  for (const t of txs) {
+    const k = t.category || "Outros";
+    byCat[k] = (byCat[k] || 0) + parseNum(t.amount);
+  }
+  const entries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+  const total = entries.reduce((s, [, v]) => s + v, 0);
+
+  const ctx = $("catChart") && $("catChart").getContext("2d");
+  if (!ctx) return;
+  if (catChart) catChart.destroy();
+
+  if (!entries.length) { catChart = null; return; }
+
+  catChart = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels: entries.map(([k]) => k),
+      datasets: [{ data: entries.map(([, v]) => v), backgroundColor: PALETTE, borderWidth: 0 }]
+    },
+    options: {
+      cutout: "65%",
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => `${c.label}: ${fmtEUR(c.raw)} (${fmtPct(c.raw / total * 100)})` } }
+      }
+    }
+  });
+
+  const catList = $("catList");
+  catList.innerHTML = entries.map(([k, v]) => `
+    <div class="item" style="cursor:default">
+      <div class="item__l"><div class="item__t">${escapeHtml(k)}</div><div class="item__s">${fmtPct(v / total * 100)} das saídas</div></div>
+      <div class="item__v">${fmtEUR(v)}</div>
+    </div>`).join("");
+
+  const sub = $("catSubtitle");
+  if (sub) sub.textContent = `Saídas por categoria · Total: ${fmtEUR(total)}`;
+}
+
+/* ─── 5. TAXA DE POUPANÇA ────────────────────────────────── */
+function renderSavingsRate(totalIn, totalOut) {
+  const wrap = $("savingsRateWrap");
+  const pctEl = $("savingsRatePct");
+  const fill = $("savingsRateFill");
+  if (!wrap) return;
+  if (totalIn <= 0) { wrap.style.display = "none"; return; }
+  wrap.style.display = "";
+  const net = totalIn - totalOut;
+  const pct = Math.max(0, (net / totalIn) * 100);
+  if (pctEl) {
+    pctEl.textContent = fmtPct(pct);
+    pctEl.style.color = pct >= 20 ? "#059669" : pct >= 10 ? "#d97706" : "#dc2626";
+  }
+  if (fill) {
+    fill.style.width = Math.min(100, pct) + "%";
+    fill.style.background = pct >= 20 ? "#10b981" : pct >= 10 ? "#f59e0b" : "#ef4444";
+  }
+}
+
+/* ─── 6. PESQUISA GLOBAL ─────────────────────────────────── */
+let searchOpen = false;
+function toggleSearch() {
+  searchOpen = !searchOpen;
+  const bar = document.getElementById("searchBar");
+  if (!bar) return;
+  bar.style.display = searchOpen ? "block" : "none";
+  if (searchOpen) {
+    const inp = $("globalSearch");
+    if (inp) { inp.value = ""; inp.focus(); }
+    renderSearchResults("");
+  }
+}
+
+function renderSearchResults(q) {
+  const wrap = document.getElementById("searchResults");
+  if (!wrap) return;
+  if (!q.trim()) { wrap.innerHTML = ""; return; }
+  const ql = q.toLowerCase();
+  const results = [];
+
+  // Assets
+  for (const a of state.assets) {
+    if (`${a.name} ${a.class}`.toLowerCase().includes(ql)) {
+      results.push({ type: "Ativo", label: a.name, sub: `${a.class} · ${fmtEUR(parseNum(a.value))}`, action: () => { setView("assets"); editItem(a.id); toggleSearch(); } });
+    }
+  }
+  // Liabilities
+  for (const l of state.liabilities) {
+    if (`${l.name} ${l.class}`.toLowerCase().includes(ql)) {
+      results.push({ type: "Passivo", label: l.name, sub: `${l.class} · ${fmtEUR(parseNum(l.value))}`, action: () => { setView("assets"); setModeLiabs(true); editItem(l.id); toggleSearch(); } });
+    }
+  }
+  // Transactions
+  for (const t of state.transactions) {
+    if (`${t.category} ${t.notes || ""}`.toLowerCase().includes(ql)) {
+      results.push({ type: t.type === "in" ? "Entrada" : "Saída", label: t.category, sub: `${t.date} · ${fmtEUR(parseNum(t.amount))}`, action: () => { setView("cashflow"); openTxModal(t.id); toggleSearch(); } });
+    }
+  }
+  // Dividends
+  for (const d of (state.dividends || [])) {
+    if (`${d.assetName} ${d.notes || ""}`.toLowerCase().includes(ql)) {
+      results.push({ type: "Dividendo", label: d.assetName || "Manual", sub: `${d.date} · ${fmtEUR2(parseNum(d.amount))}`, action: () => { setView("dividends"); openDivModal(d.id); toggleSearch(); } });
+    }
+  }
+
+  if (!results.length) { wrap.innerHTML = `<div class="item" style="cursor:default"><div class="item__l"><div class="item__t">Sem resultados</div></div></div>`; return; }
+
+  wrap.innerHTML = "";
+  for (const r of results.slice(0, 12)) {
+    const row = document.createElement("div");
+    row.className = "item";
+    row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(r.label)}</div><div class="item__s">${escapeHtml(r.sub)}</div></div><div class="item__v"><span class="badge badge--blue">${escapeHtml(r.type)}</span></div>`;
+    row.addEventListener("click", r.action);
+    wrap.appendChild(row);
+  }
+}
+
 function renderDashboard() {
   const t = calcTotals();
   $("kpiNet").textContent = fmtEUR(t.net);
   $("kpiAP").textContent = `Ativos ${fmtEUR(t.assetsTotal)} | Passivos ${fmtEUR(t.liabsTotal)}`;
   $("kpiPassiveAnnual").textContent = fmtEUR(t.passiveAnnual);
   $("kpiPassiveMonthly").textContent = fmtEUR(t.passiveAnnual / 12);
+  updatePassiveBar();
+  renderGoal();
+  renderAlerts();
 
   // Dividendos YTD
   const yearStart = new Date().getFullYear() + "-01-01";
@@ -695,8 +979,10 @@ function renderCashflow() {
   $("cfOut").textContent = fmtEUR(totalOut);
   $("cfNet").textContent = fmtEUR(net);
   $("cfRate").textContent = `${Math.round(rate)}%`;
+  renderSavingsRate(totalIn, totalOut);
   renderTxList();
   renderCashflowChart();
+  renderCatChart();
 }
 
 function renderBalance() { renderCashflow(); }
@@ -740,12 +1026,18 @@ function renderTxList() {
   const shown = txExpanded ? tx : tx.slice(0, TX_PREVIEW_COUNT);
   for (const t of shown) {
     const sign = t.type === "in" ? "+" : "−";
+    const isRecurringInstance = t.id && t.id.includes("_r");
     const row = document.createElement("div");
     row.className = "item";
     row.innerHTML = `<div class="item__l">
       <div class="item__t">${sign} ${escapeHtml(t.category)}</div>
-      <div class="item__s">${escapeHtml(t.type === "in" ? "Entrada" : "Saída")} · ${escapeHtml(t.date)}${t.recurring !== "none" ? " · ↻" : ""}</div>
+      <div class="item__s">${escapeHtml(t.type === "in" ? "Entrada" : "Saída")} · ${escapeHtml(t.date)}${t.recurring !== "none" ? " · ↻" : ""}${isRecurringInstance ? " · cópia" : ""}</div>
     </div><div class="item__v">${fmtEUR(parseNum(t.amount))}</div>`;
+    // Only allow editing original transactions, not recurring copies
+    if (!isRecurringInstance) {
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () => openTxModal(t.id));
+    }
     wrap.appendChild(row);
   }
   if (tx.length > TX_PREVIEW_COUNT) {
@@ -1734,7 +2026,7 @@ function wire() {
   });
 
   // Cashflow
-  $("btnAddTx").addEventListener("click", openTxModal);
+  $("btnAddTx").addEventListener("click", () => openTxModal(null));
   $("btnSaveTx").addEventListener("click", saveTxFromModal);
   $("cfMonth").addEventListener("change", renderCashflow);
   $("cfYear").addEventListener("change", renderCashflow);
@@ -1794,6 +2086,27 @@ function wire() {
   });
   const btnGoImport = document.getElementById("btnGoImport");
   if (btnGoImport) btnGoImport.addEventListener("click", () => setView("import"));
+
+  // Objetivo de rendimento
+  const btnEditGoal = document.getElementById("btnEditGoal");
+  if (btnEditGoal) btnEditGoal.addEventListener("click", () => {
+    $("goalInput").value = String(state.settings.goalMonthly || "");
+    openModal("modalGoal");
+  });
+  const btnSaveGoalModal = document.getElementById("btnSaveGoalModal");
+  if (btnSaveGoalModal) btnSaveGoalModal.addEventListener("click", () => saveGoal($("goalInput").value));
+  const btnSaveGoal = document.getElementById("btnSaveGoal");
+  if (btnSaveGoal) btnSaveGoal.addEventListener("click", () => saveGoal($("settingsGoal").value));
+
+  // Pesquisa global
+  const btnSearch = document.getElementById("btnSearchToggle");
+  if (btnSearch) btnSearch.addEventListener("click", toggleSearch);
+  const gSearch = document.getElementById("globalSearch");
+  if (gSearch) gSearch.addEventListener("input", e => renderSearchResults(e.target.value));
+
+  // Apagar movimento
+  const btnDeleteTx = document.getElementById("btnDeleteTx");
+  if (btnDeleteTx) btnDeleteTx.addEventListener("click", deleteTxEntry);
 
   // Dividendos
   const btnAddDiv = document.getElementById("btnAddDiv");
