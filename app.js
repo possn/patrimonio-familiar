@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260429").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260430").catch(() => {});
     });
   }
 } catch (_) {}
@@ -3030,16 +3030,22 @@ function parseSantanderPDF(text) {
       i = j; continue;
     }
 
-    // Encontrar valores monetários: "15,00€" ou "−30.000,00€"
-    const moneyRe = /([\u2212\-]?\d{1,3}(?:\.\d{3})*,\d{2})€/g;
-    const moneyMatches = [...txLine.matchAll(moneyRe)];
+    // Encontrar valores monetários — o sinal pode estar separado do valor
+    // Ex: "Descrição\t−\t20,00€\t3.009,88€" ou "Descrição\t−20,00€\t3.024,88€"
+    // Normalizar: juntar sinal solto ao valor
+    const normLine = txLine.replace(/[\u2212\-]\s*(\d)/g, "-$1");
+
+    const moneyRe = /([\-]?\d{1,3}(?:\.\d{3})*,\d{2})€/g;
+    const moneyMatches = [...normLine.matchAll(moneyRe)];
 
     if (moneyMatches.length >= 1) {
-      const rawAmt = moneyMatches[0][1].replace(/\u2212/g,"-").replace(/\./g,"").replace(/,/g,".");
+      const rawAmt = moneyMatches[0][1].replace(/\./g,"").replace(/,/g,".");
       const amount = Number(rawAmt);
       if (Number.isFinite(amount)) {
-        const amtIdx = txLine.indexOf(moneyMatches[0][0]);
-        const desc = txLine.slice(0, amtIdx).replace(/\t/g," ").replace(/\s+/g," ").trim() || "Movimento";
+        // Descrição: tudo antes do primeiro valor, sem sinais soltos no fim
+        const amtIdx = normLine.indexOf(moneyMatches[0][0]);
+        const desc = normLine.slice(0, amtIdx)
+          .replace(/\t/g," ").replace(/[\u2212\-]\s*$/,"").replace(/\s+/g," ").trim() || "Movimento";
         if (!/^D[\.\s]?\s*valor/i.test(desc)) {
           out.push({ date: iso, desc, amount });
         }
@@ -3088,20 +3094,27 @@ function parseSantanderTabular(text) {
     }
     if (!iso) continue;
 
-    // Find money values (last two are amount + saldo, or just amount)
+    // Find money values — sign may be a separate tab-column before the number
+    // e.g. ["Descrição", "−", "20,00€", "3.009,88€"]
     const moneyRe = /^[\u2212\-]?\d{1,3}(?:\.\d{3})*,\d{2}€?$/;
     const moneyIdxs = cols.map((c, i) => moneyRe.test(c.replace(/\s/g,"")) ? i : -1).filter(i => i >= 0);
+
+    // Also detect a lone sign column immediately before a money column
+    const signIdxs = cols.map((c, i) => /^[\u2212\-]$/.test(c.trim()) ? i : -1).filter(i => i >= 0);
+
     if (!moneyIdxs.length) continue;
-
-    // Transaction amount = first money value after description
     const amtIdx = moneyIdxs[0];
-    const rawAmt = cols[amtIdx].replace(/\u2212/g,"-").replace(/€/g,"").replace(/\./g,"").replace(/,/g,".");
-    const amount = Number(rawAmt);
-    if (!Number.isFinite(amount)) continue;
 
-    // Description = cols between date and amount
-    const desc = cols.slice(descStart, amtIdx).join(" ").trim() || "Movimento";
-    // Skip "D. valor:" type descriptions
+    // Check if there's a lone sign column just before the amount
+    const signBefore = signIdxs.find(si => si === amtIdx - 1);
+    const rawAmt = cols[amtIdx].replace(/\u2212/g,"-").replace(/€/g,"").replace(/\./g,"").replace(/,/g,".");
+    let amount = Number(rawAmt);
+    if (!Number.isFinite(amount)) continue;
+    if (signBefore !== undefined) amount = -Math.abs(amount);
+
+    // Description: cols between date end and sign/amount
+    const descEnd = signBefore !== undefined ? signBefore : amtIdx;
+    const desc = cols.slice(descStart, descEnd).join(" ").trim() || "Movimento";
     if (/^D[\.\s]?\s*valor/i.test(desc)) continue;
 
     out.push({ date: iso, desc, amount });
