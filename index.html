@@ -8,9 +8,9 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="icon192.png">
-  <link rel="stylesheet" href="styles.css?v=20260415">
+  <link rel="stylesheet" href="styles.css?v=20260416">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script defer src="app.js?v=20260415"></script>
+  <script defer src="app.js?v=20260416"></script>
 </head>
 <body>
 
@@ -279,11 +279,13 @@
     <div class="analysisPanelTab" id="analysisPanelTab_compound">
       <div class="card">
         <div class="card__title" style="margin-bottom:12px">Simulador de Juro Composto</div>
-        <label class="lbl">Ativo base</label>
-        <select class="input" id="compAsset"><option value="__custom__">Personalizado…</option></select>
+        <label class="lbl">Base de cálculo</label>
+        <select class="input" id="compAsset"><option value="__portfolio__">📊 Carteira completa (automático)</option></select>
+        <!-- Nota automática da carteira -->
+        <div id="compPortfolioNote" class="note" style="display:none;margin-top:10px"></div>
         <div class="filters" style="margin-top:10px">
-          <div><label class="lbl">Capital inicial (€)</label><input class="input" id="compPrincipal" inputmode="decimal" placeholder="ex: 50000"></div>
-          <div><label class="lbl">Taxa (%/ano)</label><input class="input" id="compRate" inputmode="decimal" placeholder="ex: 4.5"></div>
+          <div><label class="lbl">Capital (€)</label><input class="input" id="compPrincipal" inputmode="decimal" placeholder="ex: 50000"></div>
+          <div><label class="lbl">Yield médio (%/ano)</label><input class="input" id="compRate" inputmode="decimal" placeholder="ex: 4.5"></div>
           <div><label class="lbl">Anos</label><input class="input" id="compYears" type="number" min="1" max="50" value="20"></div>
         </div>
         <div class="filters" style="margin-top:10px">
@@ -293,8 +295,11 @@
               <option value="4">Trimestral</option><option value="12" selected>Mensal</option><option value="365">Diária</option>
             </select>
           </div>
-          <div><label class="lbl">Contrib. mensal (€)</label><input class="input" id="compContrib" inputmode="decimal" value="0"></div>
+          <div><label class="lbl">Contribuição mensal (€)</label><input class="input" id="compContrib" inputmode="decimal" value="0"></div>
           <div style="display:flex;align-items:flex-end"><button class="btn btn--primary" id="btnCalcCompound" style="width:100%">Calcular</button></div>
+        </div>
+        <div class="note" style="margin-top:10px;font-size:13px">
+          💡 Em modo <b>Carteira completa</b> os campos são preenchidos automaticamente com o teu capital investido, yield médio ponderado e poupança mensal estimada. Podes editar qualquer valor antes de calcular.
         </div>
       </div>
       <div id="compoundTable" class="card" style="padding:16px"></div>

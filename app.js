@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260415").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260416").catch(() => {});
     });
   }
 } catch (_) {}
@@ -1273,33 +1273,109 @@ function renderAnalysis() {
 }
 
 /* ── Compound Interest Panel ── */
-function renderCompoundPanel() {
-  // Build asset selector
-  const sel = $("compAsset");
-  if (!sel) return;
-  const prev = sel.value;
-  sel.innerHTML = `<option value="__custom__">Personalizado…</option>`;
+
+// Calcula o yield médio ponderado real da carteira
+function calcPortfolioYield() {
+  let totalValue = 0, totalPassive = 0;
   for (const a of state.assets) {
-    const o = document.createElement("option");
-    o.value = a.id;
-    o.textContent = `${a.name} (${fmtEUR(parseNum(a.value))})`;
-    sel.appendChild(o);
+    const v = parseNum(a.value);
+    const p = passiveFromItem(a);
+    totalValue += v;
+    totalPassive += p;
   }
-  sel.value = prev || "__custom__";
-  syncCompoundFromAsset();
+  // yield ponderado = rendimento passivo anual / valor total dos ativos
+  const weightedYield = totalValue > 0 ? (totalPassive / totalValue) * 100 : 0;
+  return { totalValue, totalPassive, weightedYield };
 }
 
-function syncCompoundFromAsset() {
+// Estima contribuição mensal média dos últimos 6 meses de cashflow
+function calcAvgMonthlySavings(months = 6) {
+  const now = new Date();
+  const byMonth = new Map();
+  for (const t of state.transactions) {
+    const d = String(t.date || "").slice(0, 7);
+    if (!d) continue;
+    const cur = byMonth.get(d) || { in: 0, out: 0 };
+    if (t.type === "in") cur.in += parseNum(t.amount);
+    else cur.out += parseNum(t.amount);
+    byMonth.set(d, cur);
+  }
+  const keys = [...byMonth.keys()].sort().slice(-months);
+  if (!keys.length) return 0;
+  const totalSaved = keys.reduce((s, k) => {
+    const m = byMonth.get(k);
+    return s + Math.max(0, m.in - m.out);
+  }, 0);
+  return totalSaved / keys.length;
+}
+
+function renderCompoundPanel() {
+  const sel = $("compAsset");
+  if (!sel) return;
+
+  // Calcular dados reais da carteira
+  const portfolio = calcPortfolioYield();
+  const avgSavings = calcAvgMonthlySavings(6);
+
+  // Rebuild selector
+  const prev = sel.value;
+  sel.innerHTML = `<option value="__portfolio__">📊 Carteira completa (automático)</option>
+    <option value="__custom__">✏️ Personalizado…</option>`;
+  for (const a of state.assets) {
+    const rate = a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
+      a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue) / Math.max(1, parseNum(a.value)) * 100 :
+      a.yieldType === "rent_month" ? parseNum(a.yieldValue) * 12 / Math.max(1, parseNum(a.value)) * 100 : 0;
+    const o = document.createElement("option");
+    o.value = a.id;
+    o.textContent = `${a.name} · ${fmtPct(rate)} · ${fmtEUR(parseNum(a.value))}`;
+    sel.appendChild(o);
+  }
+
+  // Default to portfolio view
+  const newVal = prev && prev !== "__portfolio__" ? prev : "__portfolio__";
+  sel.value = newVal;
+  syncCompoundFromAsset(portfolio, avgSavings);
+
+  // Show portfolio summary note
+  const note = document.getElementById("compPortfolioNote");
+  if (note) {
+    if (portfolio.totalValue > 0) {
+      note.style.display = "";
+      note.innerHTML = `📊 <b>Carteira real:</b> ${fmtEUR(portfolio.totalValue)} investidos · Yield médio ponderado <b>${fmtPct(portfolio.weightedYield)}</b> · Rendimento passivo anual <b>${fmtEUR(portfolio.totalPassive)}</b>${avgSavings > 0 ? ` · Poupança média mensal <b>${fmtEUR(avgSavings)}</b>` : ""}`;
+    } else {
+      note.style.display = "none";
+    }
+  }
+}
+
+function syncCompoundFromAsset(portfolioData, avgSavings) {
   const sel = $("compAsset");
   if (!sel) return;
   const id = sel.value;
-  if (id === "__custom__") return;
+
+  if (id === "__portfolio__") {
+    // Preencher com dados reais da carteira completa
+    const p = portfolioData || calcPortfolioYield();
+    const s = avgSavings !== undefined ? avgSavings : calcAvgMonthlySavings(6);
+    $("compPrincipal").value = String(Math.round(p.totalValue));
+    $("compRate").value = fmt(p.weightedYield, 2);
+    $("compFreq").value = "12"; // mensal por defeito para carteira
+    $("compContrib").value = String(Math.round(s));
+    return;
+  }
+
+  if (id === "__custom__") return; // não tocar nos campos
+
+  // Ativo individual
   const a = state.assets.find(x => x.id === id);
   if (!a) return;
   $("compPrincipal").value = String(Math.round(parseNum(a.value)));
-  if (a.yieldType === "yield_pct") $("compRate").value = String(parseNum(a.yieldValue));
-  else if (a.yieldType === "yield_eur_year") $("compRate").value = fmt(parseNum(a.yieldValue) / Math.max(1, parseNum(a.value)) * 100, 2);
+  const rate = a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
+    a.yieldType === "yield_eur_year" ? fmt(parseNum(a.yieldValue) / Math.max(1, parseNum(a.value)) * 100, 2) :
+    a.yieldType === "rent_month" ? fmt(parseNum(a.yieldValue) * 12 / Math.max(1, parseNum(a.value)) * 100, 2) : "0";
+  $("compRate").value = String(rate);
   $("compFreq").value = String(a.compoundFreq || 12);
+  $("compContrib").value = "0";
 }
 
 function calcAndRenderCompound() {
@@ -1308,57 +1384,100 @@ function calcAndRenderCompound() {
   const years = parseInt($("compYears").value) || 20;
   const freq = parseInt($("compFreq").value) || 12;
   const contrib = parseNum($("compContrib").value);
+  const mode = $("compAsset").value;
 
   if (principal <= 0 || rate <= 0) { toast("Preenche capital e taxa."); return; }
 
   const data = compoundGrowth(principal, rate, years, freq, contrib);
   const effRate = effectiveRate(rate, freq);
+  const finalVal = data[data.length - 1].value;
+  const totalContrib = contrib * 12 * years;
+  const totalInterest = finalVal - principal - totalContrib;
 
-  // Summary table
+  // KPI summary
   const tb = $("compoundTable");
   if (tb) {
-    tb.innerHTML = `<div class="kpiRow">
+    tb.innerHTML = `
+    <div class="kpiRow">
       <div class="kpi"><div class="kpi__k">Capital inicial</div><div class="kpi__v">${fmtEUR(principal)}</div></div>
       <div class="kpi kpi--net"><div class="kpi__k">Taxa efetiva anual</div><div class="kpi__v">${fmtPct(effRate)}</div></div>
-      <div class="kpi kpi--in"><div class="kpi__k">Em ${years} anos</div><div class="kpi__v">${fmtEUR(data[data.length-1].value)}</div></div>
+      <div class="kpi kpi--in"><div class="kpi__k">Valor em ${years}a</div><div class="kpi__v">${fmtEUR(finalVal)}</div></div>
     </div>
     <div class="kpiRow" style="margin-top:10px">
-      <div class="kpi"><div class="kpi__k">Juros totais</div><div class="kpi__v">${fmtEUR(data[data.length-1].value - principal - contrib * years)}</div></div>
-      <div class="kpi kpi--in"><div class="kpi__k">CAGR</div><div class="kpi__v">${fmtPct(rate)}</div></div>
-      <div class="kpi"><div class="kpi__k">Contrib. total</div><div class="kpi__v">${fmtEUR(contrib * years)}</div></div>
+      <div class="kpi kpi--in"><div class="kpi__k">Juros acumulados</div><div class="kpi__v">${fmtEUR(totalInterest)}</div><div class="kpi__s">× ${fmt(finalVal/principal,1)} capital inicial</div></div>
+      <div class="kpi"><div class="kpi__k">Contrib. total</div><div class="kpi__v">${fmtEUR(totalContrib)}</div>${contrib > 0 ? `<div class="kpi__s">${fmtEUR(contrib)}/mês</div>` : ""}</div>
+      <div class="kpi kpi--net"><div class="kpi__k">Rendimento anual est.</div><div class="kpi__v">${fmtEUR(finalVal * rate / 100)}</div><div class="kpi__s">ao fim de ${years}a</div></div>
     </div>`;
+
+    // Se for modo carteira, mostrar decomposição por ativo
+    if (mode === "__portfolio__") {
+      const assetsWithYield = state.assets.filter(a => passiveFromItem(a) > 0);
+      if (assetsWithYield.length > 0) {
+        const rows = assetsWithYield.map(a => {
+          const v0 = parseNum(a.value);
+          const r = a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
+            a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue) / Math.max(1, v0) * 100 :
+            a.yieldType === "rent_month" ? parseNum(a.yieldValue) * 12 / Math.max(1, v0) * 100 : 0;
+          const fq = a.compoundFreq || 1;
+          const vN = compoundGrowth(v0, r, years, fq, 0)[years].value;
+          return `<div class="item" style="cursor:default">
+            <div class="item__l">
+              <div class="item__t">${escapeHtml(a.name)}</div>
+              <div class="item__s">${escapeHtml(a.class)} · ${fmtPct(r)}/ano · cap. ${fq}×/ano</div>
+            </div>
+            <div class="item__v" style="text-align:right">
+              <div>${fmtEUR(vN)}</div>
+              <div class="item__s" style="color:#059669">+${fmtEUR(vN - v0)}</div>
+            </div>
+          </div>`;
+        }).join("");
+        tb.innerHTML += `<div style="margin-top:14px"><div class="card__title" style="font-size:16px;margin-bottom:8px">Decomposição por ativo (${years}a)</div><div class="list">${rows}</div></div>`;
+      }
+    }
   }
 
-  // Milestone table
+  // Milestones
   const mt = $("compoundMilestones");
   if (mt) {
-    const milestones = [1, 5, 10, 15, 20, 25, 30].filter(y => y <= years);
+    const milestones = [1, 2, 3, 5, 10, 15, 20, 25, 30].filter(y => y <= years);
     mt.innerHTML = milestones.map(y => {
       const d = data[y];
       const gain = d.value - principal;
-      return `<div class="item">
-        <div class="item__l"><div class="item__t">${y} ano${y>1?"s":""}</div><div class="item__s">Ganho: ${fmtEUR(gain)}</div></div>
+      const annualIncome = d.value * rate / 100;
+      return `<div class="item" style="cursor:default">
+        <div class="item__l">
+          <div class="item__t">Ano ${y}</div>
+          <div class="item__s">Ganho: ${fmtEUR(gain)} · Rend. anual est.: ${fmtEUR(annualIncome)}</div>
+        </div>
         <div class="item__v">${fmtEUR(d.value)}</div>
       </div>`;
     }).join("");
   }
 
-  // Chart
+  // Chart — 3 linhas: capital+juros, sem reinvestimento, apenas capital
   const ctx = $("compoundChart") && $("compoundChart").getContext("2d");
   if (!ctx) return;
   if (compoundChart) compoundChart.destroy();
-  const contribLine = data.map((d, i) => principal + contrib * i);
+
+  // Linha sem reinvestimento (juro simples)
+  const simpleLine = data.map((d, i) => principal + (principal * rate / 100) * i + contrib * 12 * i);
+  const contribLine = data.map((_, i) => principal + contrib * 12 * i);
+
   compoundChart = new Chart(ctx, {
     type: "line",
     data: {
       labels: data.map(d => `+${d.year}a`),
       datasets: [
-        { label: "Capital+Juros", data: data.map(d => d.value), tension: .4, borderColor: "#5b5ce6", backgroundColor: "rgba(91,92,230,.08)", fill: true, pointRadius: 0 },
-        { label: "Apenas capital", data: contribLine, tension: 0, borderDash: [6, 4], borderColor: "#94a3b8", borderWidth: 1.5, pointRadius: 0 }
+        { label: "Juro composto", data: data.map(d => d.value), tension: .4, borderColor: "#5b5ce6", backgroundColor: "rgba(91,92,230,.08)", fill: true, pointRadius: 0, borderWidth: 2.5 },
+        { label: "Juro simples", data: simpleLine, tension: .2, borderDash: [4, 4], borderColor: "#f59e0b", borderWidth: 1.5, pointRadius: 0 },
+        { label: "Só capital", data: contribLine, tension: 0, borderDash: [2, 6], borderColor: "#94a3b8", borderWidth: 1.5, pointRadius: 0 }
       ]
     },
     options: {
-      plugins: { legend: { labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } } },
+      plugins: {
+        legend: { display: true, labels: { boxWidth: 12 } },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } }
+      },
       scales: { y: { ticks: { callback: v => fmtEUR(v) } } }
     }
   });
