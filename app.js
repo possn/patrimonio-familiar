@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260430").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260501").catch(() => {});
     });
   }
 } catch (_) {}
@@ -2743,6 +2743,85 @@ async function fileToText(file) {
    Detecta formato automaticamente pelo nome/tipo do ficheiro
 ─────────────────────────────────────────────────────────────── */
 
+/* ─── CATEGORIZAÇÃO AUTOMÁTICA ────────────────────────────────
+   Reconhece padrões comuns em descrições de extractos bancários PT
+─────────────────────────────────────────────────────────────── */
+function autoCategorise(desc, dir) {
+  const d = normStr(desc || "");
+
+  // Entradas específicas
+  if (dir === "in") {
+    if (/salario|vencimento|remuneracao|ordenado/.test(d)) return "Salário";
+    if (/subsidio|sub\. ?ferias|sub\. ?natal/.test(d)) return "Subsídio";
+    if (/renda|aluguer|arrendamento/.test(d)) return "Renda recebida";
+    if (/dividendo|dividend/.test(d)) return "Dividendos";
+    if (/reembolso|devolucao|devol\./.test(d)) return "Reembolso";
+    if (/transferencia de|trf\. de|trf\.imed\. de|recebido de/.test(d)) return "Transferência recebida";
+    if (/mb way/.test(d) && dir === "in") return "MB Way recebido";
+    if (/transferencia entre contas/.test(d)) return "Transferência entre contas";
+    if (/irs|at |autoridade tributaria/.test(d)) return "Reembolso IRS";
+    if (/seguranca social|seg\. social/.test(d)) return "Segurança Social";
+    if (/pensao|reforma/.test(d)) return "Pensão";
+  }
+
+  // Saídas — habitação
+  if (/hipoteca|credito habitacao|credito \/ habitacao|ch /.test(d)) return "Crédito habitação";
+  if (/condominio|cond\./.test(d)) return "Condomínio";
+  if (/renda|aluguer/.test(d) && dir === "out") return "Renda";
+  if (/agua|aguas de|aguas do/.test(d)) return "Água";
+  if (/luz|eletricidade|edp|ibelectra|e\.on/.test(d)) return "Electricidade";
+  if (/gas |galp|gas natural/.test(d)) return "Gás";
+  if (/internet|meo|nos |vodafone|nowo|altice/.test(d)) return "Telecomunicações";
+
+  // Saídas — seguros
+  if (/seguro de vida/.test(d)) return "Seguro de vida";
+  if (/seguro multi.riscos|seguro multiriscos/.test(d)) return "Seguro multirriscos";
+  if (/seguro |ageas|fidelidade|tranquilidade|zurich|allianz|chubb/.test(d)) return "Seguros";
+
+  // Saídas — transportes
+  if (/via verde|autoestrada/.test(d)) return "Via Verde";
+  if (/combustivel|galp|bp |repsol|shell/.test(d)) return "Combustível";
+  if (/comboio|cp |metro |autocarro|uber|bolt/.test(d)) return "Transportes";
+  if (/estacionamento|parque/.test(d)) return "Estacionamento";
+  if (/levantamento|atm|multibanco/.test(d)) return "Levantamento";
+
+  // Saídas — alimentação
+  if (/continente|pingo doce|lidl|aldi|minipreco|minipreço|mercadona|supermercado/.test(d)) return "Supermercado";
+  if (/restaurante|cafe |snack|pizza|mcdonalds|kfc|nandos|sushi/.test(d)) return "Restaurante";
+  if (/padaria|pastelaria|confeitaria/.test(d)) return "Padaria";
+
+  // Saídas — saúde
+  if (/farmacia|farmácia|medicina|clinica|hospital|dentista|consultorio/.test(d)) return "Saúde";
+  if (/ginasio|gym|fitness|coolgym|holmes|virgin/.test(d)) return "Ginásio";
+
+  // Saídas — finanças
+  if (/imposto|irs |iva |iuc |imt |at |fisco|tributaria/.test(d)) return "Impostos";
+  if (/comissao|comissão|manutencao conta/.test(d)) return "Comissões bancárias";
+  if (/deposito a prazo|constituicao de d\.p|dp |d\.p\./.test(d)) return "Depósito a prazo";
+  if (/ppr |plano poupanca|subscricao ppr/.test(d)) return "PPR";
+  if (/investimento|subscricao|fundo/.test(d)) return "Investimento";
+  if (/cred\.|credito consumo|credito pessoal/.test(d)) return "Crédito pessoal";
+  if (/cartao|pagamento de conta cartao/.test(d)) return "Cartão de crédito";
+
+  // Saídas — educação
+  if (/escola|colegio|universidade|propina|aulas|explicador/.test(d)) return "Educação";
+
+  // Saídas — lazer
+  if (/netflix|spotify|amazon|apple\.com|google|disney|hbo/.test(d)) return "Subscrições";
+  if (/cinema|teatro|concerto|bilhete/.test(d)) return "Lazer";
+
+  // Transferências e MB Way genéricos
+  if (/mb way para|mb way emitida|trf\. mb way para/.test(d)) return "MB Way enviado";
+  if (/transferencia para|trf\. para|transferencia emitida|trf\. emitida/.test(d)) return "Transferência enviada";
+  if (/transferencia entre contas/.test(d)) return "Transferência entre contas";
+
+  // Serviços municipais
+  if (/servicos municip|camara|municipal/.test(d)) return "Serviços municipais";
+
+  // Fallback
+  return dir === "in" ? "Outros recebimentos" : "Outras despesas";
+}
+
 async function importBankFile(file) {
   if (!file) throw new Error("Sem ficheiro.");
   const name = file.name.toLowerCase();
@@ -2786,29 +2865,75 @@ async function importBankFile(file) {
   ));
 
   let added = 0, dup = 0;
+  let totalIn = 0, totalOut = 0;
+  const newTx = [];
+
   for (const r of parsed) {
     const dir = r.amount >= 0 ? "in" : "out";
     const amount = Math.abs(r.amount);
     const key = `${r.date}|${dir}|${Math.round(amount*100)}|${normStr(r.desc)}`;
     if (existing.has(key)) { dup++; continue; }
     existing.add(key);
-    state.transactions.push({
-      id: uid(), type: dir,
-      category: r.desc || "Banco",
-      amount, date: r.date,
-      recurring: "none", notes: ""
-    });
+    const category = autoCategorise(r.desc, dir);
+    const tx = { id: uid(), type: dir, category, amount, date: r.date, recurring: "none", notes: r.desc !== category ? r.desc : "" };
+    state.transactions.push(tx);
+    newTx.push(tx);
+    if (dir === "in") totalIn += amount;
+    else totalOut += amount;
     added++;
   }
 
   saveState();
   renderCashflow();
 
-  const msg = added > 0
-    ? `✅ ${added} movimento${added!==1?"s":""} importado${added!==1?"s":""} · ${dup} duplicado${dup!==1?"s":""} · ${parsed.length} lido${parsed.length!==1?"s":""}`
-    : `ℹ️ 0 novos (${dup} já existiam · ${parsed.length} lidos)`;
-  showBankResult(added > 0 ? "ok" : "info", msg);
-  toast(msg.replace(/<[^>]+>/g,""));
+  // Resumo detalhado
+  if (added > 0) {
+    // Group by category
+    const byCat = {};
+    for (const tx of newTx) {
+      if (!byCat[tx.category]) byCat[tx.category] = { in: 0, out: 0, n: 0 };
+      byCat[tx.category][tx.type] += tx.amount;
+      byCat[tx.category].n++;
+    }
+    const catRows = Object.entries(byCat)
+      .sort((a,b) => (b[1].out + b[1].in) - (a[1].out + a[1].in))
+      .slice(0, 8)
+      .map(([cat, v]) => {
+        const net = v.in - v.out;
+        const color = net >= 0 ? "#059669" : "#dc2626";
+        return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(0,0,0,.06)">
+          <span>${escapeHtml(cat)} <span style="color:#94a3b8;font-size:11px">(${v.n})</span></span>
+          <span style="color:${color};font-weight:900">${net >= 0 ? "+" : ""}${fmtEUR2(net)}</span>
+        </div>`;
+      }).join("");
+
+    showBankResult("ok", `
+      <div style="margin-bottom:10px">
+        ✅ <b>${added}</b> movimento${added!==1?"s":""} importado${added!==1?"s":""}
+        ${dup > 0 ? ` · <span style="color:#92400e">${dup} duplicado${dup!==1?"s":""} ignorado${dup!==1?"s":""}</span>` : ""}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
+        <div style="background:#f0fdf4;border-radius:10px;padding:8px;text-align:center">
+          <div style="font-size:11px;color:#667085">Entradas</div>
+          <div style="font-weight:900;color:#059669">${fmtEUR2(totalIn)}</div>
+        </div>
+        <div style="background:#fef2f2;border-radius:10px;padding:8px;text-align:center">
+          <div style="font-size:11px;color:#667085">Saídas</div>
+          <div style="font-weight:900;color:#dc2626">${fmtEUR2(totalOut)}</div>
+        </div>
+        <div style="background:#f5f3ff;border-radius:10px;padding:8px;text-align:center">
+          <div style="font-size:11px;color:#667085">Saldo</div>
+          <div style="font-weight:900;color:${totalIn-totalOut>=0?"#059669":"#dc2626"}">${fmtEUR2(totalIn-totalOut)}</div>
+        </div>
+      </div>
+      <div style="font-size:12px;font-weight:700;color:#667085;margin-bottom:4px">Por categoria:</div>
+      ${catRows}
+    `);
+  } else {
+    showBankResult("info", `ℹ️ 0 novos · ${dup} já existiam · ${parsed.length} lidos`);
+  }
+
+  toast(`${added} movimentos importados · Entradas ${fmtEUR2(totalIn)} · Saídas ${fmtEUR2(totalOut)}`);
   return { added, dup, read: parsed.length };
 }
 
