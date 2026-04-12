@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260427").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260428").catch(() => {});
     });
   }
 } catch (_) {}
@@ -2762,13 +2762,17 @@ async function importBankFile(file) {
     return { added: 0, dup: 0, read: 0 };
   }
 
-  // Tenta o parser específico de banco PT (data DD Mmm AAAA + montante)
-  let parsed = parseBankCsvLikeText(text);
+  // Tenta parsers em cascata — do mais específico para o mais genérico
+  let parsed = [];
 
-  // Fallback: tenta CSV genérico com detecção de colunas
-  if (!parsed.length) {
-    parsed = parseBankCsvGeneric(text);
-  }
+  // 1. Parser tabular Santander (PDF com tabs preservados)
+  if (!parsed.length) parsed = parseSantanderTabular(text);
+  // 2. Parser multi-linha Santander/BCP (uma linha por campo)
+  if (!parsed.length) parsed = parseSantanderPDF(text);
+  // 3. Parser banco PT genérico (DD Mmm AAAA + montante numa linha)
+  if (!parsed.length) parsed = parseBankCsvLikeText(text);
+  // 4. Parser CSV genérico com detecção automática de colunas
+  if (!parsed.length) parsed = parseBankCsvGeneric(text);
 
   if (!parsed.length) {
     const firstLines = text.split("\n").slice(0, 3).join(" | ").slice(0, 300);
@@ -2824,36 +2828,230 @@ function showBankResult(type, html) {
 }
 
 async function extractTextFromPDF(file) {
+  // Tentar pdf.js primeiro (melhor qualidade)
+  if (typeof pdfjsLib !== "undefined") {
+    try {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let fullText = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        // Agrupar por Y com tolerância 2px, ordenar por X dentro de cada linha
+        const byY = new Map();
+        for (const item of content.items) {
+          if (!item.str || !item.str.trim()) continue;
+          const y = Math.round(item.transform[5] / 2) * 2;
+          const x = item.transform[4];
+          if (!byY.has(y)) byY.set(y, []);
+          byY.get(y).push({ x, str: item.str });
+        }
+        const sortedYs = [...byY.keys()].sort((a, b) => b - a);
+        for (const y of sortedYs) {
+          const items = byY.get(y).sort((a, b) => a.x - b.x);
+          fullText += items.map(i => i.str).join("\t") + "\n";
+        }
+      }
+      if (fullText.trim()) return fullText;
+    } catch(e) {
+      console.warn("pdf.js falhou, a usar fallback:", e);
+    }
+  }
+
+  // Fallback: ler PDF como bytes e extrair texto raw
+  // Funciona para PDFs com texto incorporado (não digitalizados)
+  return extractPDFRaw(file);
+}
+
+async function extractPDFRaw(file) {
+  // Parser específico para PDFs comprimidos (FlateDecode)
+  // Descomprime os streams e extrai texto em sequência
   try {
-    // pdf.js must be loaded (non-deferred in HTML)
-    if (typeof pdfjsLib === "undefined") {
-      return await extractPDFViaReader(file);
-    }
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
     const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    let fullText = "";
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      // Reconstruct lines by grouping items by Y position
-      const byY = new Map();
-      for (const item of content.items) {
-        const y = Math.round(item.transform[5]);
-        if (!byY.has(y)) byY.set(y, []);
-        byY.get(y).push(item.str);
-      }
-      const sortedYs = [...byY.keys()].sort((a, b) => b - a);
-      for (const y of sortedYs) {
-        fullText += byY.get(y).join(" ") + "\n";
+    const bytes = new Uint8Array(arrayBuffer);
+
+    // Encontrar streams comprimidos
+    const raw = bytes;
+    const streamMarker = new TextEncoder().encode("stream\n");
+    const endMarker = new TextEncoder().encode("endstream");
+
+    // Usa DecompressionStream se disponível (iOS 16.4+)
+    async function decompress(data) {
+      try {
+        const ds = new DecompressionStream("deflate");
+        const writer = ds.writable.getWriter();
+        const reader = ds.readable.getReader();
+        writer.write(data);
+        writer.close();
+        const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+        const total = chunks.reduce((a, c) => a + c.length, 0);
+        const out = new Uint8Array(total);
+        let offset = 0;
+        for (const c of chunks) { out.set(c, offset); offset += c.length; }
+        return new TextDecoder("latin1").decode(out);
+      } catch(e) {
+        return null;
       }
     }
-    return fullText;
-  } catch (e) {
-    console.error("PDF extraction error:", e);
+
+    // Encontrar todos os streams no PDF
+    let allText = "";
+    let i = 0;
+    const rawStr = new TextDecoder("latin1").decode(bytes);
+    const streamRe = /stream\r?\n([\s\S]*?)endstream/g;
+    let m;
+    while ((m = streamRe.exec(rawStr)) !== null) {
+      const streamData = bytes.slice(m.index + m[0].indexOf('\n') + 1,
+                                     m.index + m[0].lastIndexOf('endstream'));
+      // Try deflate decompress
+      const decompressed = await decompress(streamData);
+      if (!decompressed) continue;
+
+      // Extrair sequência de tokens de texto (BT...ET blocks)
+      const btBlocks = decompressed.match(/BT[\s\S]*?ET/g) || [];
+      for (const block of btBlocks) {
+        // Tj operator: (text)Tj
+        const tjItems = [...block.matchAll(/\(([^)]*)\)\s*Tj/g)].map(x => x[1]);
+        // TJ array: [(text)-num(text)]TJ
+        const tjArr = [...block.matchAll(/\[([\s\S]*?)\]\s*TJ/g)];
+        const arrItems = [];
+        for (const aj of tjArr) {
+          const parts = [...aj[1].matchAll(/\(([^)]*)\)/g)].map(x => x[1]);
+          if (parts.length) arrItems.push(parts.join(""));
+        }
+        const lineItems = [...tjItems, ...arrItems].filter(t => t.trim());
+        if (lineItems.length) allText += lineItems.join("\t") + "\n";
+      }
+    }
+    return allText;
+  } catch(e) {
+    console.error("extractPDFRaw error:", e);
     return "";
   }
+}
+
+// Parser Santander Portugal — estado de máquina sobre sequência de tokens
+// Encoding do PDF: "!" = €, '"' (char34) = sinal negativo
+// Sequência: data → "D. valor:..." → descrição → ['"'] → valor → "!" → saldo → "!"
+function parseSantanderPDF(text) {
+  const out = [];
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  const monthMap = {
+    jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
+    jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
+  };
+
+  function parsePTDate(s) {
+    const m = String(s||"").match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
+    if (!m) return null;
+    const mon = monthMap[m[2].toLowerCase().slice(0,3)];
+    if (!mon) return null;
+    return `${m[3]}-${String(mon).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`;
+  }
+
+  let i = 0;
+  while (i < lines.length) {
+    const iso = parsePTDate(lines[i]);
+    if (!iso) { i++; continue; }
+
+    // Avança sobre linhas "D. valor: ..."
+    let j = i + 1;
+    while (j < lines.length && /^D[\.\s]?\s*valor/i.test(lines[j])) j++;
+    if (j >= lines.length) { i++; continue; }
+
+    const txLine = lines[j];
+
+    // Ignorar cabeçalhos
+    if (parsePTDate(txLine) ||
+        /titular|conta pt|saldo disponível|movimentos da|página|pesquisas|data da opera/i.test(txLine)) {
+      i = j; continue;
+    }
+
+    // Encontrar valores monetários: "15,00€" ou "−30.000,00€"
+    const moneyRe = /([\u2212\-]?\d{1,3}(?:\.\d{3})*,\d{2})€/g;
+    const moneyMatches = [...txLine.matchAll(moneyRe)];
+
+    if (moneyMatches.length >= 1) {
+      const rawAmt = moneyMatches[0][1].replace(/\u2212/g,"-").replace(/\./g,"").replace(/,/g,".");
+      const amount = Number(rawAmt);
+      if (Number.isFinite(amount)) {
+        const amtIdx = txLine.indexOf(moneyMatches[0][0]);
+        const desc = txLine.slice(0, amtIdx).replace(/\t/g," ").replace(/\s+/g," ").trim() || "Movimento";
+        if (!/^D[\.\s]?\s*valor/i.test(desc)) {
+          out.push({ date: iso, desc, amount });
+        }
+      }
+    }
+    i = j + 1;
+  }
+  return out;
+}
+
+
+// Santander variant: text comes out as consecutive items on same line with tabs
+// e.g. "13 abr 2026\tD. valor: 13 abr 2026\tTrf.imed. De Filipe...\t15,00€\t3.024,88€"
+function parseSantanderTabular(text) {
+  const out = [];
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+
+  const monthMap = {
+    jan:1, fev:2, feb:2, mar:3, abr:4, apr:4, mai:5, may:5,
+    jun:6, jul:7, ago:8, aug:8, set:9, sep:9, out:10, oct:10, nov:11, dez:12, dec:12
+  };
+
+  function parsePTDate2(s) {
+    const m = String(s||"").trim().match(/(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})/);
+    if (!m) return null;
+    const mon = monthMap[m[2].toLowerCase().slice(0,3)];
+    if (!mon) return null;
+    return `${m[3]}-${String(mon).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`;
+  }
+
+  for (const line of lines) {
+    // Skip header/footer lines
+    if (/titular|conta|saldo|movimentos|página|pesquisas|defeito|documento/i.test(line) &&
+        !/\d{1,3}(?:\.\d{3})*,\d{2}€/.test(line)) continue;
+    if (/^D[\.\s]?\s*valor/i.test(line)) continue;
+    if (/data da opera|opera.+valor.+saldo/i.test(line)) continue;
+
+    const cols = line.split(/\t/).map(c => c.trim()).filter(Boolean);
+    if (cols.length < 2) continue;
+
+    // Find date in first columns
+    let iso = null, descStart = 0;
+    for (let i = 0; i < Math.min(3, cols.length); i++) {
+      iso = parsePTDate2(cols[i]);
+      if (iso) { descStart = i + 1; break; }
+    }
+    if (!iso) continue;
+
+    // Find money values (last two are amount + saldo, or just amount)
+    const moneyRe = /^[\u2212\-]?\d{1,3}(?:\.\d{3})*,\d{2}€?$/;
+    const moneyIdxs = cols.map((c, i) => moneyRe.test(c.replace(/\s/g,"")) ? i : -1).filter(i => i >= 0);
+    if (!moneyIdxs.length) continue;
+
+    // Transaction amount = first money value after description
+    const amtIdx = moneyIdxs[0];
+    const rawAmt = cols[amtIdx].replace(/\u2212/g,"-").replace(/€/g,"").replace(/\./g,"").replace(/,/g,".");
+    const amount = Number(rawAmt);
+    if (!Number.isFinite(amount)) continue;
+
+    // Description = cols between date and amount
+    const desc = cols.slice(descStart, amtIdx).join(" ").trim() || "Movimento";
+    // Skip "D. valor:" type descriptions
+    if (/^D[\.\s]?\s*valor/i.test(desc)) continue;
+
+    out.push({ date: iso, desc, amount });
+  }
+  return out;
 }
 
 async function extractTextFromXLSX(file) {
