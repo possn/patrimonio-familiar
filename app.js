@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260426").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260427").catch(() => {});
     });
   }
 } catch (_) {}
@@ -2738,22 +2738,48 @@ async function fileToText(file) {
   });
 }
 
-async function importBankMovementsCsv(file) {
-  if (!file) throw new Error("Sem ficheiro.");
-  const text = await fileToText(file);
-  const parsed = parseBankCsvLikeText(text);
+/* ─── IMPORTAÇÃO UNIVERSAL DE EXTRACTOS ──────────────────────
+   Suporta: CSV/TXT · Excel (.xlsx) · PDF
+   Detecta formato automaticamente pelo nome/tipo do ficheiro
+─────────────────────────────────────────────────────────────── */
 
-  const debugEl = $("bankImportDebug");
-  if (!parsed.length) {
-    toast("0 linhas reconhecidas. Verifica o formato do ficheiro.");
-    if (debugEl && debugEl.style) { debugEl.style.display = "block"; debugEl.textContent = `Primeira linha: ${text.split("\n")[0].slice(0, 200)}`; }
+async function importBankFile(file) {
+  if (!file) throw new Error("Sem ficheiro.");
+  const name = file.name.toLowerCase();
+  let text = "";
+
+  if (name.endsWith(".pdf")) {
+    text = await extractTextFromPDF(file);
+  } else if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+    text = await extractTextFromXLSX(file);
+  } else {
+    // CSV, TXT, ou qualquer outro texto
+    text = await fileToText(file);
+  }
+
+  if (!text.trim()) {
+    showBankResult("error", "Não foi possível extrair texto do ficheiro.");
     return { added: 0, dup: 0, read: 0 };
   }
 
-  const existing = new Set(state.transactions.map(tx => {
-    const dir = tx.type || "in";
-    return `${String(tx.date||"").slice(0,10)}|${dir}|${Math.round(Math.abs(parseNum(tx.amount))*100)}|${normStr(tx.category||"")}`;
-  }));
+  // Tenta o parser específico de banco PT (data DD Mmm AAAA + montante)
+  let parsed = parseBankCsvLikeText(text);
+
+  // Fallback: tenta CSV genérico com detecção de colunas
+  if (!parsed.length) {
+    parsed = parseBankCsvGeneric(text);
+  }
+
+  if (!parsed.length) {
+    const firstLines = text.split("\n").slice(0, 3).join(" | ").slice(0, 300);
+    showBankResult("warn", `0 movimentos reconhecidos.<br><small>Primeiras linhas: ${escapeHtml(firstLines)}</small>`);
+    return { added: 0, dup: 0, read: 0 };
+  }
+
+  // Deduplica
+  const existing = new Set(state.transactions.map(tx =>
+    `${String(tx.date||"").slice(0,10)}|${tx.type}|${Math.round(Math.abs(parseNum(tx.amount))*100)}|${normStr(tx.category||"")}`
+  ));
 
   let added = 0, dup = 0;
   for (const r of parsed) {
@@ -2762,15 +2788,217 @@ async function importBankMovementsCsv(file) {
     const key = `${r.date}|${dir}|${Math.round(amount*100)}|${normStr(r.desc)}`;
     if (existing.has(key)) { dup++; continue; }
     existing.add(key);
-    state.transactions.push({ id: uid(), type: dir, category: r.desc || "Banco", amount, date: r.date, recurring: "none", notes: "" });
+    state.transactions.push({
+      id: uid(), type: dir,
+      category: r.desc || "Banco",
+      amount, date: r.date,
+      recurring: "none", notes: ""
+    });
     added++;
   }
 
   saveState();
   renderCashflow();
-  toast(`Importação: ${added} novos · ${dup} duplicados · ${parsed.length} reconhecidos`);
-  if (debugEl && debugEl.style) { debugEl.style.display = "block"; debugEl.textContent = `Lidas: ${parsed.length} · Novas: ${added} · Dup: ${dup}`; }
+
+  const msg = added > 0
+    ? `✅ ${added} movimento${added!==1?"s":""} importado${added!==1?"s":""} · ${dup} duplicado${dup!==1?"s":""} · ${parsed.length} lido${parsed.length!==1?"s":""}`
+    : `ℹ️ 0 novos (${dup} já existiam · ${parsed.length} lidos)`;
+  showBankResult(added > 0 ? "ok" : "info", msg);
+  toast(msg.replace(/<[^>]+>/g,""));
   return { added, dup, read: parsed.length };
+}
+
+function showBankResult(type, html) {
+  const el = document.getElementById("bankImportResult");
+  if (!el) return;
+  el.style.display = "";
+  const colors = { ok: "#f0fdf4", warn: "#fffbeb", error: "#fef2f2", info: "#f5f3ff" };
+  const borders = { ok: "#86efac", warn: "#fcd34d", error: "#fca5a5", info: "#c4b5fd" };
+  el.style.background = colors[type] || "#f5f5f5";
+  el.style.border = `1px solid ${borders[type] || "#e5e5e5"}`;
+  el.style.borderRadius = "14px";
+  el.style.padding = "12px 14px";
+  el.style.fontWeight = "700";
+  el.style.fontSize = "14px";
+  el.innerHTML = html;
+}
+
+async function extractTextFromPDF(file) {
+  try {
+    // pdf.js must be loaded (non-deferred in HTML)
+    if (typeof pdfjsLib === "undefined") {
+      return await extractPDFViaReader(file);
+    }
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    let fullText = "";
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      // Reconstruct lines by grouping items by Y position
+      const byY = new Map();
+      for (const item of content.items) {
+        const y = Math.round(item.transform[5]);
+        if (!byY.has(y)) byY.set(y, []);
+        byY.get(y).push(item.str);
+      }
+      const sortedYs = [...byY.keys()].sort((a, b) => b - a);
+      for (const y of sortedYs) {
+        fullText += byY.get(y).join(" ") + "\n";
+      }
+    }
+    return fullText;
+  } catch (e) {
+    console.error("PDF extraction error:", e);
+    return "";
+  }
+}
+
+async function extractTextFromXLSX(file) {
+  try {
+    if (typeof XLSX === "undefined") {
+      toast("Biblioteca Excel não carregada. Tenta recarregar a página.");
+      return "";
+    }
+    const arrayBuffer = await file.arrayBuffer();
+    const wb = XLSX.read(arrayBuffer, { type: "array", dateNF: "yyyy-mm-dd" });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    // Convert to CSV text for parsing
+    return XLSX.utils.sheet_to_csv(ws, { FS: ";", RS: "\n" });
+  } catch (e) {
+    console.error("XLSX extraction error:", e);
+    return "";
+  }
+}
+
+// Generic CSV bank parser — handles most Portuguese bank exports
+function parseBankCsvGeneric(text) {
+  const out = [];
+  const raw = String(text || "").replace(/^\uFEFF/, "");
+  const lines = raw.split(/\r?\n/);
+
+  // Try to find delimiter
+  const delims = [";", ",", "\t", "|"];
+  let bestDelim = ";";
+  let maxCols = 0;
+  for (const d of delims) {
+    const cols = (lines.find(l => l.trim()) || "").split(d).length;
+    if (cols > maxCols) { maxCols = cols; bestDelim = d; }
+  }
+
+  // Find header row — look for date/description/amount keywords
+  const dateKw = ["data","date","datum","fecha","dt"];
+  const descKw = ["descri","movimento","operacao","conceito","narrat","detail","memo","ref"];
+  const amtKw  = ["montante","valor","amount","debito","credito","importe","saldo","movim"];
+
+  let headerIdx = -1, dateCol = -1, descCol = -1, amtCol = -1, debitCol = -1, creditCol = -1;
+
+  for (let i = 0; i < Math.min(20, lines.length); i++) {
+    const row = splitCSVLine(lines[i], bestDelim).map(c => c.trim().toLowerCase());
+    if (row.length < 2) continue;
+    let score = 0;
+    let di = -1, dsi = -1, ai = -1, dbi = -1, cri = -1;
+    row.forEach((c, j) => {
+      if (dateKw.some(k => c.includes(k))) { di = j; score++; }
+      if (descKw.some(k => c.includes(k))) { dsi = j; score++; }
+      if (amtKw.some(k => c.includes(k))) {
+        if (c.includes("debito") || c.includes("saida") || c.includes("debit")) dbi = j;
+        else if (c.includes("credito") || c.includes("entrada") || c.includes("credit")) cri = j;
+        else ai = j;
+        score++;
+      }
+    });
+    if (score >= 2) {
+      headerIdx = i; dateCol = di; descCol = dsi; amtCol = ai; debitCol = dbi; creditCol = cri;
+      break;
+    }
+  }
+
+  if (headerIdx < 0) return [];
+
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || !line.trim()) continue;
+    const cols = splitCSVLine(line, bestDelim).map(c => c.trim());
+    if (cols.length < 2) continue;
+
+    // Date
+    const rawDate = dateCol >= 0 ? cols[dateCol] : cols[0];
+    const isoDate = parseDateFlexible(rawDate);
+    if (!isoDate) continue;
+
+    // Description
+    const desc = (descCol >= 0 ? cols[descCol] : cols.slice(1, 3).join(" ")).trim();
+
+    // Amount — try separate debit/credit columns first
+    let amount = 0;
+    if (debitCol >= 0 || creditCol >= 0) {
+      const debit = debitCol >= 0 ? parseEuroNum(cols[debitCol]) : 0;
+      const credit = creditCol >= 0 ? parseEuroNum(cols[creditCol]) : 0;
+      amount = (credit || 0) - (debit || 0);
+    } else if (amtCol >= 0) {
+      amount = parseEuroNum(cols[amtCol]);
+    } else {
+      // Last numeric column
+      for (let j = cols.length - 1; j >= 0; j--) {
+        const v = parseEuroNum(cols[j]);
+        if (v !== null && v !== 0) { amount = v; break; }
+      }
+    }
+    if (amount === null || amount === undefined) continue;
+
+    out.push({ date: isoDate, desc: desc || "Movimento", amount });
+  }
+  return out;
+}
+
+function parseDateFlexible(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim().replace(/['"]/g, "");
+  // ISO: 2024-01-15
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  // DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+  const m1 = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (m1) {
+    const d = m1[1].padStart(2,"0"), mo = m1[2].padStart(2,"0");
+    const y = m1[3].length === 2 ? "20" + m1[3] : m1[3];
+    return `${y}-${mo}-${d}`;
+  }
+  // MM/DD/YYYY
+  const m2 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m2) {
+    const mo = m2[1].padStart(2,"0"), d = m2[2].padStart(2,"0"), y = m2[3];
+    return `${y}-${mo}-${d}`;
+  }
+  // Portuguese: "15 Jan 2024" or "15 Janeiro 2024"
+  const m3 = s.match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
+  if (m3) return parsePtDate(m3[1], m3[2], m3[3]);
+  return null;
+}
+
+function parseEuroNum(s) {
+  if (!s) return null;
+  const clean = String(s).trim().replace(/[€$£\s]/g, "").replace(/\u2212/g, "-");
+  if (!clean || clean === "-" || clean === "—") return null;
+  // Handle PT format: 1.234,56 or 1,234.56
+  let n;
+  if (clean.includes(",") && clean.includes(".")) {
+    n = clean.lastIndexOf(",") > clean.lastIndexOf(".")
+      ? Number(clean.replace(/\./g,"").replace(",","."))
+      : Number(clean.replace(/,/g,""));
+  } else if (clean.includes(",")) {
+    n = Number(clean.replace(",","."));
+  } else {
+    n = Number(clean);
+  }
+  return Number.isFinite(n) ? n : null;
+}
+
+// Keep old function for backwards compat
+async function importBankMovementsCsv(file) {
+  return importBankFile(file);
 }
 
 function downloadTemplate() {
@@ -2943,7 +3171,34 @@ function wire() {
   });
   $("btnTemplate").addEventListener("click", downloadTemplate);
 
-  // Bank CSV import
+  // Importar extracto do banco (universal: CSV, XLSX, PDF)
+  const bankFileInput = document.getElementById("bankFile");
+  const btnImportBank = document.getElementById("btnImportBank");
+  if (bankFileInput && btnImportBank) {
+    bankFileInput.addEventListener("change", () => {
+      btnImportBank.disabled = !bankFileInput.files?.length;
+      const res = document.getElementById("bankImportResult");
+      if (res) res.style.display = "none";
+    });
+    btnImportBank.addEventListener("click", async e => {
+      e.preventDefault();
+      const f = bankFileInput.files?.[0];
+      if (!f) return;
+      btnImportBank.disabled = true;
+      btnImportBank.textContent = "A importar…";
+      try {
+        await importBankFile(f);
+      } catch (err) {
+        showBankResult("error", `Erro: ${escapeHtml(err.message || String(err))}`);
+        console.error(err);
+      } finally {
+        btnImportBank.disabled = false;
+        btnImportBank.textContent = "Importar extracto";
+      }
+    });
+  }
+
+  // Bank CSV import (legacy - kept for Import tab)
   (function bindBankCsvImport() {
     const input = $("bankCsvFile"), btn = $("btnImportBankCsv"), nameEl = $("bankCsvName");
     if (!input || !btn) return;

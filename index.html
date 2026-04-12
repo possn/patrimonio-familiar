@@ -10,7 +10,9 @@
   <link rel="apple-touch-icon" href="icon192.png">
   <link rel="stylesheet" href="styles.css?v=20260426">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script defer src="app.js?v=20260426"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+  <script defer src="app.js?v=20260427"></script>
 </head>
 <body>
 
@@ -243,6 +245,30 @@
         <button class="link" id="btnTxToggle" style="display:none">Ver todos</button>
       </div>
       <div id="txList" class="list"></div>
+    </div>
+
+    <!-- IMPORTAR EXTRACTO DO BANCO -->
+    <div class="card">
+      <div class="card__head">
+        <div>
+          <div class="card__title">📥 Importar extracto do banco</div>
+          <div class="card__muted">CSV, Excel ou PDF · duplicados ignorados</div>
+        </div>
+      </div>
+      <div class="note" style="margin-bottom:12px">
+        Exporta o extracto do teu homebanking e carrega aqui. A app detecta o formato automaticamente e ignora movimentos já introduzidos.
+      </div>
+      <input id="bankFile" type="file"
+        accept=".csv,.xlsx,.xls,.pdf,text/csv,application/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf"
+        class="input">
+      <div class="row row--wrap" style="gap:8px;margin-top:10px">
+        <button class="btn btn--primary" id="btnImportBank" disabled style="flex:1">Importar extracto</button>
+      </div>
+      <div id="bankImportResult" style="margin-top:10px;display:none"></div>
+      <div class="card__muted" style="margin-top:12px;font-size:12px;line-height:1.7">
+        <b>Bancos testados:</b> CGD · Millennium BCP · BPI · Santander · Novobanco · Activobank<br>
+        <b>Formatos:</b> CSV/TXT (homebanking) · Excel .xlsx · PDF (extracto)
+      </div>
     </div>
   </section>
 
