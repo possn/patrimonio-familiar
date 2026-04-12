@@ -43,12 +43,14 @@
           <div class="pill__v" id="kpiPassiveAnnual">0 €</div>
         </div>
         <div class="pill pill--aqua">
-          <div class="pill__k">Mensal (estimado)</div>
-          <div class="pill__v" id="kpiPassiveMonthly">0 €</div>
+          <div class="pill__k">Dividendos YTD (líquido)</div>
+          <div class="pill__v" id="kpiDivYTD">0 €</div>
         </div>
       </div>
+      <div class="card__muted" style="margin-top:6px;font-size:13px" id="kpiDivCount"></div>
       <div class="row row--wrap" style="margin-top:12px">
-        <button class="btn btn--primary" id="btnSnapshot">Registar mês</button>
+        <button class="btn btn--primary" id="btnSnapshot">📸 Registar mês</button>
+        <button class="btn btn--primary" id="btnAddDiv">💰 Dividendo</button>
         <button class="btn" id="btnClearHistory">Limpar histórico</button>
       </div>
     </div>
@@ -222,6 +224,36 @@
         <button class="link" id="btnTxToggle" style="display:none">Ver todos</button>
       </div>
       <div id="txList" class="list"></div>
+    </div>
+
+  </section>
+
+  <!-- ═══════════════ DIVIDENDOS ═══════════════ -->
+  <section class="view" data-view="dividends" id="viewDividends" hidden>
+
+    <div class="card">
+      <div class="card__head">
+        <div>
+          <div class="card__title">Dividendos</div>
+          <div class="card__muted">Rendimento passivo real recebido</div>
+        </div>
+        <button class="btn btn--primary" id="btnAddDiv2">+ Dividendo</button>
+      </div>
+    </div>
+
+    <div id="divKPIs"></div>
+
+    <div class="card">
+      <div class="card__title" style="margin-bottom:10px">Por mês (últimos 24)</div>
+      <div class="chartWrap"><canvas id="divChart" height="220"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">Histórico</div><div class="card__muted">Clica para editar</div></div>
+        <button class="link" id="btnDivToggle" style="display:none">Ver todos</button>
+      </div>
+      <div id="divList" class="list"></div>
     </div>
 
   </section>
@@ -418,8 +450,15 @@
       </div>
 
       <div class="card">
+        <div class="card__title" style="margin-bottom:8px">Importar / Exportar</div>
+        <div class="row row--wrap" style="gap:10px">
+          <button class="btn btn--primary" id="btnGoImport">⇅ Ir para Importar</button>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card__title" style="margin-bottom:8px">Sobre</div>
-        <div class="card__muted">Património Familiar v6 · PWA · Dados guardados apenas neste dispositivo (IndexedDB + localStorage fallback).<br><br>Compatível com Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.</div>
+        <div class="card__muted">Património Familiar v7 · PWA · Dados guardados apenas neste dispositivo (IndexedDB + localStorage fallback).<br><br>Compatível com Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.</div>
       </div>
     </div>
 
@@ -442,9 +481,9 @@
 <nav class="bottomnav" aria-label="Navegação">
   <button class="navbtn navbtn--active" data-view="dashboard" id="navDashboard"><span class="navico">▣</span><span class="navlbl">Dashboard</span></button>
   <button class="navbtn" data-view="assets" id="navAssets"><span class="navico">≡</span><span class="navlbl">Ativos</span></button>
+  <button class="navbtn" data-view="dividends" id="navDividends"><span class="navico">💰</span><span class="navlbl">Dividendos</span></button>
   <button class="navbtn" data-view="cashflow" id="navCashflow"><span class="navico">€</span><span class="navlbl">Balanço</span></button>
   <button class="navbtn" data-view="analysis" id="navAnalysis"><span class="navico">📈</span><span class="navlbl">Análise</span></button>
-  <button class="navbtn" data-view="import" id="navImport"><span class="navico">⇅</span><span class="navlbl">Importar</span></button>
 </nav>
 
 <!-- ══════════ MODAL: Adicionar/Editar Item ══════════ -->
@@ -559,6 +598,45 @@
     <div class="row row--wrap" style="margin-top:12px">
       <button class="btn" id="btnDistToggle" style="display:none">Ver o resto</button>
       <button class="btn" data-close="modalDist">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ MODAL: Dividendo ══════════ -->
+<div class="modal" id="modalDiv" aria-hidden="true">
+  <div class="modal__bg" data-close="modalDiv"></div>
+  <div class="modal__panel">
+    <div class="modal__head">
+      <div class="modal__title" id="modalDivTitle">Registar dividendo</div>
+      <button class="modal__close" data-close="modalDiv">Fechar</button>
+    </div>
+    <div class="form">
+      <label class="lbl">Ativo</label>
+      <select class="input" id="dAsset">
+        <option value="">-- Seleciona ativo (opcional) --</option>
+      </select>
+
+      <label class="lbl">Montante bruto recebido (€)</label>
+      <input class="input" id="dAmount" inputmode="decimal" placeholder="ex: 142.50">
+
+      <label class="lbl">Retenção na fonte (€, se houver)</label>
+      <input class="input" id="dTax" inputmode="decimal" placeholder="ex: 21.37 (deixa vazio se não houve)">
+
+      <label class="lbl">Data de pagamento</label>
+      <input class="input" id="dDate" type="date">
+
+      <label class="lbl">Notas (opcional)</label>
+      <input class="input" id="dNotes" placeholder="ex: Q1 2026, VWCE dividend">
+
+      <div class="note" style="margin-top:10px">
+        O montante <b>líquido</b> (bruto − retenção) entra no cálculo do rendimento passivo real.
+      </div>
+
+      <div class="row row--wrap" style="margin-top:14px">
+        <button class="btn btn--primary" id="btnSaveDiv">Guardar</button>
+        <button class="btn btn--danger" id="btnDeleteDiv" style="display:none">Apagar</button>
+        <button class="btn" data-close="modalDiv">Cancelar</button>
+      </div>
     </div>
   </div>
 </div>

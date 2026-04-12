@@ -196,6 +196,7 @@ const DEFAULT_STATE = {
   assets: [],       // {id, class, name, value, yieldType, yieldValue, maturityDate, compoundFreq, notes}
   liabilities: [],  // {id, class, name, value, rate, notes}
   transactions: [], // {id, type:'in'|'out', category, amount, date, recurring:'none'|'monthly'|'yearly', notes}
+  dividends: [],    // {id, assetId, assetName, amount, date, notes, taxWithheld}
   history: []       // {dateISO, net, assets, liabilities, passiveAnnual}
 };
 
@@ -234,6 +235,7 @@ async function loadStateAsync() {
       assets: Array.isArray(p.assets) ? p.assets : [],
       liabilities: Array.isArray(p.liabilities) ? p.liabilities : [],
       transactions: Array.isArray(p.transactions) ? p.transactions : [],
+      dividends: Array.isArray(p.dividends) ? p.dividends : [],
       history: Array.isArray(p.history) ? p.history : []
     };
   } catch { return safeClone(DEFAULT_STATE); }
@@ -254,8 +256,18 @@ function calcTotals() {
   const assetsTotal = state.assets.reduce((a, x) => a + parseNum(x.value), 0);
   const liabsTotal = state.liabilities.reduce((a, x) => a + parseNum(x.value), 0);
   const net = assetsTotal - liabsTotal;
-  const passiveAnnual = state.assets.reduce((a, x) => a + passiveFromItem(x), 0);
-  return { assetsTotal, liabsTotal, net, passiveAnnual };
+  // passiveAnnual: yield teórico dos ativos + dividendos reais dos últimos 12 meses
+  const theoreticalPassive = state.assets.reduce((a, x) => a + passiveFromItem(x), 0);
+  const now = new Date();
+  const cutoff = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0,10);
+  const realDividends12m = (state.dividends || [])
+    .filter(d => d.date >= cutoff)
+    .reduce((a, d) => a + parseNum(d.amount), 0);
+  // Se há dividendos reais registados usamos esses; senão o teórico
+  const passiveAnnual = realDividends12m > 0
+    ? Math.max(realDividends12m, theoreticalPassive)
+    : theoreticalPassive;
+  return { assetsTotal, liabsTotal, net, passiveAnnual, theoreticalPassive, realDividends12m };
 }
 
 /* ─── COMPOUND INTEREST ENGINE ────────────────────────────── */
@@ -289,6 +301,7 @@ function setView(view) {
   if (view === "assets") renderItems();
   if (view === "cashflow") renderCashflow();
   if (view === "analysis") renderAnalysis();
+  if (view === "dividends") renderDividends();
   window.scrollTo({ top: 0, behavior: "instant" });
 }
 
@@ -309,6 +322,7 @@ function renderAll() {
   renderDashboard();
   renderItems();
   renderCashflow();
+  renderDividends();
 }
 
 /* ─── DASHBOARD ───────────────────────────────────────────── */
@@ -318,6 +332,20 @@ function renderDashboard() {
   $("kpiAP").textContent = `Ativos ${fmtEUR(t.assetsTotal)} | Passivos ${fmtEUR(t.liabsTotal)}`;
   $("kpiPassiveAnnual").textContent = fmtEUR(t.passiveAnnual);
   $("kpiPassiveMonthly").textContent = fmtEUR(t.passiveAnnual / 12);
+
+  // Dividendos YTD
+  const yearStart = new Date().getFullYear() + "-01-01";
+  const divYTD = (state.dividends || [])
+    .filter(d => d.date >= yearStart)
+    .reduce((a, d) => a + parseNum(d.amount), 0);
+  const divEl = $("kpiDivYTD");
+  if (divEl) divEl.textContent = fmtEUR(divYTD);
+  const divCountEl = $("kpiDivCount");
+  if (divCountEl) {
+    const count = (state.dividends || []).filter(d => d.date >= yearStart).length;
+    divCountEl.textContent = `${count} pagamento${count !== 1 ? "s" : ""} em ${new Date().getFullYear()}`;
+  }
+
   renderSummary();
   renderDistChart();
   renderTrendChart();
@@ -726,6 +754,193 @@ function renderTxList() {
   } else {
     $("btnTxToggle").style.display = "none";
   }
+}
+
+/* ─── DIVIDENDOS ──────────────────────────────────────────── */
+let divExpanded = false;
+let editingDivId = null;
+
+function openDivModal(divId) {
+  editingDivId = divId || null;
+  const existing = divId ? (state.dividends || []).find(d => d.id === divId) : null;
+
+  // Build asset selector
+  const sel = $("dAsset");
+  sel.innerHTML = `<option value="">-- Ativo --</option>`;
+  for (const a of state.assets) {
+    const o = document.createElement("option");
+    o.value = a.id; o.textContent = a.name;
+    sel.appendChild(o);
+  }
+
+  if (existing) {
+    $("modalDivTitle").textContent = "Editar dividendo";
+    $("dAsset").value = existing.assetId || "";
+    $("dAmount").value = String(parseNum(existing.amount));
+    $("dTax").value = String(parseNum(existing.taxWithheld) || "");
+    $("dDate").value = existing.date || isoToday();
+    $("dNotes").value = existing.notes || "";
+    $("btnDeleteDiv").style.display = "";
+  } else {
+    $("modalDivTitle").textContent = "Registar dividendo";
+    $("dAsset").value = "";
+    $("dAmount").value = "";
+    $("dTax").value = "";
+    $("dDate").value = isoToday();
+    $("dNotes").value = "";
+    $("btnDeleteDiv").style.display = "none";
+  }
+  openModal("modalDiv");
+}
+
+function saveDivFromModal() {
+  const assetId = $("dAsset").value;
+  const assetName = assetId
+    ? ((state.assets.find(a => a.id === assetId) || {}).name || "")
+    : ($("dNotes").value || "Manual");
+  const amount = parseNum($("dAmount").value);
+  const taxWithheld = parseNum($("dTax").value);
+  const date = $("dDate").value;
+  const notes = ($("dNotes").value || "").trim();
+
+  if (!amount || amount <= 0) { toast("Valor tem de ser > 0."); return; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { toast("Data inválida."); return; }
+
+  if (!Array.isArray(state.dividends)) state.dividends = [];
+
+  const obj = { id: editingDivId || uid(), assetId, assetName, amount, taxWithheld, date, notes };
+  const ix = state.dividends.findIndex(d => d.id === obj.id);
+  if (ix >= 0) state.dividends[ix] = obj; else state.dividends.push(obj);
+
+  saveState();
+  closeModal("modalDiv");
+  renderDashboard();
+  renderDividends();
+  toast("Dividendo guardado.");
+}
+
+function deleteDivEntry() {
+  if (!editingDivId) return;
+  if (!confirm("Apagar este dividendo?")) return;
+  state.dividends = (state.dividends || []).filter(d => d.id !== editingDivId);
+  editingDivId = null;
+  saveState();
+  closeModal("modalDiv");
+  renderDashboard();
+  renderDividends();
+  toast("Dividendo apagado.");
+}
+
+function renderDividends() {
+  const wrap = $("divList");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+
+  const divs = (state.dividends || []).slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+
+  if (!divs.length) {
+    wrap.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem dividendos registados</div><div class="item__s">Usa "+ Dividendo" para registar.</div></div><div class="item__v">—</div></div>`;
+    $("btnDivToggle").style.display = "none";
+    return;
+  }
+
+  const shown = divExpanded ? divs : divs.slice(0, 8);
+  for (const d of shown) {
+    const net = parseNum(d.amount) - parseNum(d.taxWithheld || 0);
+    const row = document.createElement("div");
+    row.className = "item";
+    row.innerHTML = `<div class="item__l">
+      <div class="item__t">${escapeHtml(d.assetName || "Manual")}</div>
+      <div class="item__s">${escapeHtml(d.date)}${parseNum(d.taxWithheld) > 0 ? ` · Ret. ${fmtEUR2(d.taxWithheld)}` : ""}${d.notes ? ` · ${escapeHtml(d.notes)}` : ""}</div>
+    </div>
+    <div class="item__v" style="text-align:right">
+      <div>${fmtEUR2(net)}</div>
+      ${parseNum(d.taxWithheld) > 0 ? `<div class="item__s">Bruto ${fmtEUR2(parseNum(d.amount))}</div>` : ""}
+    </div>`;
+    row.addEventListener("click", () => openDivModal(d.id));
+    wrap.appendChild(row);
+  }
+
+  if (divs.length > 8) {
+    $("btnDivToggle").style.display = "inline";
+    $("btnDivToggle").textContent = divExpanded ? "Ver menos" : `Ver todos (${divs.length})`;
+  } else {
+    $("btnDivToggle").style.display = "none";
+  }
+
+  // KPIs por período
+  renderDivKPIs(divs);
+  renderDivChart(divs);
+}
+
+function renderDivKPIs(divs) {
+  const now = new Date();
+  const yrStart = now.getFullYear() + "-01-01";
+  const mStart = now.toISOString().slice(0, 7);
+
+  const ytd = divs.filter(d => d.date >= yrStart).reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
+  const mtd = divs.filter(d => d.date.slice(0, 7) === mStart).reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
+  const total = divs.reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
+  const taxTotal = divs.reduce((a, d) => a + parseNum(d.taxWithheld || 0), 0);
+
+  // By asset
+  const byAsset = {};
+  for (const d of divs) {
+    const k = d.assetName || "Manual";
+    byAsset[k] = (byAsset[k] || 0) + parseNum(d.amount) - parseNum(d.taxWithheld || 0);
+  }
+  const topAsset = Object.entries(byAsset).sort((a, b) => b[1] - a[1])[0];
+
+  const el = $("divKPIs");
+  if (!el) return;
+  el.innerHTML = `
+    <div class="kpiRow">
+      <div class="kpi kpi--in"><div class="kpi__k">YTD (líquido)</div><div class="kpi__v">${fmtEUR2(ytd)}</div></div>
+      <div class="kpi"><div class="kpi__k">Este mês</div><div class="kpi__v">${fmtEUR2(mtd)}</div></div>
+      <div class="kpi kpi--net"><div class="kpi__k">Total acumulado</div><div class="kpi__v">${fmtEUR2(total)}</div></div>
+    </div>
+    <div class="kpiRow" style="margin-top:10px">
+      <div class="kpi kpi--out"><div class="kpi__k">Retenção total</div><div class="kpi__v">${fmtEUR2(taxTotal)}</div></div>
+      <div class="kpi" style="grid-column:span 2"><div class="kpi__k">Top ativo</div><div class="kpi__v" style="font-size:16px">${topAsset ? `${escapeHtml(topAsset[0])} · ${fmtEUR2(topAsset[1])}` : "—"}</div></div>
+    </div>`;
+}
+
+function renderDivChart(divs) {
+  const ctx = $("divChart") && $("divChart").getContext("2d");
+  if (!ctx) return;
+  if (window._divChart) window._divChart.destroy();
+  if (!divs.length) return;
+
+  // Group by month
+  const byMonth = {};
+  for (const d of divs) {
+    const m = d.date.slice(0, 7);
+    if (!byMonth[m]) byMonth[m] = { gross: 0, net: 0 };
+    byMonth[m].gross += parseNum(d.amount);
+    byMonth[m].net += parseNum(d.amount) - parseNum(d.taxWithheld || 0);
+  }
+  const keys = Object.keys(byMonth).sort().slice(-24);
+
+  window._divChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: keys,
+      datasets: [
+        { label: "Líquido", data: keys.map(k => byMonth[k].net), backgroundColor: "#10b981" },
+        { label: "Retenção", data: keys.map(k => byMonth[k].gross - byMonth[k].net), backgroundColor: "#f59e0b", stack: "g" }
+      ]
+    },
+    options: {
+      plugins: {
+        legend: { labels: { boxWidth: 12 } },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR2(c.raw)}` } }
+      },
+      scales: {
+        x: { stacked: true },
+        y: { stacked: true, ticks: { callback: v => fmtEUR(v) } }
+      }
+    }
+  });
 }
 
 function openTxModal() {
@@ -1409,6 +1624,7 @@ async function importJSON(file) {
     assets: Array.isArray(p.assets) ? p.assets : [],
     liabilities: Array.isArray(p.liabilities) ? p.liabilities : [],
     transactions: Array.isArray(p.transactions) ? p.transactions : [],
+    dividends: Array.isArray(p.dividends) ? p.dividends : [],
     history: Array.isArray(p.history) ? p.history : []
   };
   saveState();
@@ -1443,7 +1659,7 @@ function wire() {
   wireModalClosers();
 
   // Nav
-  ["dashboard","assets","import","cashflow","analysis","settings"].forEach(v => {
+  ["dashboard","assets","import","cashflow","analysis","settings","dividends"].forEach(v => {
     const btn = document.getElementById("nav" + v.charAt(0).toUpperCase() + v.slice(1));
     if (btn) btn.addEventListener("click", () => setView(v));
   });
@@ -1451,6 +1667,7 @@ function wire() {
   // FAB
   $("btnFab").addEventListener("click", () => {
     if (currentView === "cashflow") openTxModal();
+    else if (currentView === "dividends") openDivModal(null);
     else if (currentView === "assets") openItemModal(showingLiabs ? "liab" : "asset");
     else if (currentView === "analysis") openTxModal();
     else openItemModal("asset");
@@ -1575,6 +1792,20 @@ function wire() {
     state.settings.currency = $("baseCurrency").value;
     saveState(); renderAll();
   });
+  const btnGoImport = document.getElementById("btnGoImport");
+  if (btnGoImport) btnGoImport.addEventListener("click", () => setView("import"));
+
+  // Dividendos
+  const btnAddDiv = document.getElementById("btnAddDiv");
+  if (btnAddDiv) btnAddDiv.addEventListener("click", () => openDivModal(null));
+  const btnAddDiv2 = document.getElementById("btnAddDiv2");
+  if (btnAddDiv2) btnAddDiv2.addEventListener("click", () => openDivModal(null));
+  const btnSaveDiv = document.getElementById("btnSaveDiv");
+  if (btnSaveDiv) btnSaveDiv.addEventListener("click", saveDivFromModal);
+  const btnDeleteDiv = document.getElementById("btnDeleteDiv");
+  if (btnDeleteDiv) btnDeleteDiv.addEventListener("click", deleteDivEntry);
+  const btnDivToggle = document.getElementById("btnDivToggle");
+  if (btnDivToggle) btnDivToggle.addEventListener("click", () => { divExpanded = !divExpanded; renderDividends(); });
 
   // Init
   setModeLiabs(false);
