@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260420").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260421").catch(() => {});
     });
   }
 } catch (_) {}
@@ -1256,9 +1256,15 @@ function showDivFields(mode) {
   });
   // Update portfolio value display for yield_only mode
   if (mode === "yield_only") {
-    const p = calcPortfolioYield();
+    const divData = calcDividendYield();
     const el = document.getElementById("divYoPortfolioVal");
-    if (el) el.textContent = p.totalValue > 0 ? fmtEUR(p.totalValue) : "Sem ativos com yield";
+    if (el) {
+      const src = divData.source === "summary" ? " (via resumo anual)" :
+                  divData.source === "individual" ? " (via dividendos registados)" : " (via yields dos ativos)";
+      el.textContent = divData.divPortfolioVal > 0
+        ? fmtEUR(divData.divPortfolioVal) + src
+        : "Sem ativos com yield %";
+    }
   }
 }
 
@@ -1288,10 +1294,12 @@ function calcDivFromInputs() {
     net = gross - tax;
 
   } else if (mode === "yield_only") {
-    const p = calcPortfolioYield();
+    // Usa só os ativos com yield_pct (ações/ETFs que pagam dividendos)
+    const divData = calcDividendYield();
+    const portfolioDiv = divData.divPortfolioVal;
     yieldPct = parseNum($("divSummaryYield_yo").value);
     const retRate = parseNum($("divSummaryRetRate_yo").value) || 28;
-    gross = p.totalValue * (yieldPct / 100);
+    gross = portfolioDiv * (yieldPct / 100);
     tax = gross * (retRate / 100);
     net = gross - tax;
   }
@@ -1359,11 +1367,13 @@ function renderDivSummaryKPIs() {
 
   const latest = summaries[0];
   const net = parseNum(latest.gross) - parseNum(latest.tax);
-  const t = calcTotals();
-  const portfolioVal = t.assetsTotal;
+  const divData = calcDividendYield();
+  const divPortfolioVal = divData.divPortfolioVal;
 
-  // Yield implícito: gross / valor carteira no momento (aprox)
-  const impliedYield = portfolioVal > 0 ? (parseNum(latest.gross) / portfolioVal * 100) : parseNum(latest.yieldPct);
+  // Yield implícito: bruto / valor carteira de DIVIDENDOS (não carteira total)
+  const impliedYield = divPortfolioVal > 0
+    ? (parseNum(latest.gross) / divPortfolioVal * 100)
+    : parseNum(latest.yieldPct);
 
   // Crescimento YoY
   let yoyGrowth = null;
@@ -1526,12 +1536,14 @@ function renderDivProjection() {
   const retRate = parseNum($("divProjRet").value) || 28;
 
   const t = calcTotals();
-  // Base portfolio: from assets or estimated from latest summary
-  let portfolioVal = t.assetsTotal;
+  const divData = calcDividendYield();
+  // Base portfolio: só a carteira de dividendos (ações/ETFs), não todos os ativos
+  let portfolioVal = divData.divPortfolioVal;
   if (!portfolioVal && latest) {
+    // Estima pela fórmula inversa: bruto = portfolio × yield
     portfolioVal = parseNum(latest.gross) / Math.max(0.001, baseYield / 100);
   }
-  if (!portfolioVal) { toast("Adiciona ativos ou guarda um resumo anual primeiro."); return; }
+  if (!portfolioVal) { toast("Adiciona ativos com Yield% ou guarda um resumo anual."); return; }
 
   const baseNet = latest
     ? parseNum(latest.gross) - parseNum(latest.tax)
@@ -1891,6 +1903,66 @@ function renderAnalysis() {
 /* ── Compound Interest Panel ── */
 
 // Calcula o yield médio ponderado real da carteira
+/* ─── CÁLCULOS DE RENDIMENTO SEPARADOS ────────────────────────
+   calcDividendYield()  → só ações/ETFs/Fundos com dividend yield
+                          usado na aba Dividendos
+   calcPortfolioYield() → TODOS os ativos com rendimento passivo
+                          (dividendos + rendas + depósitos + PPR…)
+                          usado na aba Análise → Juro Composto
+─────────────────────────────────────────────────────────────── */
+
+// Ativo é "dividendo" se for ação/ETF/Fundo/Cripto com yield %
+function isDividendAsset(a) {
+  const cls = (a.class || "").toLowerCase();
+  return ["ações/etfs","acoes/etfs","fundos","cripto","obrigações","obrigacoes"]
+    .some(c => cls.includes(c.replace("/etfs","").replace("ç","c").replace("õ","o"))) ||
+    cls.includes("a") && (cls.includes("etf") || cls.includes("a\u00e7\u00f5es"));
+}
+
+// Rendimento anual de dividendos (bruto) da carteira
+// Usa divSummaries se existirem, senão estima pelos yields dos ativos
+function calcDividendYield() {
+  // 1) Se há resumo anual recente, usa esse
+  const now = new Date();
+  const latestSummary = (state.divSummaries || [])
+    .filter(s => s.year >= now.getFullYear() - 1)
+    .sort((a, b) => b.year - a.year)[0];
+  if (latestSummary) {
+    const gross = parseNum(latestSummary.gross);
+    const net = gross - parseNum(latestSummary.tax);
+    const yieldPct = parseNum(latestSummary.yieldPct);
+    // Estimar valor da carteira de dividendos
+    const divAssets = state.assets.filter(a => passiveFromItem(a) > 0 && a.yieldType === "yield_pct");
+    const divPortfolioVal = divAssets.reduce((s, a) => s + parseNum(a.value), 0);
+    return { gross, net, yieldPct, divPortfolioVal, source: "summary" };
+  }
+
+  // 2) Se há dividendos individuais (últimos 12 meses)
+  const cutoff = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
+  const indivGross = (state.dividends || []).filter(d => d.date >= cutoff).reduce((s, d) => s + parseNum(d.amount), 0);
+  const indivNet = (state.dividends || []).filter(d => d.date >= cutoff).reduce((s, d) => s + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
+  if (indivGross > 0) {
+    const divAssets = state.assets.filter(a => a.yieldType === "yield_pct");
+    const divPortfolioVal = divAssets.reduce((s, a) => s + parseNum(a.value), 0);
+    const yieldPct = divPortfolioVal > 0 ? (indivGross / divPortfolioVal * 100) : 0;
+    return { gross: indivGross, net: indivNet, yieldPct, divPortfolioVal, source: "individual" };
+  }
+
+  // 3) Estimativa pelos yields dos ativos com yield_pct (ações/ETFs)
+  let divPortfolioVal = 0, estimatedGross = 0;
+  for (const a of state.assets) {
+    if (a.yieldType !== "yield_pct") continue;
+    const v = parseNum(a.value);
+    const gross = v * (parseNum(a.yieldValue) / 100);
+    divPortfolioVal += v;
+    estimatedGross += gross;
+  }
+  const yieldPct = divPortfolioVal > 0 ? (estimatedGross / divPortfolioVal * 100) : 0;
+  return { gross: estimatedGross, net: estimatedGross * 0.72, yieldPct, divPortfolioVal, source: "estimated" };
+}
+
+// Rendimento passivo total de TODOS os ativos (dividendos + rendas + depósitos + PPR + obrigações)
+// Usado no simulador de Juro Composto
 function calcPortfolioYield() {
   let totalValue = 0, totalPassive = 0;
   for (const a of state.assets) {
@@ -1899,7 +1971,6 @@ function calcPortfolioYield() {
     totalValue += v;
     totalPassive += p;
   }
-  // yield ponderado = rendimento passivo anual / valor total dos ativos
   const weightedYield = totalValue > 0 ? (totalPassive / totalValue) * 100 : 0;
   return { totalValue, totalPassive, weightedYield };
 }
@@ -1952,12 +2023,21 @@ function renderCompoundPanel() {
   sel.value = newVal;
   syncCompoundFromAsset(portfolio, avgSavings);
 
-  // Show portfolio summary note
+  // Show portfolio summary note — inclui TODOS os ativos com rendimento passivo
   const note = document.getElementById("compPortfolioNote");
   if (note) {
     if (portfolio.totalValue > 0) {
       note.style.display = "";
-      note.innerHTML = `📊 <b>Carteira real:</b> ${fmtEUR(portfolio.totalValue)} investidos · Yield médio ponderado <b>${fmtPct(portfolio.weightedYield)}</b> · Rendimento passivo anual <b>${fmtEUR(portfolio.totalPassive)}</b>${avgSavings > 0 ? ` · Poupança média mensal <b>${fmtEUR(avgSavings)}</b>` : ""}`;
+      const breakdown = state.assets
+        .filter(a => passiveFromItem(a) > 0)
+        .map(a => `${a.name} (${fmtPct(
+          a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
+          a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue)/Math.max(1,parseNum(a.value))*100 :
+          a.yieldType === "rent_month" ? parseNum(a.yieldValue)*12/Math.max(1,parseNum(a.value))*100 : 0
+        )})`)
+        .join(", ");
+      note.innerHTML = `📊 <b>Capital total com rendimento:</b> ${fmtEUR(portfolio.totalValue)} · Yield médio ponderado <b>${fmtPct(portfolio.weightedYield)}</b> · Rendimento passivo anual total <b>${fmtEUR(portfolio.totalPassive)}</b><br>
+        <span style="font-size:12px;color:#667085">Inclui dividendos + rendas + depósitos + PPR + obrigações → ${breakdown || "nenhum ativo com rendimento"}</span>${avgSavings > 0 ? `<br><span style="font-size:12px;color:#667085">Poupança média mensal estimada: <b>${fmtEUR(avgSavings)}</b></span>` : ""}`;
     } else {
       note.style.display = "none";
     }
