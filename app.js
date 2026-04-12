@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260422").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260423").catch(() => {});
     });
   }
 } catch (_) {}
@@ -1533,33 +1533,37 @@ function renderDivProjection() {
   const portfolioGrowth = parseNum($("divProjGrowth").value) || 7;
   const contrib = parseNum($("divProjContrib").value) || 0;
   const years = parseInt($("divProjYears").value) || 20;
-  const retRate = parseNum($("divProjRet").value) || 28;
 
   const divData = calcDividendYield();
 
-  // REGRA FUNDAMENTAL:
-  // Se há resumo anual com o bruto real → o portfolioVal é DERIVADO do bruto real
-  // Ex: 2.750€ bruto ÷ 3,2% yield = 85.937€ de carteira de dividendos
-  // Nunca usar o valor total de ativos (mistura depósitos, PPR, rendas)
-  let portfolioVal;
-  let baseNet;
+  let portfolioVal, baseNet, baseGross, effectiveRetRate;
 
   if (latest) {
     const gross = parseNum(latest.gross);
     const tax = parseNum(latest.tax);
-    // Carteira implícita = bruto real / yield real
+    baseGross = gross;
+    baseNet = gross - tax; // líquido REAL do resumo — pode ser igual ao bruto se tax=0
+    // Taxa de retenção real do resumo (não o default 28%)
+    effectiveRetRate = gross > 0 ? (tax / gross) : 0;
+    // Carteira implícita: bruto ÷ yield
     portfolioVal = baseYield > 0 ? gross / (baseYield / 100) : 0;
-    baseNet = gross - tax;
   } else {
-    // Sem resumo: usar carteira estimada de ativos só com yield_pct (ações/ETFs)
+    // Sem resumo: estima
+    const userRetRate = parseNum($("divProjRet").value) || 0;
+    effectiveRetRate = userRetRate / 100;
     portfolioVal = divData.divPortfolioVal;
-    baseNet = divData.gross * (1 - (parseNum($("divProjRet").value) || 28) / 100);
+    baseGross = divData.gross;
+    baseNet = baseGross * (1 - effectiveRetRate);
   }
 
   if (!portfolioVal || portfolioVal <= 0) {
     toast("Guarda um resumo anual com o bruto e o yield da corretora.");
     return;
   }
+
+  // Usar retenção do campo se preenchida, senão a do resumo
+  const userRetField = parseNum($("divProjRet").value);
+  const retRate = userRetField > 0 ? (userRetField / 100) : effectiveRetRate;
 
   // 3 cenários: yield -1%, yield mantido, yield +1%
   const scenarios = [
@@ -1573,10 +1577,17 @@ function renderDivProjection() {
     let curPortfolio = portfolioVal;
     for (let y = 0; y <= years; y++) {
       labels.push(y === 0 ? (latest ? String(latest.year) : "Hoje") : `+${y}a`);
-      const projGross = curPortfolio * (sc.yield / 100);
-      const projNet = projGross * (1 - retRate / 100);
-      grossArr.push(projGross);
-      netArr.push(projNet);
+      if (y === 0) {
+        // Ano 0: valores REAIS do resumo, não calculados
+        grossArr.push(baseGross);
+        netArr.push(baseNet);
+      } else {
+        // Anos seguintes: carteira cresce, aplica yield e retenção
+        const projGross = curPortfolio * (sc.yield / 100);
+        const projNet = projGross * (1 - retRate);
+        grossArr.push(projGross);
+        netArr.push(projNet);
+      }
       curPortfolio = curPortfolio * (1 + portfolioGrowth / 100) + contrib * 12;
     }
     return { ...sc, labels, netArr, grossArr };
