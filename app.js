@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260501").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260502").catch(() => {});
     });
   }
 } catch (_) {}
@@ -1109,14 +1109,21 @@ function cfGranData(granularity) {
   return { keys, data: keys.map(k => bucket[k]) };
 }
 
+function isInterAccountTransfer(t) {
+  return (t.category || "").toLowerCase().includes("transferência entre contas") ||
+         normStr(t.category || "").includes("transferencia entre contas");
+}
+
 function renderCashflow() {
   ensureMonthYearOptions();
   const y = $("cfYear").value;
   const m = String($("cfMonth").value).padStart(2, "0");
   const key = `${y}-${m}`;
+  // Excluir transferências entre contas próprias dos totais (são neutras)
   const tx = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === key);
-  const totalIn = tx.filter(t => t.type === "in").reduce((a, t) => a + parseNum(t.amount), 0);
-  const totalOut = tx.filter(t => t.type === "out").reduce((a, t) => a + parseNum(t.amount), 0);
+  const txReal = tx.filter(t => !isInterAccountTransfer(t));
+  const totalIn = txReal.filter(t => t.type === "in").reduce((a, t) => a + parseNum(t.amount), 0);
+  const totalOut = txReal.filter(t => t.type === "out").reduce((a, t) => a + parseNum(t.amount), 0);
   const net = totalIn - totalOut;
   const rate = totalIn > 0 ? (net / totalIn) * 100 : 0;
   $("cfIn").textContent = fmtEUR(totalIn);
@@ -1157,36 +1164,46 @@ function renderCashflowChart() {
 function renderTxList() {
   const wrap = $("txList");
   wrap.innerHTML = "";
+  const y = $("cfYear") ? $("cfYear").value : new Date().getFullYear();
+  const m = $("cfMonth") ? String($("cfMonth").value).padStart(2,"0") : String(new Date().getMonth()+1).padStart(2,"0");
+  const key = `${y}-${m}`;
+
   const tx = expandRecurring(state.transactions)
-    .filter(t => parseNum(t.amount) > 0)
+    .filter(t => monthKeyFromDateISO(t.date) === key && parseNum(t.amount) > 0)
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
   if (!tx.length) {
-    wrap.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem movimentos</div><div class="item__s">Adiciona entradas/saídas.</div></div><div class="item__v">—</div></div>`;
+    wrap.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem movimentos</div><div class="item__s">Adiciona entradas/saídas ou importa o extracto.</div></div><div class="item__v">—</div></div>`;
     $("btnTxToggle").style.display = "none";
     return;
   }
 
   const shown = txExpanded ? tx : tx.slice(0, TX_PREVIEW_COUNT);
   for (const t of shown) {
-    const sign = t.type === "in" ? "+" : "−";
+    const isTransfer = isInterAccountTransfer(t);
     const isRecurringInstance = t.id && t.id.includes("_r");
+    const sign = isTransfer ? "⇄" : (t.type === "in" ? "+" : "−");
+    const signColor = isTransfer ? "#667085" : (t.type === "in" ? "#059669" : "#dc2626");
+    const typeLabel = isTransfer ? "Transferência interna" : (t.type === "in" ? "Entrada" : "Saída");
+    const notesTxt = t.notes && t.notes !== t.category ? ` · ${t.notes.slice(0,40)}` : "";
+
     const row = document.createElement("div");
     row.className = "item";
-    row.innerHTML = `<div class="item__l">
-      <div class="item__t">${sign} ${escapeHtml(t.category)}</div>
-      <div class="item__s">${escapeHtml(t.type === "in" ? "Entrada" : "Saída")} · ${escapeHtml(t.date)}${t.recurring !== "none" ? " · ↻" : ""}${isRecurringInstance ? " · cópia" : ""}</div>
-    </div><div class="item__v">${fmtEUR(parseNum(t.amount))}</div>`;
-    // Only allow editing original transactions, not recurring copies
+    row.style.cursor = isRecurringInstance ? "default" : "pointer";
+    row.innerHTML = `
+      <div class="item__l">
+        <div class="item__t" style="color:${signColor}">${sign} ${escapeHtml(t.category)}</div>
+        <div class="item__s">${escapeHtml(typeLabel)} · ${escapeHtml(t.date)}${t.recurring !== "none" ? " · ↻" : ""}${isRecurringInstance ? " · cópia" : ""}${escapeHtml(notesTxt)}</div>
+      </div>
+      <div class="item__v" style="color:${signColor}">${fmtEUR(parseNum(t.amount))}</div>`;
     if (!isRecurringInstance) {
-      row.style.cursor = "pointer";
       row.addEventListener("click", () => openTxModal(t.id));
     }
     wrap.appendChild(row);
   }
   if (tx.length > TX_PREVIEW_COUNT) {
     $("btnTxToggle").style.display = "inline";
-    $("btnTxToggle").textContent = txExpanded ? "Ver menos" : "Ver todos";
+    $("btnTxToggle").textContent = txExpanded ? "Ver menos" : `Ver todos (${tx.length})`;
   } else {
     $("btnTxToggle").style.display = "none";
   }
@@ -1895,31 +1912,6 @@ function renderDivChart(divs) {
       }
     }
   });
-}
-
-function openTxModal() {
-  $("tType").value = "in";
-  $("tCat").value = "";
-  $("tAmt").value = "";
-  $("tRec").value = "none";
-  $("tDate").value = isoToday();
-  $("tNotes").value = "";
-  openModal("modalTx");
-}
-
-function saveTxFromModal() {
-  const type = $("tType").value;
-  const category = ($("tCat").value || "").trim() || "Outros";
-  const amount = parseNum($("tAmt").value);
-  const date = $("tDate").value;
-  const recurring = $("tRec").value || "none";
-  const notes = ($("tNotes").value || "").trim();
-  if (!amount || amount <= 0) { toast("Valor tem de ser > 0."); return; }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { toast("Data inválida."); return; }
-  state.transactions.push({ id: uid(), type, category, amount, date, recurring, notes });
-  saveState();
-  closeModal("modalTx");
-  renderCashflow();
 }
 
 /* ─── ANALYSIS VIEW ───────────────────────────────────────── */
@@ -2860,9 +2852,12 @@ async function importBankFile(file) {
   }
 
   // Deduplica
-  const existing = new Set(state.transactions.map(tx =>
-    `${String(tx.date||"").slice(0,10)}|${tx.type}|${Math.round(Math.abs(parseNum(tx.amount))*100)}|${normStr(tx.category||"")}`
-  ));
+  // Deduplicação: chave = data|tipo|montante|descrição_original
+  // A descrição original fica em notes; category pode ter mudado com auto-categorização
+  const existing = new Set(state.transactions.map(tx => {
+    const origDesc = tx.notes || tx.category || "";
+    return `${String(tx.date||"").slice(0,10)}|${tx.type}|${Math.round(Math.abs(parseNum(tx.amount))*100)}|${normStr(origDesc)}`;
+  }));
 
   let added = 0, dup = 0;
   let totalIn = 0, totalOut = 0;
@@ -2875,7 +2870,8 @@ async function importBankFile(file) {
     if (existing.has(key)) { dup++; continue; }
     existing.add(key);
     const category = autoCategorise(r.desc, dir);
-    const tx = { id: uid(), type: dir, category, amount, date: r.date, recurring: "none", notes: r.desc !== category ? r.desc : "" };
+    // Guardar descrição original em notes para deduplicação futura
+    const tx = { id: uid(), type: dir, category, amount, date: r.date, recurring: "none", notes: r.desc || "" };
     state.transactions.push(tx);
     newTx.push(tx);
     if (dir === "in") totalIn += amount;
