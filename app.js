@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260428").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260429").catch(() => {});
     });
   }
 } catch (_) {}
@@ -2828,7 +2828,7 @@ function showBankResult(type, html) {
 }
 
 async function extractTextFromPDF(file) {
-  // Tentar pdf.js primeiro (melhor qualidade)
+  // Tenta pdf.js primeiro (melhor qualidade, preserva estrutura de colunas)
   if (typeof pdfjsLib !== "undefined") {
     try {
       pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -2839,7 +2839,7 @@ async function extractTextFromPDF(file) {
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
-        // Agrupar por Y com tolerância 2px, ordenar por X dentro de cada linha
+        // Agrupar por Y (tolerância 2px), ordenar por X → preserva colunas
         const byY = new Map();
         for (const item of content.items) {
           if (!item.str || !item.str.trim()) continue;
@@ -2856,81 +2856,136 @@ async function extractTextFromPDF(file) {
       }
       if (fullText.trim()) return fullText;
     } catch(e) {
-      console.warn("pdf.js falhou, a usar fallback:", e);
+      console.warn("pdf.js falhou:", e.message);
     }
   }
 
-  // Fallback: ler PDF como bytes e extrair texto raw
-  // Funciona para PDFs com texto incorporado (não digitalizados)
+  // Fallback: descompressão nativa do browser (iOS 16.4+ / Chrome / Firefox)
+  console.log("pdf.js não disponível, a usar fallback nativo...");
   return extractPDFRaw(file);
 }
 
 async function extractPDFRaw(file) {
-  // Parser específico para PDFs comprimidos (FlateDecode)
-  // Descomprime os streams e extrai texto em sequência
+  // Fallback para quando pdf.js não está disponível.
+  // Descomprime streams FlateDecode e reconstrói linhas usando operadores PDF (Td, TD, Tm, T*)
   try {
     const arrayBuffer = await file.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
+    const rawStr = new TextDecoder("latin1").decode(bytes);
 
-    // Encontrar streams comprimidos
-    const raw = bytes;
-    const streamMarker = new TextEncoder().encode("stream\n");
-    const endMarker = new TextEncoder().encode("endstream");
-
-    // Usa DecompressionStream se disponível (iOS 16.4+)
     async function decompress(data) {
       try {
-        const ds = new DecompressionStream("deflate");
-        const writer = ds.writable.getWriter();
-        const reader = ds.readable.getReader();
-        writer.write(data);
-        writer.close();
-        const chunks = [];
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
+        // Tenta deflate-raw primeiro, depois deflate
+        for (const fmt of ["deflate-raw", "deflate"]) {
+          try {
+            const ds = new DecompressionStream(fmt);
+            const writer = ds.writable.getWriter();
+            const reader = ds.readable.getReader();
+            writer.write(data).catch(()=>{});
+            writer.close().catch(()=>{});
+            const chunks = [];
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunks.push(value);
+            }
+            const total = chunks.reduce((a, c) => a + c.length, 0);
+            const out = new Uint8Array(total);
+            let offset = 0;
+            for (const c of chunks) { out.set(c, offset); offset += c.length; }
+            const text = new TextDecoder("latin1").decode(out);
+            if (text.length > 10) return text;
+          } catch(e) { continue; }
         }
-        const total = chunks.reduce((a, c) => a + c.length, 0);
-        const out = new Uint8Array(total);
-        let offset = 0;
-        for (const c of chunks) { out.set(c, offset); offset += c.length; }
-        return new TextDecoder("latin1").decode(out);
-      } catch(e) {
         return null;
-      }
+      } catch(e) { return null; }
     }
 
-    // Encontrar todos os streams no PDF
-    let allText = "";
-    let i = 0;
-    const rawStr = new TextDecoder("latin1").decode(bytes);
+    // Encontrar todos os streams do PDF
+    let allLines = [];
     const streamRe = /stream\r?\n([\s\S]*?)endstream/g;
     let m;
     while ((m = streamRe.exec(rawStr)) !== null) {
-      const streamData = bytes.slice(m.index + m[0].indexOf('\n') + 1,
-                                     m.index + m[0].lastIndexOf('endstream'));
-      // Try deflate decompress
+      const startIdx = m.index + m[0].indexOf('\n') + 1;
+      const endIdx = m.index + m[0].lastIndexOf('endstream');
+      if (endIdx <= startIdx) continue;
+      const streamData = bytes.slice(startIdx, endIdx);
       const decompressed = await decompress(streamData);
       if (!decompressed) continue;
 
-      // Extrair sequência de tokens de texto (BT...ET blocks)
+      // Processar blocos BT...ET (texto)
       const btBlocks = decompressed.match(/BT[\s\S]*?ET/g) || [];
       for (const block of btBlocks) {
-        // Tj operator: (text)Tj
-        const tjItems = [...block.matchAll(/\(([^)]*)\)\s*Tj/g)].map(x => x[1]);
-        // TJ array: [(text)-num(text)]TJ
-        const tjArr = [...block.matchAll(/\[([\s\S]*?)\]\s*TJ/g)];
-        const arrItems = [];
-        for (const aj of tjArr) {
-          const parts = [...aj[1].matchAll(/\(([^)]*)\)/g)].map(x => x[1]);
-          if (parts.length) arrItems.push(parts.join(""));
+        // Dividir em tokens para processar operadores em sequência
+        const tokens = block.match(/\((?:[^)\\]|\\.)*\)|<[0-9A-Fa-f]*>|\[[\s\S]*?\]|[^\s\[\]]+/g) || [];
+        const lineItems = []; // itens da linha corrente
+        let currentLine = [];
+        let lastY = null;
+
+        let i = 0;
+        while (i < tokens.length) {
+          const tok = tokens[i];
+
+          // String: (texto) ou <hex>
+          if (tok.startsWith("(") && tok.endsWith(")")) {
+            const str = tok.slice(1,-1)
+              .replace(/\\n/g,"\n").replace(/\\r/g,"\r").replace(/\\t/g,"\t")
+              .replace(/\\(.)/g,"$1");
+            if (str.trim()) currentLine.push(str.trim());
+
+          } else if (tok.startsWith("<") && tok.endsWith(">")) {
+            // hex string
+            const hex = tok.slice(1,-1);
+            let str = "";
+            for (let h=0; h<hex.length; h+=2) str += String.fromCharCode(parseInt(hex.slice(h,h+2),16));
+            if (str.trim()) currentLine.push(str.trim());
+
+          } else if (tok === "Tj" || tok === "'") {
+            // Tj: usa currentLine como está
+            if (currentLine.length) { lineItems.push(currentLine.join("")); currentLine = []; }
+            if (tok === "'") { allLines.push(lineItems.join("\t")); lineItems.length = 0; }
+
+          } else if (tok === "TJ") {
+            // TJ array — já processado nos tokens anteriores
+            if (currentLine.length) { lineItems.push(currentLine.join("")); currentLine = []; }
+
+          } else if (tok === "Td" || tok === "TD") {
+            // Mover posição — normalmente nova linha se dy != 0
+            // Os dois tokens anteriores são dx dy
+            const dy = parseFloat(tokens[i-1]) || 0;
+            if (dy !== 0 && currentLine.length) {
+              lineItems.push(currentLine.join(""));
+              currentLine = [];
+            }
+            if (dy !== 0 || tok === "TD") {
+              allLines.push(lineItems.join("\t"));
+              lineItems.length = 0;
+            }
+
+          } else if (tok === "T*") {
+            if (currentLine.length) { lineItems.push(currentLine.join("")); currentLine = []; }
+            allLines.push(lineItems.join("\t"));
+            lineItems.length = 0;
+
+          } else if (tok === "Tm") {
+            // Matrix — nova posição absoluta, provavelmente nova linha
+            if (currentLine.length) { lineItems.push(currentLine.join("")); currentLine = []; }
+            const newY = parseFloat(tokens[i-2]) || 0;
+            if (lastY !== null && Math.abs(newY - lastY) > 2) {
+              allLines.push(lineItems.join("\t"));
+              lineItems.length = 0;
+            }
+            lastY = newY;
+          }
+          i++;
         }
-        const lineItems = [...tjItems, ...arrItems].filter(t => t.trim());
-        if (lineItems.length) allText += lineItems.join("\t") + "\n";
+        // Flush remaining
+        if (currentLine.length) lineItems.push(currentLine.join(""));
+        if (lineItems.length) allLines.push(lineItems.join("\t"));
       }
     }
-    return allText;
+
+    return allLines.filter(l => l.trim()).join("\n");
   } catch(e) {
     console.error("extractPDFRaw error:", e);
     return "";
