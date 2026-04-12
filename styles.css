@@ -205,22 +205,23 @@ textarea.input { resize: vertical; }
   border: 1px solid var(--line);
   border-radius: 26px;
   box-shadow: 0 18px 60px rgba(16,24,40,.10);
-  padding: 10px 8px;
+  padding: 8px 6px;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 6px;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
 }
 .navbtn {
-  border: 0; background: transparent; border-radius: 18px;
-  padding: 10px 6px;
-  display: flex; align-items: center; justify-content: center; gap: 6px;
+  border: 0; background: transparent; border-radius: 16px;
+  padding: 8px 4px;
+  display: flex; align-items: center; justify-content: center; gap: 4px;
   font-weight: 900; color: #6b7280; cursor: pointer;
-  font-family: inherit; font-size: 14px;
+  font-family: inherit; font-size: 11px;
+  flex-direction: column;
   transition: background .15s, color .15s;
 }
 .navbtn--active { background: rgba(91,92,230,.14); color: var(--text); }
-.navico { font-size: 18px; }
-.navlbl { font-size: 13px; }
+.navico { font-size: 17px; line-height: 1; }
+.navlbl { font-size: 10px; }
 
 /* ─── SEGMENTED CONTROL ─── */
 .seg {
@@ -272,8 +273,8 @@ textarea.input { resize: vertical; }
   .pill__v { font-size: 22px; }
   .filters { grid-template-columns: 1fr; }
   .kpiRow { grid-template-columns: 1fr; }
-  .navlbl { display: none; }
-  .bottomnav { grid-template-columns: repeat(5, 1fr); }
+  .bottomnav { grid-template-columns: repeat(6, 1fr); padding: 8px 4px; }
+  .navlbl { display: block; font-size: 9px; }
   .item__v { font-size: 15px; }
 }
 
