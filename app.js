@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260423").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260425").catch(() => {});
     });
   }
 } catch (_) {}
@@ -394,9 +394,16 @@ function compoundGrowth(principal, rateAnnual, years, freq = 12, contributions =
   let v = principal;
   for (let y = 0; y <= years; y++) {
     result.push({ year: y, value: v });
-    // compound for one year with monthly contributions
-    for (let m = 0; m < 12; m++) {
-      v = v * (1 + r / freq) + contributions / 12;
+    // Compound once per year using the effective annual rate
+    // This avoids the bug where freq=1 would apply interest 12 times
+    if (freq <= 1) {
+      // Annual: apply once, add annual contributions
+      v = v * (1 + r) + contributions * 12;
+    } else {
+      // Sub-annual: apply freq times per year with monthly contributions
+      for (let m = 0; m < freq; m++) {
+        v = v * (1 + r / freq) + contributions * (12 / freq);
+      }
     }
   }
   return result;
@@ -504,23 +511,38 @@ function renderAlerts() {
   const todayISO = today.toISOString().slice(0, 10);
   const soonISO = soon.toISOString().slice(0, 10);
 
-  const alerts = state.assets.filter(a => {
+  const alerts = [];
+
+  // Vencimentos próximos
+  for (const a of state.assets) {
     const m = a.maturityDate;
-    return m && m >= todayISO && m <= soonISO;
-  }).sort((a, b) => a.maturityDate.localeCompare(b.maturityDate));
+    if (m && m >= todayISO && m <= soonISO) {
+      const days = Math.round((new Date(m) - today) / 86400000);
+      alerts.push({ type: "maturity", html: `<div class="item"><div class="item__l"><div class="item__t">📅 ${escapeHtml(a.name)}</div><div class="item__s">Vence em ${days} dia${days !== 1 ? "s" : ""} (${m})</div></div><div class="item__v">${fmtEUR(parseNum(a.value))}</div></div>` });
+    }
+  }
+
+  // Detecção de valores anómalos
+  const allVals = state.assets.map(a => parseNum(a.value)).filter(v => v > 0).sort((a,b) => a-b);
+  const median = allVals.length ? allVals[Math.floor(allVals.length/2)] : 0;
+  if (median > 0) {
+    for (const a of state.assets) {
+      const v = parseNum(a.value);
+      if (v > median * 100) { // > 100x mediana = provável erro
+        alerts.push({ type: "anomaly", html: `<div class="item" style="cursor:pointer" onclick="setView('assets')"><div class="item__l"><div class="item__t">⚠️ Valor invulgar: ${escapeHtml(a.name)}</div><div class="item__s">Valor ${fmtEUR(v)} parece muito elevado. Toca para verificar.</div></div><div class="item__v">${fmtEUR(v)}</div></div>` });
+      }
+    }
+  }
 
   if (!alerts.length) { card.style.display = "none"; return; }
   card.style.display = "";
-  list.innerHTML = alerts.map(a => {
-    const days = Math.round((new Date(a.maturityDate) - today) / 86400000);
-    return `<div class="item">
-      <div class="item__l">
-        <div class="item__t">${escapeHtml(a.name)}</div>
-        <div class="item__s">${escapeHtml(a.class)} · Vence em ${days} dia${days !== 1 ? "s" : ""} (${a.maturityDate})</div>
-      </div>
-      <div class="item__v">${fmtEUR(parseNum(a.value))}</div>
-    </div>`;
-  }).join("");
+  // Change color based on alert type
+  const hasAnomaly = alerts.some(a => a.type === "anomaly");
+  card.querySelector(".card").style.borderColor = hasAnomaly ? "#ef4444" : "#f59e0b";
+  card.querySelector(".card").style.background = hasAnomaly ? "#fef2f2" : "#fffbeb";
+  const title = card.querySelector(".card__title");
+  if (title) title.textContent = hasAnomaly ? "⚠️ Alertas" : "⚠️ Vencimentos próximos";
+  list.innerHTML = alerts.map(a => a.html).join("");
 }
 
 /* ─── 3. EDITAR / APAGAR MOVIMENTOS ──────────────────────── */
@@ -2023,7 +2045,6 @@ function renderCompoundPanel() {
   const sel = $("compAsset");
   if (!sel) return;
 
-  // Calcular dados reais da carteira
   const portfolio = calcPortfolioYield();
   const avgSavings = calcAvgMonthlySavings(6);
 
@@ -2031,36 +2052,46 @@ function renderCompoundPanel() {
   const prev = sel.value;
   sel.innerHTML = `<option value="__portfolio__">📊 Carteira completa (automático)</option>
     <option value="__custom__">✏️ Personalizado…</option>`;
+
+  // Detect anomalous values (> 10x median asset value)
+  const allVals = state.assets.map(a => parseNum(a.value)).filter(v => v > 0).sort((a,b) => a-b);
+  const median = allVals.length ? allVals[Math.floor(allVals.length/2)] : 0;
+  const anomalyThreshold = median * 50; // flag if > 50x median
+
   for (const a of state.assets) {
+    const v = parseNum(a.value);
     const rate = a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
-      a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue) / Math.max(1, parseNum(a.value)) * 100 :
-      a.yieldType === "rent_month" ? parseNum(a.yieldValue) * 12 / Math.max(1, parseNum(a.value)) * 100 : 0;
+      a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue) / Math.max(1, v) * 100 :
+      a.yieldType === "rent_month" ? parseNum(a.yieldValue) * 12 / Math.max(1, v) * 100 : 0;
+    const isAnomaly = median > 0 && v > anomalyThreshold;
     const o = document.createElement("option");
     o.value = a.id;
-    o.textContent = `${a.name} · ${fmtPct(rate)} · ${fmtEUR(parseNum(a.value))}`;
+    o.textContent = `${isAnomaly ? "⚠️ " : ""}${a.name} · ${fmtPct(rate)} · ${fmtEUR(v)}`;
     sel.appendChild(o);
   }
 
-  // Default to portfolio view
   const newVal = prev && prev !== "__portfolio__" ? prev : "__portfolio__";
   sel.value = newVal;
   syncCompoundFromAsset(portfolio, avgSavings);
 
-  // Show portfolio summary note — inclui TODOS os ativos com rendimento passivo
+  // Show portfolio summary note with anomaly warning
   const note = document.getElementById("compPortfolioNote");
   if (note) {
     if (portfolio.totalValue > 0) {
       note.style.display = "";
+      const anomalies = state.assets.filter(a => median > 0 && parseNum(a.value) > anomalyThreshold);
+      const anomalyWarn = anomalies.length > 0
+        ? `<br><span style="color:#dc2626;font-weight:800">⚠️ Possíveis erros de introdução: ${anomalies.map(a => `${a.name} (${fmtEUR(parseNum(a.value))})`).join(", ")} — verifica os valores na aba Ativos.</span>`
+        : "";
       const breakdown = state.assets
         .filter(a => passiveFromItem(a) > 0)
         .map(a => `${a.name} (${fmtPct(
           a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
           a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue)/Math.max(1,parseNum(a.value))*100 :
           a.yieldType === "rent_month" ? parseNum(a.yieldValue)*12/Math.max(1,parseNum(a.value))*100 : 0
-        )})`)
-        .join(", ");
-      note.innerHTML = `📊 <b>Capital total com rendimento:</b> ${fmtEUR(portfolio.totalValue)} · Yield médio ponderado <b>${fmtPct(portfolio.weightedYield)}</b> · Rendimento passivo anual total <b>${fmtEUR(portfolio.totalPassive)}</b><br>
-        <span style="font-size:12px;color:#667085">Inclui dividendos + rendas + depósitos + PPR + obrigações → ${breakdown || "nenhum ativo com rendimento"}</span>${avgSavings > 0 ? `<br><span style="font-size:12px;color:#667085">Poupança média mensal estimada: <b>${fmtEUR(avgSavings)}</b></span>` : ""}`;
+        )})`).join(", ");
+      note.innerHTML = `📊 <b>Capital total:</b> ${fmtEUR(portfolio.totalValue)} · Yield médio ponderado <b>${fmtPct(portfolio.weightedYield)}</b> · Rendimento passivo anual <b>${fmtEUR(portfolio.totalPassive)}</b><br>
+        <span style="font-size:12px;color:#667085">Inclui: ${breakdown || "nenhum ativo com rendimento"}</span>${avgSavings > 0 ? `<br><span style="font-size:12px;color:#667085">Poupança média mensal: <b>${fmtEUR(avgSavings)}</b></span>` : ""}${anomalyWarn}`;
     } else {
       note.style.display = "none";
     }
