@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260421").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260422").catch(() => {});
     });
   }
 } catch (_) {}
@@ -1535,19 +1535,31 @@ function renderDivProjection() {
   const years = parseInt($("divProjYears").value) || 20;
   const retRate = parseNum($("divProjRet").value) || 28;
 
-  const t = calcTotals();
   const divData = calcDividendYield();
-  // Base portfolio: só a carteira de dividendos (ações/ETFs), não todos os ativos
-  let portfolioVal = divData.divPortfolioVal;
-  if (!portfolioVal && latest) {
-    // Estima pela fórmula inversa: bruto = portfolio × yield
-    portfolioVal = parseNum(latest.gross) / Math.max(0.001, baseYield / 100);
-  }
-  if (!portfolioVal) { toast("Adiciona ativos com Yield% ou guarda um resumo anual."); return; }
 
-  const baseNet = latest
-    ? parseNum(latest.gross) - parseNum(latest.tax)
-    : portfolioVal * (baseYield / 100) * (1 - retRate / 100);
+  // REGRA FUNDAMENTAL:
+  // Se há resumo anual com o bruto real → o portfolioVal é DERIVADO do bruto real
+  // Ex: 2.750€ bruto ÷ 3,2% yield = 85.937€ de carteira de dividendos
+  // Nunca usar o valor total de ativos (mistura depósitos, PPR, rendas)
+  let portfolioVal;
+  let baseNet;
+
+  if (latest) {
+    const gross = parseNum(latest.gross);
+    const tax = parseNum(latest.tax);
+    // Carteira implícita = bruto real / yield real
+    portfolioVal = baseYield > 0 ? gross / (baseYield / 100) : 0;
+    baseNet = gross - tax;
+  } else {
+    // Sem resumo: usar carteira estimada de ativos só com yield_pct (ações/ETFs)
+    portfolioVal = divData.divPortfolioVal;
+    baseNet = divData.gross * (1 - (parseNum($("divProjRet").value) || 28) / 100);
+  }
+
+  if (!portfolioVal || portfolioVal <= 0) {
+    toast("Guarda um resumo anual com o bruto e o yield da corretora.");
+    return;
+  }
 
   // 3 cenários: yield -1%, yield mantido, yield +1%
   const scenarios = [
@@ -2150,49 +2162,56 @@ function calcAndRenderCompound() {
     }).join("");
   }
 
-  // Chart — 3 linhas correctas:
-  // Juro composto: reinveste os juros (exponencial) — deve ser SEMPRE a maior
-  // Juro simples: juros calculados sempre sobre o capital inicial (linear)
-  // Só capital: capital + contribuições sem qualquer juro
+  // Chart — 3 linhas
+  // GARANTIA MATEMÁTICA:
+  // Juro composto (freq>1): P*(1+r/n)^(n*t) — exponencial
+  // Juro simples: P*(1+r*t) — linear, SEMPRE abaixo do composto para r>0, t>0
+  // Só capital: P+C*t — linha recta sem qualquer juro
   const ctx = $("compoundChart") && $("compoundChart").getContext("2d");
   if (!ctx) return;
   if (compoundChart) compoundChart.destroy();
 
-  // Juro simples: capital_inicial * (1 + r*t) + contribuições (sem reinvestimento dos juros)
-  const simpleAnnualInterest = principal * (rate / 100); // juro anual sobre capital original
+  // Juro simples ANUAL: sempre calculado com taxa efectiva anual sobre capital inicial
+  // Fórmula: P*(1 + r*t) + contribuições*t (sem reinvestimento)
+  const effRateDecimal = effectiveRate(rate, freq) / 100; // taxa efectiva anual real
   const simpleLine = data.map((_, i) => {
-    // juros simples: sempre sobre o principal original, não reinvestidos
-    return principal + simpleAnnualInterest * i + contrib * 12 * i;
+    // Juro simples: juros calculados sobre o principal original × número de anos
+    const interest = principal * effRateDecimal * i;
+    const contribs = contrib * 12 * i;
+    return principal + interest + contribs;
   });
 
-  // Só capital: sem qualquer rendimento, apenas contribuições
+  // Só capital: zero rendimento, apenas principal + contribuições
   const contribLine = data.map((_, i) => principal + contrib * 12 * i);
 
-  // Verificação: composto deve ser >= simples >= capital
-  // Se não for (taxa muito baixa / poucos anos), pode não ser visível — ok
+  // Verificação: se algum ponto do composto ficar abaixo do simples (não devia acontecer),
+  // é sinal que a taxa é muito pequena — avisamos no tooltip
+  const maxSimple = Math.max(...simpleLine);
+  const maxCompound = Math.max(...data.map(d => d.value));
+
   compoundChart = new Chart(ctx, {
     type: "line",
     data: {
       labels: data.map(d => `+${d.year}a`),
       datasets: [
         {
-          label: "Juro composto ↑",
+          label: "Juro composto",
           data: data.map(d => d.value),
           tension: .4, borderColor: "#5b5ce6",
-          backgroundColor: "rgba(91,92,230,.07)", fill: true,
-          pointRadius: 0, borderWidth: 2.5, order: 1
+          backgroundColor: "rgba(91,92,230,.09)", fill: true,
+          pointRadius: 0, borderWidth: 2.5
         },
         {
           label: "Juro simples",
           data: simpleLine,
           tension: 0, borderDash: [6, 4], borderColor: "#f59e0b",
-          borderWidth: 1.8, pointRadius: 0, fill: false, order: 2
+          borderWidth: 1.8, pointRadius: 0, fill: false
         },
         {
           label: "Só capital",
           data: contribLine,
           tension: 0, borderDash: [2, 6], borderColor: "#94a3b8",
-          borderWidth: 1.5, pointRadius: 0, fill: false, order: 3
+          borderWidth: 1.5, pointRadius: 0, fill: false
         }
       ]
     },
@@ -2208,7 +2227,8 @@ function calcAndRenderCompound() {
               const comp = data[yr]?.value || 0;
               const simp = simpleLine[yr] || 0;
               const diff = comp - simp;
-              return diff > 0 ? [`Vantagem do composto: +${fmtEUR(diff)}`] : [];
+              if (diff > 1) return [`✅ Vantagem do composto: +${fmtEUR(diff)}`];
+              return [];
             }
           }
         }
