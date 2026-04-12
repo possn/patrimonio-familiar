@@ -1,5 +1,5 @@
 /* Património Familiar — Service Worker v6 */
-const CACHE_NAME = "pf-cache-20260411";
+const CACHE_NAME = "pf-cache-20260412";
 const ASSETS = [
   "./",
   "./index.html",

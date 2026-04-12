@@ -8,7 +8,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260411").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260412").catch(() => {});
     });
   }
 } catch (_) {}

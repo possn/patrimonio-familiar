@@ -1,7 +1,7 @@
 {
   "name": "Património Familiar",
   "short_name": "Património",
-  "description": "Net worth · Rendimento passivo · Juro composto · FIRE",
+  "description": "Net worth · Dividendos · Rendimento passivo · Juro composto · FIRE",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
