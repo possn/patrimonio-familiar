@@ -150,6 +150,13 @@
         <div><div class="card__title" id="itemsTitle">Ativos</div><div class="card__muted" id="itemsSub">Imobiliário, liquidez, ações/ETFs, metais, cripto, fundos, PPR, depósitos…</div></div>
         <button class="btn btn--primary" id="btnAddItem">Adicionar</button>
       </div>
+      <div id="quotesBar" style="display:none;margin-bottom:10px;padding:10px 12px;background:#f0f4ff;border-radius:12px;border:1px solid #c7d2fe">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <div style="font-size:13px;color:#3730a3;font-weight:600" id="quotesBarStatus">Cotações Yahoo Finance via Cloudflare Worker</div>
+          <button class="btn btn--ghost" id="btnRefreshQuotes" style="padding:8px 14px;font-size:13px">🔄 Actualizar cotações</button>
+        </div>
+        <div id="quotesBarLog" style="font-size:11px;color:#6366f1;margin-top:4px"></div>
+      </div>
       <div class="filters">
         <input class="input" id="qSearch" placeholder="Pesquisar…" autocomplete="off">
         <select class="input" id="qClass"><option value="">Todas as classes</option></select>
@@ -170,13 +177,13 @@
         <div><div class="card__title">Importar CSV</div><div class="card__muted">Ativos, passivos e movimentos. Lê localmente.</div></div>
       </div>
       <div class="row row--wrap" style="gap:10px">
-        <input id="fileInput" type="file" class="input" accept=".csv,text/csv">
+        <input id="fileInput" type="file" class="input" accept=".csv,.xls,.xlsx,text/csv">
         <button class="btn btn--primary" id="btnImport" disabled>Importar</button>
         <button class="btn" id="btnTemplate">Template CSV</button>
       </div>
       <div class="note">
-        Formato: <b>tipo</b> (ativo/passivo/movimento), <b>classe</b>, <b>nome</b>, <b>valor</b>, <b>yield_tipo</b>, <b>yield_valor</b>, <b>data</b>.<br>
-        Também reconhece exports de corretoras (ticker, shares, market value, yield).
+        Aceita: <b>CSV DivTracker/corretora</b> (Ticker, Quantity, Cost Per Share…) — importa automaticamente todos os tickers com unidades e valor.<br>
+        Também aceita o formato genérico: <b>tipo</b> (ativo/passivo/movimento), <b>classe</b>, <b>nome</b>, <b>valor</b>, <b>yield_tipo</b>, <b>yield_valor</b>.
       </div>
       <div class="hint" id="importHint">Nenhum ficheiro importado nesta sessão.</div>
     </div>
@@ -185,10 +192,11 @@
         <div><div class="card__title">Importar movimentos do banco</div><div class="card__muted">CSV do banco (CGD, Millennium, BPI…). Duplicados ignorados.</div></div>
       </div>
       <div class="row" style="gap:10px; flex-wrap:wrap">
-        <input class="input" id="bankCsvFile" type="file" accept=".csv,text/csv,application/csv">
+        <input class="input" id="bankCsvFile" type="file" accept=".csv,.xls,.xlsx,.pdf,text/csv,application/csv">
         <button class="btn btn--primary" id="btnImportBankCsv" disabled>Importar</button>
       </div>
       <div id="bankCsvName" class="card__muted" style="margin-top:6px;font-size:12px"></div>
+      <div class="note" style="margin-top:8px">Aceita CSV, <b>Excel (.xls/.xlsx)</b> e PDF do Santander, CGD, Millennium, BPI…</div>
       <div id="bankImportDebug" class="card__muted" style="margin-top:10px;display:none"></div>
     </div>
     <div class="card">
