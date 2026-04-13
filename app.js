@@ -297,7 +297,7 @@ const DEFAULT_STATE = {
   liabilities: [],
   transactions: [],
   dividends: [],
-  divSummaries: [],
+  divSummaries: [], // {id, year, gross, tax, yieldPct, notes}
   history: [],
   quotesCache: {}
 };
@@ -940,12 +940,13 @@ function tickerBadge(it) {
   if (!it.ticker) return "";
   const q = (state.quotesCache || {})[it.ticker];
   if (!q) return ` · <span class="badge" style="background:#e0e7ff;color:#3730a3">📡 ${escapeHtml(it.ticker)}</span>`;
-  const sign = (q.changePct || 0) >= 0 ? "+" : "";
-  const col = (q.changePct || 0) >= 0 ? "#f0fdf4;color:#166534" : "#fef2f2;color:#991b1b";
-  return ` · <span class="badge" style="background:${col}">${escapeHtml(it.ticker)} ${fmtEUR2(q.price)} ${sign}${fmt(q.changePct || 0, 2)}%</span>`;
+  const chg = q.changePct || 0;
+  const sign = chg >= 0 ? "+" : "";
+  const col = chg >= 0 ? "background:#f0fdf4;color:#166534" : "background:#fef2f2;color:#991b1b";
+  return ` · <span class="badge" style="${col}">${escapeHtml(it.ticker)} ${fmtEUR2(q.price)} ${sign}${fmt(chg,2)}%</span>`;
 }
 
-/* ─── QUOTES ENGINE ─────────────────────────────────────────── */
+/* ─── QUOTES ENGINE (Cloudflare Worker proxy → Yahoo Finance) ─ */
 const QUOTES_WORKER = "https://aged-hat-28db.pedrossnunes.workers.dev";
 
 async function fetchQuote(ticker) {
@@ -953,13 +954,15 @@ async function fetchQuote(ticker) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   if (data.error) throw new Error(data.error);
-  return data;
+  return data; // { ticker, price, currency, change, changePct, name, timestamp }
 }
 
 async function refreshAllQuotes() {
   const tickers = [...new Set(state.assets.filter(a => a.ticker).map(a => a.ticker))];
-  if (!tickers.length) { toast("Nenhum ativo tem ticker. Importa o CSV da corretora primeiro."); return; }
-
+  if (!tickers.length) {
+    toast("Nenhum ativo tem ticker configurado. Importa o CSV da corretora.");
+    return;
+  }
   const bar  = document.getElementById("quotesBar");
   const stat = document.getElementById("quotesBarStatus");
   const log  = document.getElementById("quotesBarLog");
@@ -972,21 +975,24 @@ async function refreshAllQuotes() {
   if (!state.quotesCache) state.quotesCache = {};
   let ok = 0, fail = 0;
 
-  // Batch in groups of 10 to avoid overloading the worker
-  const BATCH = 10;
+  // Process in batches of 8 to avoid rate limiting
+  const BATCH = 8;
   for (let i = 0; i < tickers.length; i += BATCH) {
     const batch = tickers.slice(i, i + BATCH);
     await Promise.allSettled(batch.map(async ticker => {
       try {
         const q = await fetchQuote(ticker);
         state.quotesCache[ticker] = q;
-        // Update value if units are known
-        state.assets.filter(a => a.ticker === ticker && a.units > 0)
-          .forEach(a => { a.value = a.units * q.price; });
+        // Update asset value if units are recorded
+        state.assets
+          .filter(a => a.ticker === ticker && parseNum(a.units) > 0)
+          .forEach(a => { a.value = parseNum(a.units) * q.price; });
         ok++;
         if (stat) stat.textContent = `✅ ${ok}/${tickers.length} actualizados…`;
       } catch { fail++; }
     }));
+    // Small pause between batches
+    if (i + BATCH < tickers.length) await new Promise(r => setTimeout(r, 300));
   }
 
   saveState();
@@ -995,8 +1001,9 @@ async function refreshAllQuotes() {
 
   if (btn) { btn.disabled = false; btn.textContent = "🔄 Actualizar cotações"; }
   const ts = new Date().toLocaleTimeString("pt-PT", { hour:"2-digit", minute:"2-digit" });
-  if (stat) stat.textContent = `Actualizado às ${ts} · ${ok} OK${fail ? ` · ${fail} falhou` : ""}`;
-  toast(`Cotações: ${ok}/${tickers.length} actualizadas`);
+  if (stat) stat.textContent = `Última actualização: ${ts} · ✅ ${ok}${fail ? ` · ❌ ${fail} falhou` : ""}`;
+  if (log)  log.textContent = `${tickers.length} tickers · ${ok} actualizados · ${fail} falhou`;
+  toast(`Cotações actualizadas: ${ok}/${tickers.length}`);
 }
 
 function updateQuotesBarVisibility() {
@@ -3381,13 +3388,16 @@ function parseBankCsvGeneric(text) {
   const raw = String(text || "").replace(/^\uFEFF/, "");
   const lines = raw.split(/\r?\n/);
 
-  // Try to find delimiter
+  // Try to find delimiter — check a data row, not just first line
   const delims = [";", ",", "\t", "|"];
   let bestDelim = ";";
   let maxCols = 0;
   for (const d of delims) {
-    const cols = (lines.find(l => l.trim()) || "").split(d).length;
-    if (cols > maxCols) { maxCols = cols; bestDelim = d; }
+    // Use max cols across first 20 lines
+    for (const l of lines.slice(0, 20)) {
+      const cols = l.split(d).length;
+      if (cols > maxCols) { maxCols = cols; bestDelim = d; }
+    }
   }
 
   // Find header row — look for date/description/amount keywords
@@ -3397,9 +3407,10 @@ function parseBankCsvGeneric(text) {
 
   let headerIdx = -1, dateCol = -1, descCol = -1, amtCol = -1, debitCol = -1, creditCol = -1;
 
-  for (let i = 0; i < Math.min(20, lines.length); i++) {
-    const row = splitCSVLine(lines[i], bestDelim).map(c => c.trim().toLowerCase());
-    if (row.length < 2) continue;
+  for (let i = 0; i < Math.min(25, lines.length); i++) {
+    const row = splitCSVLine(lines[i], bestDelim).map(c => c.trim().toLowerCase().replace(/[()]/g, ""));
+    // Must have at least 3 non-empty columns to be a real header
+    if (row.filter(c => c).length < 3) continue;
     let score = 0;
     let di = -1, dsi = -1, ai = -1, dbi = -1, cri = -1;
     row.forEach((c, j) => {
@@ -3412,7 +3423,8 @@ function parseBankCsvGeneric(text) {
         score++;
       }
     });
-    if (score >= 2) {
+    // Require score >= 2 AND at least a date column identified
+    if (score >= 2 && di >= 0) {
       headerIdx = i; dateCol = di; descCol = dsi; amtCol = ai; debitCol = dbi; creditCol = cri;
       break;
     }
@@ -3485,14 +3497,19 @@ function parseEuroNum(s) {
   const clean = String(s).trim().replace(/[€$£\s]/g, "").replace(/\u2212/g, "-");
   if (!clean || clean === "-" || clean === "—") return null;
   // Handle PT format: 1.234,56 or 1,234.56
+  // Also handle plain dot-decimal from XLSX: -51.57
   let n;
   if (clean.includes(",") && clean.includes(".")) {
     n = clean.lastIndexOf(",") > clean.lastIndexOf(".")
       ? Number(clean.replace(/\./g,"").replace(",","."))
       : Number(clean.replace(/,/g,""));
   } else if (clean.includes(",")) {
-    n = Number(clean.replace(",","."));
+    // Could be PT decimal (51,57) or thousands (1,234)
+    n = /,\d{1,2}$/.test(clean)
+      ? Number(clean.replace(",","."))
+      : Number(clean.replace(/,/g,""));
   } else {
+    // Plain number or dot-decimal (from XLSX): -51.57, 3024.88
     n = Number(clean);
   }
   return Number.isFinite(n) ? n : null;
@@ -3501,118 +3518,6 @@ function parseEuroNum(s) {
 // Keep old function for backwards compat
 async function importBankMovementsCsv(file) {
   return importBankFile(file);
-}
-
-/* ─── DIVTRACKER / BROKER CSV IMPORT ─────────────────────────
-   Formato: Ticker,Quantity,Cost Per Share,Currency,Date,...
-   Agrega por ticker (soma unidades), calcula valor = qty × custo médio
-   Atribui ticker Yahoo automaticamente a cada ativo criado.
-   ─────────────────────────────────────────────────────────── */
-function parseDivTrackerCSV(text) {
-  const raw = String(text || "").replace(/^\uFEFF/, "");
-  const lines = raw.split(/\r?\n/).filter(l => l.trim());
-  if (!lines.length) return [];
-
-  // Detect header
-  const headerLine = lines[0].toLowerCase();
-  if (!headerLine.includes("ticker") || !headerLine.includes("quantity")) return [];
-
-  const headers = splitCSVLine(lines[0], ",").map(h => h.trim().toLowerCase());
-  const iCol = h => headers.indexOf(h);
-
-  const tickerIdx   = iCol("ticker");
-  const qtyIdx      = iCol("quantity");
-  const costIdx     = iCol("cost per share");
-  const currIdx     = iCol("currency");
-  const dateIdx     = iCol("date");
-
-  if (tickerIdx < 0 || qtyIdx < 0) return [];
-
-  // Aggregate by ticker
-  const agg = new Map(); // ticker → { qty, totalCost, currency, lastDate }
-  for (let i = 1; i < lines.length; i++) {
-    const cols = splitCSVLine(lines[i], ",").map(c => c.trim().replace(/^"|"$/g,""));
-    if (!cols[tickerIdx]) continue;
-    const ticker = cols[tickerIdx].toUpperCase();
-    const qty    = parseFloat(cols[qtyIdx]) || 0;
-    const cost   = parseFloat(cols[costIdx] || "0") || 0;
-    const cur    = currIdx >= 0 ? (cols[currIdx] || "EUR") : "EUR";
-    const date   = dateIdx >= 0 ? (cols[dateIdx] || "") : "";
-    if (!agg.has(ticker)) agg.set(ticker, { qty: 0, totalCost: 0, currency: cur, lastDate: date });
-    const e = agg.get(ticker);
-    e.qty += qty;
-    e.totalCost += qty * cost;
-    if (date > e.lastDate) e.lastDate = date;
-  }
-
-  // Build asset objects
-  const assets = [];
-  for (const [ticker, data] of agg) {
-    if (data.qty <= 0.0001) continue;
-    const avgCost = data.totalCost / data.qty;
-    const value = data.qty * avgCost; // valor ao preço de custo
-    assets.push({
-      ticker,
-      name: ticker,
-      qty: data.qty,
-      avgCost,
-      value,
-      currency: data.currency,
-      lastDate: data.lastDate
-    });
-  }
-  return assets;
-}
-
-async function importBrokerCSV(file) {
-  let text = "";
-  const name = file.name.toLowerCase();
-  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-    text = await extractTextFromXLSX(file);
-  } else {
-    text = await fileToText(file);
-  }
-
-  const parsed = parseDivTrackerCSV(text);
-  if (!parsed.length) return null; // not a broker CSV
-
-  let added = 0, updated = 0, skipped = 0;
-
-  for (const p of parsed) {
-    // Check if ticker already exists in assets
-    const existing = state.assets.find(a => a.ticker && a.ticker.toUpperCase() === p.ticker);
-    if (existing) {
-      // Update units and value
-      existing.units = p.qty;
-      existing.value = p.value;
-      updated++;
-    } else {
-      // Create new asset
-      const classGuess = p.ticker.includes(".") ? "Ações/ETFs" : "Ações/ETFs";
-      state.assets.push({
-        id: uid(),
-        class: classGuess,
-        name: p.ticker,
-        value: p.value,
-        ticker: p.ticker,
-        units: p.qty,
-        yieldType: "none",
-        yieldValue: 0,
-        maturityDate: "",
-        compoundFreq: 12,
-        notes: `Importado ${p.lastDate || isoToday()} · ${p.qty.toFixed(4)} unid. @ ${p.avgCost.toFixed(4)} ${p.currency}`
-      });
-      added++;
-    }
-  }
-
-  saveState();
-  renderItems();
-  renderDashboard();
-
-  const msg = `✅ Corretora importada: <b>${added}</b> novos · <b>${updated}</b> actualizados · <b>${parsed.length}</b> tickers totais.<br>
-    <span style="font-size:12px;color:#667085">Clica <b>🔄 Actualizar cotações</b> nos Ativos para obter preços reais do Yahoo Finance.</span>`;
-  return { added, updated, total: parsed.length, msg };
 }
 
 function downloadTemplate() {
@@ -3772,30 +3677,13 @@ function wire() {
   const cfGran = document.getElementById("cfGranularity");
   if (cfGran) cfGran.addEventListener("change", renderCashflow);
 
-  // Import CSV (assets/liabilities/movements OR broker CSV)
+  // Import CSV
   $("fileInput").addEventListener("change", () => { $("btnImport").disabled = !($("fileInput").files && $("fileInput").files.length); });
   $("btnImport").addEventListener("click", async () => {
     const f = $("fileInput").files && $("fileInput").files[0];
     if (!f) return;
-    const hint = document.getElementById("importHint");
     try {
-      const fname = f.name.toLowerCase();
-      let text = "";
-      if (fname.endsWith(".xlsx") || fname.endsWith(".xls")) {
-        text = await extractTextFromXLSX(f);
-      } else {
-        text = await fileToText(f);
-      }
-
-      // Try broker CSV first (DivTracker format)
-      const brokerResult = await importBrokerCSV(f);
-      if (brokerResult) {
-        if (hint) hint.innerHTML = brokerResult.msg;
-        toast(`${brokerResult.added} ativos importados · ${brokerResult.updated} actualizados`);
-        return;
-      }
-
-      // Fallback: generic asset/liability/movement CSV
+      const text = await fileToText(f);
       const rows = csvToObjects(text);
       importRows(rows);
     } catch (e) { toast("Falha no import: " + (e && e.message ? e.message : String(e))); }
@@ -3829,7 +3717,7 @@ function wire() {
     });
   }
 
-  // Bank CSV import (legacy - kept for Import tab)
+  // Bank import (Import tab) — now accepts CSV, XLS, XLSX, PDF
   (function bindBankCsvImport() {
     const input = $("bankCsvFile"), btn = $("btnImportBankCsv"), nameEl = $("bankCsvName");
     if (!input || !btn) return;
@@ -3839,14 +3727,24 @@ function wire() {
       bankCsvSelectedFile = (input.files && input.files[0]) ? input.files[0] : null;
       if (nameEl && nameEl.textContent !== undefined) nameEl.textContent = bankCsvSelectedFile ? bankCsvSelectedFile.name : "";
       btn.disabled = !bankCsvSelectedFile;
+      const dbg = document.getElementById("bankImportDebug");
+      if (dbg) dbg.style.display = "none";
     });
     btn.addEventListener("click", async e => {
       e.preventDefault(); e.stopPropagation();
+      const f = bankCsvSelectedFile || (input.files && input.files[0]) || null;
+      if (!f) { toast("Escolhe primeiro o ficheiro do banco."); return; }
+      btn.disabled = true;
+      btn.textContent = "A importar…";
       try {
-        const f = bankCsvSelectedFile || (input.files && input.files[0]) || null;
-        if (!f) { toast("Escolhe primeiro o ficheiro CSV do banco."); return; }
-        await importBankMovementsCsv(f);
-      } catch (err) { toast("Falhou a importação do CSV."); console.error(err); }
+        await importBankFile(f);
+      } catch (err) {
+        toast("Falhou: " + (err.message || String(err)));
+        console.error(err);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Importar";
+      }
     });
   })();
 
@@ -3886,7 +3784,7 @@ function wire() {
   const gSearch = document.getElementById("globalSearch");
   if (gSearch) gSearch.addEventListener("input", e => renderSearchResults(e.target.value));
 
-  // Refresh quotes
+  // Refresh cotações
   const btnRefreshQuotes = document.getElementById("btnRefreshQuotes");
   if (btnRefreshQuotes) btnRefreshQuotes.addEventListener("click", refreshAllQuotes);
 
