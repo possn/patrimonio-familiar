@@ -293,13 +293,8 @@ async function storageClear() {
 /* ─── STATE ───────────────────────────────────────────────── */
 const DEFAULT_STATE = {
   settings: { currency: "EUR", goalMonthly: 0 },
-  assets: [],
-  liabilities: [],
-  transactions: [],
-  dividends: [],
-  divSummaries: [], // {id, year, gross, tax, yieldPct, notes}
-  history: [],
-  quotesCache: {}
+  assets: [], liabilities: [], transactions: [],
+  dividends: [], divSummaries: [], history: [], quotesCache: {}
 };
 
 let state = safeClone(DEFAULT_STATE);
@@ -940,13 +935,13 @@ function tickerBadge(it) {
   if (!it.ticker) return "";
   const q = (state.quotesCache || {})[it.ticker];
   if (!q) return ` · <span class="badge" style="background:#e0e7ff;color:#3730a3">📡 ${escapeHtml(it.ticker)}</span>`;
-  const chg = q.changePct || 0;
-  const sign = chg >= 0 ? "+" : "";
-  const col = chg >= 0 ? "background:#f0fdf4;color:#166534" : "background:#fef2f2;color:#991b1b";
-  return ` · <span class="badge" style="${col}">${escapeHtml(it.ticker)} ${fmtEUR2(q.price)} ${sign}${fmt(chg,2)}%</span>`;
+  const pct = q.changePct || 0;
+  const sign = pct >= 0 ? "+" : "";
+  const col = pct >= 0 ? "#f0fdf4;color:#166534" : "#fef2f2;color:#991b1b";
+  return ` · <span class="badge" style="background:${col}">${escapeHtml(it.ticker)} ${fmtEUR2(q.price)} ${sign}${fmt(pct, 2)}%</span>`;
 }
 
-/* ─── QUOTES ENGINE (Cloudflare Worker proxy → Yahoo Finance) ─ */
+/* ─── QUOTES ENGINE (Cloudflare Worker) ─────────────────────── */
 const QUOTES_WORKER = "https://aged-hat-28db.pedrossnunes.workers.dev";
 
 async function fetchQuote(ticker) {
@@ -954,15 +949,13 @@ async function fetchQuote(ticker) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   if (data.error) throw new Error(data.error);
-  return data; // { ticker, price, currency, change, changePct, name, timestamp }
+  return data;
 }
 
 async function refreshAllQuotes() {
   const tickers = [...new Set(state.assets.filter(a => a.ticker).map(a => a.ticker))];
-  if (!tickers.length) {
-    toast("Nenhum ativo tem ticker configurado. Importa o CSV da corretora.");
-    return;
-  }
+  if (!tickers.length) { toast("Nenhum ativo tem ticker. Importa o CSV da corretora primeiro."); return; }
+
   const bar  = document.getElementById("quotesBar");
   const stat = document.getElementById("quotesBarStatus");
   const log  = document.getElementById("quotesBarLog");
@@ -975,41 +968,106 @@ async function refreshAllQuotes() {
   if (!state.quotesCache) state.quotesCache = {};
   let ok = 0, fail = 0;
 
-  // Process in batches of 8 to avoid rate limiting
-  const BATCH = 8;
-  for (let i = 0; i < tickers.length; i += BATCH) {
-    const batch = tickers.slice(i, i + BATCH);
+  // Lotes de 8 para não sobrecarregar
+  for (let i = 0; i < tickers.length; i += 8) {
+    const batch = tickers.slice(i, i + 8);
     await Promise.allSettled(batch.map(async ticker => {
       try {
         const q = await fetchQuote(ticker);
         state.quotesCache[ticker] = q;
-        // Update asset value if units are recorded
-        state.assets
-          .filter(a => a.ticker === ticker && parseNum(a.units) > 0)
-          .forEach(a => { a.value = parseNum(a.units) * q.price; });
+        state.assets.filter(a => a.ticker === ticker && a.units > 0)
+          .forEach(a => { a.value = a.units * q.price; });
         ok++;
-        if (stat) stat.textContent = `✅ ${ok}/${tickers.length} actualizados…`;
       } catch { fail++; }
     }));
-    // Small pause between batches
-    if (i + BATCH < tickers.length) await new Promise(r => setTimeout(r, 300));
+    if (stat) stat.textContent = `✅ ${ok}/${tickers.length} actualizados…`;
   }
 
   saveState();
   renderItems();
   renderDashboard();
-
-  if (btn) { btn.disabled = false; btn.textContent = "🔄 Actualizar cotações"; }
+  if (btn)  { btn.disabled = false; btn.textContent = "🔄 Actualizar cotações"; }
   const ts = new Date().toLocaleTimeString("pt-PT", { hour:"2-digit", minute:"2-digit" });
-  if (stat) stat.textContent = `Última actualização: ${ts} · ✅ ${ok}${fail ? ` · ❌ ${fail} falhou` : ""}`;
-  if (log)  log.textContent = `${tickers.length} tickers · ${ok} actualizados · ${fail} falhou`;
-  toast(`Cotações actualizadas: ${ok}/${tickers.length}`);
+  if (stat) stat.textContent = `Actualizado às ${ts} · ${ok} OK${fail ? ` · ${fail} falhou` : ""}`;
+  toast(`Cotações: ${ok}/${tickers.length} actualizadas`);
 }
 
 function updateQuotesBarVisibility() {
   const bar = document.getElementById("quotesBar");
-  if (!bar) return;
-  bar.style.display = state.assets.some(a => a.ticker) ? "" : "none";
+  if (bar) bar.style.display = state.assets.some(a => a.ticker) ? "" : "none";
+}
+
+/* ─── DIVTRACKER / BROKER CSV IMPORT ────────────────────────── */
+function parseDivTrackerCSV(text) {
+  const raw = String(text || "").replace(/^\uFEFF/, "");
+  const lines = raw.split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) return [];
+  const headerLine = lines[0].toLowerCase();
+  if (!headerLine.includes("ticker") || !headerLine.includes("quantity")) return [];
+
+  const headers = splitCSVLine(lines[0], ",").map(h => h.trim().toLowerCase());
+  const tickerIdx = headers.indexOf("ticker");
+  const qtyIdx    = headers.indexOf("quantity");
+  const costIdx   = headers.indexOf("cost per share");
+  const currIdx   = headers.indexOf("currency");
+  const dateIdx   = headers.indexOf("date");
+  if (tickerIdx < 0 || qtyIdx < 0) return [];
+
+  const agg = new Map();
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i], ",").map(c => c.trim().replace(/^"|"$/g,""));
+    if (!cols[tickerIdx]) continue;
+    const ticker = cols[tickerIdx].toUpperCase();
+    const qty  = parseFloat(cols[qtyIdx]) || 0;
+    const cost = parseFloat(cols[costIdx] || "0") || 0;
+    const cur  = currIdx >= 0 ? (cols[currIdx] || "EUR") : "EUR";
+    const date = dateIdx >= 0 ? (cols[dateIdx] || "") : "";
+    if (!agg.has(ticker)) agg.set(ticker, { qty: 0, totalCost: 0, currency: cur, lastDate: date });
+    const e = agg.get(ticker);
+    e.qty += qty;
+    e.totalCost += qty * cost;
+    if (date > e.lastDate) e.lastDate = date;
+  }
+
+  const assets = [];
+  for (const [ticker, data] of agg) {
+    if (data.qty <= 0.0001) continue;
+    const avgCost = data.totalCost / data.qty;
+    assets.push({ ticker, qty: data.qty, avgCost, value: data.qty * avgCost, currency: data.currency, lastDate: data.lastDate });
+  }
+  return assets;
+}
+
+async function importBrokerCSV(file) {
+  let text = "";
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+    text = await extractTextFromXLSX(file);
+  } else {
+    text = await fileToText(file);
+  }
+  const parsed = parseDivTrackerCSV(text);
+  if (!parsed.length) return null;
+
+  let added = 0, updated = 0;
+  for (const p of parsed) {
+    const existing = state.assets.find(a => a.ticker && a.ticker.toUpperCase() === p.ticker);
+    if (existing) {
+      existing.units = p.qty;
+      existing.value = p.value;
+      updated++;
+    } else {
+      state.assets.push({
+        id: uid(), class: "Ações/ETFs", name: p.ticker,
+        value: p.value, ticker: p.ticker, units: p.qty,
+        yieldType: "none", yieldValue: 0, maturityDate: "", compoundFreq: 12,
+        notes: `Importado ${p.lastDate || isoToday()} · ${p.qty.toFixed(4)} unid. @ ${p.avgCost.toFixed(4)} ${p.currency}`
+      });
+      added++;
+    }
+  }
+  saveState(); renderItems(); renderDashboard();
+  return { added, updated, total: parsed.length };
 }
 
 /* ─── MODAL: ITEM ─────────────────────────────────────────── */
@@ -2936,17 +2994,88 @@ function autoCategorise(desc, dir) {
   return dir === "in" ? "Outros recebimentos" : "Outras despesas";
 }
 
+/* ─── SANTANDER XLS PARSER (lê números directamente do XLSX) ── */
+async function parseSantanderXLS(file) {
+  try {
+    if (typeof XLSX === "undefined") return [];
+    const arrayBuffer = await file.arrayBuffer();
+    const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: false, raw: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+
+    // Find header row: contains "Data" and "Montante" or "Descrição"
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(15, rows.length); i++) {
+      const r = rows[i].map(c => String(c).toLowerCase());
+      if (r.some(c => c.includes("data") || c.includes("date")) &&
+          r.some(c => c.includes("montante") || c.includes("amount") || c.includes("valor"))) {
+        headerIdx = i;
+        break;
+      }
+    }
+    if (headerIdx < 0) return [];
+
+    const headers = rows[headerIdx].map(c => String(c).toLowerCase().trim());
+    const dateCol  = headers.findIndex(h => h.includes("data") || h.includes("date"));
+    const descCol  = headers.findIndex(h => h.includes("descri") || h.includes("movimento") || h.includes("narrat"));
+    const amtCol   = headers.findIndex(h => h.includes("montante") || h.includes("amount") || h.includes("valor") && !h.includes("saldo"));
+
+    if (dateCol < 0 || amtCol < 0) return [];
+
+    const out = [];
+    for (let i = headerIdx + 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || !row[dateCol]) continue;
+
+      // Date: DD-MM-YYYY or DD/MM/YYYY
+      const rawDate = String(row[dateCol]).trim();
+      const dm = rawDate.match(/(\d{1,2})[-\/\.](\d{1,2})[-\/\.](\d{4})/);
+      if (!dm) continue;
+      const isoDate = `${dm[3]}-${dm[2].padStart(2,"0")}-${dm[1].padStart(2,"0")}`;
+
+      // Amount: already a number from XLSX
+      const rawAmt = row[amtCol];
+      let amount = 0;
+      if (typeof rawAmt === "number") {
+        amount = rawAmt;
+      } else {
+        const s = String(rawAmt || "").replace(/\s/g,"").replace(/\./g,"").replace(",",".");
+        amount = parseFloat(s) || 0;
+      }
+      if (!amount) continue;
+
+      // Description
+      const desc = descCol >= 0 ? String(row[descCol] || "").trim() : "Movimento";
+      if (!desc || /data opera|descri|montante|saldo/i.test(desc)) continue;
+
+      out.push({ date: isoDate, desc, amount });
+    }
+    return out;
+  } catch(e) {
+    console.error("parseSantanderXLS error:", e);
+    return [];
+  }
+}
+
 async function importBankFile(file) {
   if (!file) throw new Error("Sem ficheiro.");
   const name = file.name.toLowerCase();
-  let text = "";
 
+  // ── XLSX/XLS: try dedicated structured parser first ──────────
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+    const xlsParsed = await parseSantanderXLS(file);
+    if (xlsParsed.length) {
+      return finalizeBankImport(xlsParsed);
+    }
+    // fallback: convert to text
+  }
+
+  let text = "";
   if (name.endsWith(".pdf")) {
     text = await extractTextFromPDF(file);
   } else if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
     text = await extractTextFromXLSX(file);
   } else {
-    // CSV, TXT, ou qualquer outro texto
     text = await fileToText(file);
   }
 
@@ -2955,16 +3084,11 @@ async function importBankFile(file) {
     return { added: 0, dup: 0, read: 0 };
   }
 
-  // Tenta parsers em cascata — do mais específico para o mais genérico
+  // Parsers em cascata
   let parsed = [];
-
-  // 1. Parser tabular Santander (PDF com tabs preservados)
   if (!parsed.length) parsed = parseSantanderTabular(text);
-  // 2. Parser multi-linha Santander/BCP (uma linha por campo)
   if (!parsed.length) parsed = parseSantanderPDF(text);
-  // 3. Parser banco PT genérico (DD Mmm AAAA + montante numa linha)
   if (!parsed.length) parsed = parseBankCsvLikeText(text);
-  // 4. Parser CSV genérico com detecção automática de colunas
   if (!parsed.length) parsed = parseBankCsvGeneric(text);
 
   if (!parsed.length) {
@@ -2973,26 +3097,45 @@ async function importBankFile(file) {
     return { added: 0, dup: 0, read: 0 };
   }
 
-  // Deduplica
-  // Deduplicação: chave = data|tipo|montante|descrição_original
-  // A descrição original fica em notes; category pode ter mudado com auto-categorização
+  return finalizeBankImport(parsed);
+}
+
+/* Filtra movimentos irrelevantes para balanço pessoal:
+   - Transferências entre contas próprias (neutras)
+   - Depósitos a prazo constituídos (poupança, não despesa)
+   - Resgates de DP (não são receita de trabalho)
+   Mantém: salários, rendas, despesas reais, MB Way, etc.
+*/
+function shouldSkipForCashflow(desc, amount) {
+  const d = normStr(desc);
+  // Transferências internas entre contas do mesmo banco
+  if (/transferencia entre contas|transf entre contas/.test(d)) return true;
+  // Depósito a prazo constituído — é poupança, não despesa real
+  if (/constituicao de d\.?p|dp constituicao|constituicao dp/.test(d) && amount < 0) return true;
+  return false;
+}
+
+function finalizeBankImport(parsed) {
+  // Deduplicação
   const existing = new Set(state.transactions.map(tx => {
     const origDesc = tx.notes || tx.category || "";
     return `${String(tx.date||"").slice(0,10)}|${tx.type}|${Math.round(Math.abs(parseNum(tx.amount))*100)}|${normStr(origDesc)}`;
   }));
 
-  let added = 0, dup = 0;
+  let added = 0, dup = 0, skipped = 0;
   let totalIn = 0, totalOut = 0;
   const newTx = [];
 
   for (const r of parsed) {
+    // Filtrar movimentos irrelevantes para balanço pessoal
+    if (shouldSkipForCashflow(r.desc, r.amount)) { skipped++; continue; }
+
     const dir = r.amount >= 0 ? "in" : "out";
     const amount = Math.abs(r.amount);
     const key = `${r.date}|${dir}|${Math.round(amount*100)}|${normStr(r.desc)}`;
     if (existing.has(key)) { dup++; continue; }
     existing.add(key);
     const category = autoCategorise(r.desc, dir);
-    // Guardar descrição original em notes para deduplicação futura
     const tx = { id: uid(), type: dir, category, amount, date: r.date, recurring: "none", notes: r.desc || "" };
     state.transactions.push(tx);
     newTx.push(tx);
@@ -3029,6 +3172,7 @@ async function importBankFile(file) {
       <div style="margin-bottom:10px">
         ✅ <b>${added}</b> movimento${added!==1?"s":""} importado${added!==1?"s":""}
         ${dup > 0 ? ` · <span style="color:#92400e">${dup} duplicado${dup!==1?"s":""} ignorado${dup!==1?"s":""}</span>` : ""}
+        ${skipped > 0 ? ` · <span style="color:#6366f1">${skipped} transf. internas filtradas</span>` : ""}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
         <div style="background:#f0fdf4;border-radius:10px;padding:8px;text-align:center">
@@ -3048,11 +3192,11 @@ async function importBankFile(file) {
       ${catRows}
     `);
   } else {
-    showBankResult("info", `ℹ️ 0 novos · ${dup} já existiam · ${parsed.length} lidos`);
+    showBankResult("info", `ℹ️ 0 novos · ${dup} já existiam · ${skipped} filtrados · ${parsed.length} lidos`);
   }
 
   toast(`${added} movimentos importados · Entradas ${fmtEUR2(totalIn)} · Saídas ${fmtEUR2(totalOut)}`);
-  return { added, dup, read: parsed.length };
+  return { added, dup, skipped, read: parsed.length };
 }
 
 function showBankResult(type, html) {
@@ -3388,16 +3532,13 @@ function parseBankCsvGeneric(text) {
   const raw = String(text || "").replace(/^\uFEFF/, "");
   const lines = raw.split(/\r?\n/);
 
-  // Try to find delimiter — check a data row, not just first line
+  // Try to find delimiter
   const delims = [";", ",", "\t", "|"];
   let bestDelim = ";";
   let maxCols = 0;
   for (const d of delims) {
-    // Use max cols across first 20 lines
-    for (const l of lines.slice(0, 20)) {
-      const cols = l.split(d).length;
-      if (cols > maxCols) { maxCols = cols; bestDelim = d; }
-    }
+    const cols = (lines.find(l => l.trim()) || "").split(d).length;
+    if (cols > maxCols) { maxCols = cols; bestDelim = d; }
   }
 
   // Find header row — look for date/description/amount keywords
@@ -3407,10 +3548,9 @@ function parseBankCsvGeneric(text) {
 
   let headerIdx = -1, dateCol = -1, descCol = -1, amtCol = -1, debitCol = -1, creditCol = -1;
 
-  for (let i = 0; i < Math.min(25, lines.length); i++) {
-    const row = splitCSVLine(lines[i], bestDelim).map(c => c.trim().toLowerCase().replace(/[()]/g, ""));
-    // Must have at least 3 non-empty columns to be a real header
-    if (row.filter(c => c).length < 3) continue;
+  for (let i = 0; i < Math.min(20, lines.length); i++) {
+    const row = splitCSVLine(lines[i], bestDelim).map(c => c.trim().toLowerCase());
+    if (row.length < 2) continue;
     let score = 0;
     let di = -1, dsi = -1, ai = -1, dbi = -1, cri = -1;
     row.forEach((c, j) => {
@@ -3423,8 +3563,7 @@ function parseBankCsvGeneric(text) {
         score++;
       }
     });
-    // Require score >= 2 AND at least a date column identified
-    if (score >= 2 && di >= 0) {
+    if (score >= 2) {
       headerIdx = i; dateCol = di; descCol = dsi; amtCol = ai; debitCol = dbi; creditCol = cri;
       break;
     }
@@ -3497,19 +3636,14 @@ function parseEuroNum(s) {
   const clean = String(s).trim().replace(/[€$£\s]/g, "").replace(/\u2212/g, "-");
   if (!clean || clean === "-" || clean === "—") return null;
   // Handle PT format: 1.234,56 or 1,234.56
-  // Also handle plain dot-decimal from XLSX: -51.57
   let n;
   if (clean.includes(",") && clean.includes(".")) {
     n = clean.lastIndexOf(",") > clean.lastIndexOf(".")
       ? Number(clean.replace(/\./g,"").replace(",","."))
       : Number(clean.replace(/,/g,""));
   } else if (clean.includes(",")) {
-    // Could be PT decimal (51,57) or thousands (1,234)
-    n = /,\d{1,2}$/.test(clean)
-      ? Number(clean.replace(",","."))
-      : Number(clean.replace(/,/g,""));
+    n = Number(clean.replace(",","."));
   } else {
-    // Plain number or dot-decimal (from XLSX): -51.57, 3024.88
     n = Number(clean);
   }
   return Number.isFinite(n) ? n : null;
@@ -3677,13 +3811,30 @@ function wire() {
   const cfGran = document.getElementById("cfGranularity");
   if (cfGran) cfGran.addEventListener("change", renderCashflow);
 
-  // Import CSV
+  // Import CSV (assets/liabilities/movements OR broker CSV)
   $("fileInput").addEventListener("change", () => { $("btnImport").disabled = !($("fileInput").files && $("fileInput").files.length); });
   $("btnImport").addEventListener("click", async () => {
     const f = $("fileInput").files && $("fileInput").files[0];
     if (!f) return;
+    const hint = document.getElementById("importHint");
     try {
-      const text = await fileToText(f);
+      // Try broker/DivTracker CSV first
+      const brokerResult = await importBrokerCSV(f);
+      if (brokerResult) {
+        if (hint) hint.innerHTML = `✅ Corretora: <b>${brokerResult.added}</b> novos · <b>${brokerResult.updated}</b> actualizados · <b>${brokerResult.total}</b> tickers.<br>
+          <span style="font-size:12px;color:#6366f1">Vai a <b>Ativos → 🔄 Actualizar cotações</b> para obter preços reais.</span>`;
+        toast(`${brokerResult.added} ativos importados · ${brokerResult.updated} actualizados`);
+        setView("assets");
+        return;
+      }
+      // Fallback: generic asset/liability/movement CSV
+      let text = "";
+      const fname = f.name.toLowerCase();
+      if (fname.endsWith(".xlsx") || fname.endsWith(".xls")) {
+        text = await extractTextFromXLSX(f);
+      } else {
+        text = await fileToText(f);
+      }
       const rows = csvToObjects(text);
       importRows(rows);
     } catch (e) { toast("Falha no import: " + (e && e.message ? e.message : String(e))); }
@@ -3717,7 +3868,7 @@ function wire() {
     });
   }
 
-  // Bank import (Import tab) — now accepts CSV, XLS, XLSX, PDF
+  // Bank CSV import (legacy - kept for Import tab)
   (function bindBankCsvImport() {
     const input = $("bankCsvFile"), btn = $("btnImportBankCsv"), nameEl = $("bankCsvName");
     if (!input || !btn) return;
@@ -3727,24 +3878,14 @@ function wire() {
       bankCsvSelectedFile = (input.files && input.files[0]) ? input.files[0] : null;
       if (nameEl && nameEl.textContent !== undefined) nameEl.textContent = bankCsvSelectedFile ? bankCsvSelectedFile.name : "";
       btn.disabled = !bankCsvSelectedFile;
-      const dbg = document.getElementById("bankImportDebug");
-      if (dbg) dbg.style.display = "none";
     });
     btn.addEventListener("click", async e => {
       e.preventDefault(); e.stopPropagation();
-      const f = bankCsvSelectedFile || (input.files && input.files[0]) || null;
-      if (!f) { toast("Escolhe primeiro o ficheiro do banco."); return; }
-      btn.disabled = true;
-      btn.textContent = "A importar…";
       try {
-        await importBankFile(f);
-      } catch (err) {
-        toast("Falhou: " + (err.message || String(err)));
-        console.error(err);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = "Importar";
-      }
+        const f = bankCsvSelectedFile || (input.files && input.files[0]) || null;
+        if (!f) { toast("Escolhe primeiro o ficheiro CSV do banco."); return; }
+        await importBankMovementsCsv(f);
+      } catch (err) { toast("Falhou a importação do CSV."); console.error(err); }
     });
   })();
 
@@ -3784,7 +3925,7 @@ function wire() {
   const gSearch = document.getElementById("globalSearch");
   if (gSearch) gSearch.addEventListener("input", e => renderSearchResults(e.target.value));
 
-  // Refresh cotações
+  // Refresh quotes
   const btnRefreshQuotes = document.getElementById("btnRefreshQuotes");
   if (btnRefreshQuotes) btnRefreshQuotes.addEventListener("click", refreshAllQuotes);
 
