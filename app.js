@@ -3349,93 +3349,136 @@ async function extractTextFromXLSX(file) {
 // Reads XLSX directly as row objects — no lossy text conversion.
 // Detects columns by keyword, handles PT number format, separate debit/credit cols.
 async function parseXLSXBankRows(file) {
+  // Robust XLSX bank parser — uses VALUE PATTERNS not header keywords.
+  // Keyword-based detection is unreliable (e.g. "Data valor" matches "valor" = amount keyword).
+  // Instead: read raw numeric cells, identify columns by their value characteristics.
   try {
     if (typeof XLSX === "undefined") return [];
     const arrayBuffer = await file.arrayBuffer();
-    const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: true, raw: false });
+    // raw:true preserves actual numeric values without string formatting
+    const wb = XLSX.read(arrayBuffer, { type: "array", raw: true });
     const ws = wb.Sheets[wb.SheetNames[0]];
-    const jsonRows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+    // Get rows with raw values (numbers stay as numbers)
+    const jsonRows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
     if (!jsonRows.length) return [];
 
-    // Find header row — score each row by keyword matches
-    const dateKw   = ["data","date","datum","fecha","dt","data op"];
-    const descKw   = ["descri","movimento","operac","conceito","narrat","detail","memo","ref","hist"];
-    const amtKw    = ["montante","amount","importe","movim","net"]; // "valor" removed: conflicts with "Data valor" date column
-    const debitKw  = ["debito","saida","debit","out","saída","gastos"];
-    const creditKw = ["credito","entrada","credit","in","crédi"];
-    const balKw    = ["saldo","balance","balanc"];
+    const nCols = Math.max(...jsonRows.map(r => r.length));
 
-    let headerIdx = -1, dateCol = -1, descCol = -1, amtCol = -1;
-    let debitCol = -1, creditCol = -1, balCol = -1;
+    // ── STEP 1: Find the first data row (has a parseable date in col 0 or 1) ──
+    let firstDataRow = -1;
+    for (let i = 0; i < Math.min(30, jsonRows.length); i++) {
+      const row = jsonRows[i];
+      for (let j = 0; j < Math.min(3, (row||[]).length); j++) {
+        if (parseDateFlexible(String(row[j] || ""))) { firstDataRow = i; break; }
+      }
+      if (firstDataRow >= 0) break;
+    }
+    if (firstDataRow < 0) return [];
 
-    for (let i = 0; i < Math.min(25, jsonRows.length); i++) {
-      const row = jsonRows[i].map(c => String(c || "").trim().toLowerCase());
-      let score = 0, di=-1, dsi=-1, ai=-1, dbi=-1, cri=-1, bi=-1;
-      row.forEach((c, j) => {
-        if (dateKw.some(k => c.includes(k))) { di = j; score++; }
-        if (descKw.some(k => c.includes(k))) { dsi = j; score++; }
-        if (debitKw.some(k => c.includes(k))) { dbi = j; score++; }
-        else if (creditKw.some(k => c.includes(k))) { cri = j; score++; }
-        else if (amtKw.some(k => c.includes(k))) { ai = j; score++; }
-        if (balKw.some(k => c.includes(k))) { bi = j; }
-      });
-      if (score >= 2) {
-        headerIdx = i; dateCol = di; descCol = dsi;
-        amtCol = ai; debitCol = dbi; creditCol = cri; balCol = bi;
-        break;
+    // ── STEP 2: Identify columns by value patterns across data rows ──
+    // For each column, count: how many numeric values, how many are negative, median magnitude
+    const colStats = [];
+    const dataRows = jsonRows.slice(firstDataRow);
+    for (let j = 0; j < nCols; j++) {
+      const nums = [];
+      const texts = [];
+      const dates = [];
+      for (const row of dataRows) {
+        if (!row || row[j] == null || row[j] === "") continue;
+        const v = row[j];
+        if (typeof v === "number") { nums.push(v); continue; }
+        const s = String(v).trim();
+        if (parseDateFlexible(s)) { dates.push(s); continue; }
+        const n = parseEuroNum(s);
+        if (n !== null && s.replace(/[€\s,.]/g,"").length > 0) { nums.push(n); continue; }
+        if (s) texts.push(s);
+      }
+      const hasNeg = nums.some(v => v < 0);
+      const allPos = nums.length > 0 && nums.every(v => v >= 0);
+      const avgMag = nums.length ? nums.reduce((a,b)=>a+Math.abs(b),0)/nums.length : 0;
+      colStats.push({ j, nums, texts, dates, hasNeg, allPos, avgMag,
+        numCount: nums.length, textCount: texts.length, dateCount: dates.length });
+    }
+
+    // Date col: mostly date-formatted text strings
+    const dateCol = colStats.reduce((best, c) =>
+      c.dateCount > (best ? best.dateCount : -1) ? c : best, null)?.j ?? 0;
+
+    // Amount col: has NEGATIVE values (signed amount), moderate magnitude
+    // Balance col: all positive, usually larger running total
+    const numericCols = colStats.filter(c => c.numCount > 5);
+    let amtCol = -1, balCol = -1;
+    if (numericCols.length === 1) {
+      amtCol = numericCols[0].j;
+    } else if (numericCols.length >= 2) {
+      // Amount col has negatives; balance col is all positive with higher avg
+      const withNeg = numericCols.filter(c => c.hasNeg);
+      const allPos  = numericCols.filter(c => c.allPos);
+      if (withNeg.length >= 1) amtCol = withNeg[0].j;
+      if (allPos.length >= 1)  balCol = allPos.reduce((a,b) => b.avgMag > a.avgMag ? b : a).j;
+      // If no negatives found, pick col with smallest avg magnitude as amount
+      if (amtCol < 0 && numericCols.length >= 2) {
+        amtCol = numericCols.reduce((a,b) => a.avgMag <= b.avgMag ? a : b).j;
+        balCol = numericCols.reduce((a,b) => a.avgMag >= b.avgMag ? a : b).j;
       }
     }
-    if (headerIdx < 0) return [];
 
+    // Also check for separate Debit/Credit columns (some banks use two cols)
+    let debitCol = -1, creditCol = -1;
+    if (amtCol < 0 && numericCols.length >= 2) {
+      // Try header keywords only as tiebreaker here (already past the detection phase)
+      const headerRow = jsonRows[firstDataRow > 0 ? firstDataRow - 1 : 0] || [];
+      headerRow.forEach((h, j) => {
+        const hl = String(h||"").toLowerCase();
+        if (/d[ée]bit|sa[ií]d|out/.test(hl) && debitCol < 0) debitCol = j;
+        if (/cr[ée]dit|entrad|in/.test(hl) && creditCol < 0) creditCol = j;
+      });
+    }
+
+    // Desc col: mostly long text, not dates, not numbers
+    const descCol = colStats.reduce((best, c) => {
+      if (c.j === dateCol || c.j === amtCol || c.j === balCol) return best;
+      if (c.textCount > (best ? best.textCount : -1)) return c;
+      return best;
+    }, null)?.j ?? -1;
+
+    // ── STEP 3: Parse each data row ──
     const out = [];
-    for (let i = headerIdx + 1; i < jsonRows.length; i++) {
-      const cols = jsonRows[i].map(c => String(c || "").trim());
-      if (cols.every(c => !c)) continue; // blank row
+    for (const row of dataRows) {
+      if (!row || row.every(v => v == null || v === "")) continue;
 
-      // DATE — try designated col, then first col
-      const rawDate = dateCol >= 0 ? cols[dateCol] : cols[0];
+      // Date
+      const rawDate = String(row[dateCol] || "").trim();
       const isoDate = parseDateFlexible(rawDate);
       if (!isoDate) continue;
 
-      // DESCRIPTION
-      let desc = "";
-      if (descCol >= 0) {
-        desc = cols[descCol];
-      } else {
-        // Grab first non-date, non-numeric column
-        for (let j = 0; j < cols.length; j++) {
-          if (j === dateCol || j === amtCol || j === debitCol || j === creditCol || j === balCol) continue;
-          const v = cols[j];
-          if (v && isNaN(parseEuroNum(v))) { desc = v; break; }
-        }
-      }
-      desc = desc.trim() || "Movimento";
+      // Description
+      const desc = descCol >= 0 ? String(row[descCol] || "").trim() : "Movimento";
+      if (!desc || /^(data|saldo|balance|descrição|description)/i.test(desc)) continue;
 
-      // Skip balance-only / header-echo rows
-      if (/^saldo|^balance|^data|^descrição/i.test(desc)) continue;
-
-      // AMOUNT
+      // Amount — prefer signed single column
       let amount = null;
-      if (debitCol >= 0 || creditCol >= 0) {
-        const debit  = debitCol  >= 0 ? (parseEuroNum(cols[debitCol])  || 0) : 0;
-        const credit = creditCol >= 0 ? (parseEuroNum(cols[creditCol]) || 0) : 0;
-        // Santander: Montante column has negative for debits, positive for credits
-        amount = credit - debit;
-      } else if (amtCol >= 0) {
-        amount = parseEuroNum(cols[amtCol]);
+      if (amtCol >= 0) {
+        const v = row[amtCol];
+        amount = typeof v === "number" ? v : parseEuroNum(String(v || ""));
+      } else if (debitCol >= 0 || creditCol >= 0) {
+        const dv = debitCol >= 0 ? (typeof row[debitCol]==="number" ? row[debitCol] : parseEuroNum(String(row[debitCol]||"")) || 0) : 0;
+        const cv = creditCol >= 0 ? (typeof row[creditCol]==="number" ? row[creditCol] : parseEuroNum(String(row[creditCol]||"")) || 0) : 0;
+        amount = cv - dv;
       }
 
-      // Fallback: scan all columns for numeric value that isn't the balance
-      if (amount === null || amount === undefined) {
-        for (let j = cols.length - 1; j >= 0; j--) {
-          if (j === balCol) continue;
-          const v = parseEuroNum(cols[j]);
-          if (v !== null && Math.abs(v) > 0) { amount = v; break; }
+      // Last-resort: scan numeric cols, skip balance col
+      if (amount === null || !Number.isFinite(amount)) {
+        for (const c of numericCols) {
+          if (c.j === balCol) continue;
+          const v = row[c.j];
+          const n = typeof v === "number" ? v : parseEuroNum(String(v||""));
+          if (n !== null && Number.isFinite(n)) { amount = n; break; }
         }
       }
 
-      if (amount === null || amount === undefined || !Number.isFinite(amount)) continue;
-      out.push({ date: isoDate, desc, amount });
+      if (!Number.isFinite(amount)) continue;
+      out.push({ date: isoDate, desc: desc || "Movimento", amount });
     }
     return out;
   } catch (e) {
@@ -3620,7 +3663,13 @@ async function importJSON(file) {
 }
 
 function resetAll() {
-  if (!confirm("Apagar TODOS os dados deste dispositivo? Não pode ser desfeito.")) return;
+  const answer = prompt(
+    "⚠️ RESET TOTAL\n\nEste botão apaga TUDO: ativos, passivos, movimentos, dividendos.\n\nEscreve APAGAR para confirmar:"
+  );
+  if ((answer || "").trim().toUpperCase() !== "APAGAR") {
+    if (answer !== null) toast("Reset cancelado. Tens de escrever APAGAR.");
+    return;
+  }
   void storageClear();
   state = safeClone(DEFAULT_STATE);
   saveState();
