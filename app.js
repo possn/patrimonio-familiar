@@ -3360,7 +3360,7 @@ async function parseXLSXBankRows(file) {
     // Find header row — score each row by keyword matches
     const dateKw   = ["data","date","datum","fecha","dt","data op"];
     const descKw   = ["descri","movimento","operac","conceito","narrat","detail","memo","ref","hist"];
-    const amtKw    = ["montante","valor","amount","importe","movim","net"];
+    const amtKw    = ["montante","amount","importe","movim","net"]; // "valor" removed: conflicts with "Data valor" date column
     const debitKw  = ["debito","saida","debit","out","saída","gastos"];
     const creditKw = ["credito","entrada","credit","in","crédi"];
     const balKw    = ["saldo","balance","balanc"];
@@ -3462,7 +3462,7 @@ function parseBankCsvGeneric(text) {
   // Find header row — look for date/description/amount keywords
   const dateKw = ["data","date","datum","fecha","dt"];
   const descKw = ["descri","movimento","operacao","conceito","narrat","detail","memo","ref"];
-  const amtKw  = ["montante","valor","amount","debito","credito","importe","saldo","movim"];
+  const amtKw  = ["montante","amount","debito","credito","importe","movim"]; // "valor"/"saldo" removed: too ambiguous
 
   let headerIdx = -1, dateCol = -1, descCol = -1, amtCol = -1, debitCol = -1, creditCol = -1;
 
