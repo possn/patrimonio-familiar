@@ -168,6 +168,11 @@
 
   <!-- IMPORT -->
   <section class="view" data-view="import" id="viewImport" hidden>
+    <div class="card" id="dupWarningCard" style="border:2px solid #fbbf24;display:none">
+      <div class="card__title" style="margin-bottom:6px">⚠️ Possíveis dados duplicados</div>
+      <div class="card__muted" style="margin-bottom:10px">Detectámos movimentos possivelmente importados mais do que uma vez. Limpa e reimporta para corrigir.</div>
+      <button class="btn btn--outline" id="btnClearTransactions2" style="width:100%;font-weight:700">🗑️ Limpar movimentos e reimportar</button>
+    </div>
     <div class="card">
       <div class="card__head">
         <div><div class="card__title">Importar CSV</div><div class="card__muted">Ativos, passivos e movimentos. Lê localmente.</div></div>
@@ -185,10 +190,10 @@
     </div>
     <div class="card">
       <div class="card__head">
-        <div><div class="card__title">Importar movimentos do banco</div><div class="card__muted">CSV do banco (CGD, Millennium, BPI…). Duplicados ignorados.</div></div>
+        <div><div class="card__title">Importar movimentos do banco</div><div class="card__muted">CSV, Excel (.xls/.xlsx) ou PDF do banco. Duplicados ignorados automaticamente.</div></div>
       </div>
       <div class="row" style="gap:10px; flex-wrap:wrap">
-        <input class="input" id="bankCsvFile" type="file" accept=".csv,text/csv,application/csv">
+        <input class="input" id="bankCsvFile" type="file" accept=".csv,.xls,.xlsx,.pdf,text/csv,application/csv">
         <button class="btn btn--primary" id="btnImportBankCsv" disabled>Importar</button>
       </div>
       <div id="bankCsvName" class="card__muted" style="margin-top:6px;font-size:12px"></div>
@@ -204,10 +209,11 @@
         <button class="btn" id="btnImportJSON" disabled>Importar JSON</button>
       </div>
     </div>
-    <div class="card">
-      <div class="card__head"><div><div class="card__title">Reset</div><div class="card__muted">Apaga dados deste dispositivo.</div></div></div>
-      <button class="btn btn--outline" id="btnClearTransactions" style="width:100%;margin-bottom:8px">🗑️ Limpar movimentos (manter ativos)</button>
-      <button class="btn btn--danger" id="btnReset">Reset total (apaga tudo)</button>
+    <div class="card" style="border:2px solid #fbbf24">
+      <div class="card__title" style="margin-bottom:6px">⚠️ Dados duplicados?</div>
+      <div class="card__muted" style="margin-bottom:10px">Se os valores do Balanço estiverem errados (ex: importaste o mesmo ficheiro várias vezes), usa este botão para limpar e reimportar.</div>
+      <button class="btn btn--outline" id="btnClearTransactions" style="width:100%;margin-bottom:8px;font-weight:700">🗑️ Limpar movimentos (mantém ativos)</button>
+      <button class="btn btn--danger" id="btnReset" style="width:100%">Reset total (apaga tudo)</button>
     </div>
   </section>
 
@@ -673,6 +679,7 @@
   <button class="navbtn" data-view="cashflow" id="navCashflow"><span class="navico">€</span><span class="navlbl">Balanço</span></button>
   <button class="navbtn" data-view="import" id="navImport"><span class="navico">⇅</span><span class="navlbl">Importar</span></button>
   <button class="navbtn" data-view="analysis" id="navAnalysis"><span class="navico">📈</span><span class="navlbl">Análise</span></button>
+  <button class="navbtn" data-view="settings" id="navSettings"><span class="navico">⚙️</span><span class="navlbl">Def.</span></button>
 </nav>
 
 <!-- MODAL: Item -->

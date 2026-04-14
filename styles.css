@@ -237,7 +237,7 @@ textarea.input { resize: vertical; }
   box-shadow: 0 -4px 24px rgba(16,24,40,.06);
   padding: 8px 6px 20px; /* extra bottom for iPhone home bar */
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(7, 1fr);
   gap: 2px;
 }
 .navbtn {
@@ -250,7 +250,7 @@ textarea.input { resize: vertical; }
   transition: background .15s, color .15s;
 }
 .navbtn--active { background: rgba(91,92,230,.12); color: var(--vio); }
-.navico { font-size: 18px; line-height: 1; }
+.navico { font-size: 16px; line-height: 1; }
 .navlbl { font-size: 9px; font-weight: 800; }
 
 /* ─── SEGMENTED CONTROL ─── */
@@ -303,7 +303,7 @@ textarea.input { resize: vertical; }
   .pill__v { font-size: 22px; }
   .filters { grid-template-columns: 1fr; }
   .kpiRow { grid-template-columns: 1fr; }
-  .bottomnav { grid-template-columns: repeat(6, 1fr); width: 100%; }
+  .bottomnav { grid-template-columns: repeat(7, 1fr); width: 100%; }
   .navlbl { display: block; font-size: 9px; }
   .item__v { font-size: 15px; }
   .passivebar { bottom: 76px; }

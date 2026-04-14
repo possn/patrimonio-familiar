@@ -425,6 +425,7 @@ function setView(view) {
   if (view === "cashflow") renderCashflow();
   if (view === "analysis") renderAnalysis();
   if (view === "dividends") renderDividends();
+  if (view === "import") checkDuplicateWarning();
   window.scrollTo({ top: 0, behavior: "instant" });
 }
 
@@ -3804,16 +3805,23 @@ function wire() {
   $("btnReset").addEventListener("click", resetAll);
 
   // Clear only transactions (keep assets/liabilities)
-  const btnClearTx = document.getElementById("btnClearTransactions");
-  if (btnClearTx) btnClearTx.addEventListener("click", () => {
+  function clearTransactions() {
     const n = state.transactions.length;
     if (!n) { toast("Sem movimentos para limpar."); return; }
     if (!confirm(`⚠️ Apagar TODOS os ${n} movimentos?\n\nOs teus ativos e passivos são mantidos.\nPodes reimportar os ficheiros do banco a seguir.`)) return;
     state.transactions = [];
     saveState();
     renderAll();
+    checkDuplicateWarning();
     toast(`🗑️ ${n} movimentos apagados. Reimporta os ficheiros do banco.`, 4000);
-  });
+  }
+  const btnClearTx = document.getElementById("btnClearTransactions");
+  if (btnClearTx) btnClearTx.addEventListener("click", clearTransactions);
+  const btnClearTx2 = document.getElementById("btnClearTransactions2");
+  if (btnClearTx2) btnClearTx2.addEventListener("click", clearTransactions);
+
+  // Check on import view open
+  checkDuplicateWarning();
 
   // Settings
   $("baseCurrency").value = state.settings.currency || "EUR";
@@ -4014,6 +4022,25 @@ async function refreshLiveQuotes() {
   } else {
     toast(`⚠️ Falha a actualizar: ${errors.slice(0,3).join(", ")}. Verifica o Worker.`, 5000);
   }
+}
+
+
+/* ─── DUPLICATE DETECTION ─────────────────────────────────────────────────── */
+function checkDuplicateWarning() {
+  const card = document.getElementById("dupWarningCard");
+  if (!card) return;
+  if (!state.transactions || state.transactions.length < 10) {
+    card.style.display = "none";
+    return;
+  }
+  // Detect duplicates: same date + amount appearing 2+ times
+  const counts = {};
+  for (const tx of state.transactions) {
+    const k = `${String(tx.date||"").slice(0,10)}|${Math.round(Math.abs(parseNum(tx.amount))*100)}`;
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  const hasDups = Object.values(counts).some(v => v >= 3);
+  card.style.display = hasDups ? "" : "none";
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
