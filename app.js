@@ -1110,8 +1110,29 @@ function cfGranData(granularity) {
 }
 
 function isInterAccountTransfer(t) {
-  return (t.category || "").toLowerCase().includes("transferência entre contas") ||
-         normStr(t.category || "").includes("transferencia entre contas");
+  const cat = normStr(t.category || "");
+  const note = normStr(t.notes || "");
+  // Categorias explicitamente internas
+  const internalCats = [
+    "transferencia entre contas",
+    "transferencia interna",
+    "poupanca propria",
+    "constituicao dp",
+    "mesada",             // transferência para filho — interno ao agregado
+  ];
+  if (internalCats.some(k => cat.includes(k))) return true;
+  // Detectar por notas/descrição importada
+  const internalNoteKw = [
+    "transferencia entre contas",
+    "constituicao de d.p",
+    "constituicao de dp",
+    "poupanca noutra",
+    "mesada pedro",
+    "mesada miudos",
+    "trf.imed. p/ pedro nunes",
+  ];
+  if (internalNoteKw.some(k => note.includes(k))) return true;
+  return false;
 }
 
 function renderCashflow() {
@@ -2793,6 +2814,9 @@ function autoCategorise(desc, dir) {
     if (/transferencia de|trf\. de|trf\.imed\. de|recebido de/.test(d)) return "Transferência recebida";
     if (/mb way/.test(d) && dir === "in") return "MB Way recebido";
     if (/transferencia entre contas/.test(d)) return "Transferência entre contas";
+    if (/^poupan|pouoanca|poupanca noutra/.test(d)) return "Poupança própria";
+    if (/mesada pedro|mesada miudos/.test(d)) return "Mesada";
+    if (/constituicao de d\.p|constituicao de dp/.test(d)) return "Constituição DP";
     if (/irs|at |autoridade tributaria/.test(d)) return "Reembolso IRS";
     if (/seguranca social|seg\. social/.test(d)) return "Segurança Social";
     if (/pensao|reforma/.test(d)) return "Pensão";
@@ -2831,9 +2855,13 @@ function autoCategorise(desc, dir) {
   // Saídas — finanças
   if (/imposto|irs |iva |iuc |imt |at |fisco|tributaria/.test(d)) return "Impostos";
   if (/comissao|comissão|manutencao conta/.test(d)) return "Comissões bancárias";
-  if (/deposito a prazo|constituicao de d\.p|dp |d\.p\./.test(d)) return "Depósito a prazo";
+  if (/deposito a prazo|constituicao de d\.p|dp |d\.p\./.test(d)) return "Constituição DP";
   if (/ppr |plano poupanca|subscricao ppr/.test(d)) return "PPR";
   if (/investimento|subscricao|fundo/.test(d)) return "Investimento";
+  // Transferências internas (poupança, entre contas próprias, mesadas)
+  if (/^poupan|pouoanca|poupanca noutra/.test(d)) return "Poupança própria";
+  if (/mesada pedro|mesada miudos/.test(d)) return "Mesada";
+  if (/transferencia entre contas/.test(d)) return "Transferência entre contas";
   if (/cred\.|credito consumo|credito pessoal/.test(d)) return "Crédito pessoal";
   if (/cartao|pagamento de conta cartao/.test(d)) return "Cartão de crédito";
 
