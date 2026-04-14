@@ -2931,9 +2931,17 @@ async function importBankFile(file) {
   // Deduplica
   // Deduplicação: chave = data|tipo|montante|descrição_original
   // A descrição original fica em notes; category pode ter mudado com auto-categorização
+  // Dedup key: date + type + amount + first 30 normalised chars of description
+  // Using truncated desc (not full) makes dedup robust across PDF/XLS/CSV variations
+  // while still distinguishing legitimate same-day same-amount transactions (e.g. 2x PPR)
+  function dedupKey(date, type, amount, desc) {
+    const shortDesc = normStr(desc || "").slice(0, 30);
+    return `${String(date||"").slice(0,10)}|${type}|${Math.round(Math.abs(amount)*100)}|${shortDesc}`;
+  }
+
   const existing = new Set(state.transactions.map(tx => {
     const origDesc = tx.notes || tx.category || "";
-    return `${String(tx.date||"").slice(0,10)}|${tx.type}|${Math.round(Math.abs(parseNum(tx.amount))*100)}|${normStr(origDesc)}`;
+    return dedupKey(tx.date, tx.type, parseNum(tx.amount), origDesc);
   }));
 
   let added = 0, dup = 0;
@@ -2943,7 +2951,7 @@ async function importBankFile(file) {
   for (const r of parsed) {
     const dir = r.amount >= 0 ? "in" : "out";
     const amount = Math.abs(r.amount);
-    const key = `${r.date}|${dir}|${Math.round(amount*100)}|${normStr(r.desc)}`;
+    const key = dedupKey(r.date, dir, amount, r.desc);
     if (existing.has(key)) { dup++; continue; }
     existing.add(key);
     const category = autoCategorise(r.desc, dir);
@@ -3794,6 +3802,18 @@ function wire() {
     try { await importJSON(f); } catch (e) { toast("Erro a importar JSON."); }
   });
   $("btnReset").addEventListener("click", resetAll);
+
+  // Clear only transactions (keep assets/liabilities)
+  const btnClearTx = document.getElementById("btnClearTransactions");
+  if (btnClearTx) btnClearTx.addEventListener("click", () => {
+    const n = state.transactions.length;
+    if (!n) { toast("Sem movimentos para limpar."); return; }
+    if (!confirm(`⚠️ Apagar TODOS os ${n} movimentos?\n\nOs teus ativos e passivos são mantidos.\nPodes reimportar os ficheiros do banco a seguir.`)) return;
+    state.transactions = [];
+    saveState();
+    renderAll();
+    toast(`🗑️ ${n} movimentos apagados. Reimporta os ficheiros do banco.`, 4000);
+  });
 
   // Settings
   $("baseCurrency").value = state.settings.currency || "EUR";
