@@ -148,14 +148,10 @@
     <div class="card">
       <div class="card__head">
         <div><div class="card__title" id="itemsTitle">Ativos</div><div class="card__muted" id="itemsSub">Imobiliário, liquidez, ações/ETFs, metais, cripto, fundos, PPR, depósitos…</div></div>
-        <button class="btn btn--primary" id="btnAddItem">Adicionar</button>
-      </div>
-      <div id="quotesBar" style="display:none;margin-bottom:10px;padding:10px 12px;background:#f0f4ff;border-radius:12px;border:1px solid #c7d2fe">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
-          <div style="font-size:13px;color:#3730a3;font-weight:600" id="quotesBarStatus">Cotações Yahoo Finance via Cloudflare</div>
-          <button class="btn btn--ghost" id="btnRefreshQuotes" style="padding:8px 14px;font-size:13px;border:1px solid #c7d2fe">🔄 Actualizar cotações</button>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn btn--outline" id="btnRefreshQuotes" title="Actualizar cotações de acções e ETFs" style="font-size:13px;padding:6px 10px">⟳ Cotações</button>
+          <button class="btn btn--primary" id="btnAddItem">Adicionar</button>
         </div>
-        <div id="quotesBarLog" style="font-size:11px;color:#6366f1;margin-top:4px"></div>
       </div>
       <div class="filters">
         <input class="input" id="qSearch" placeholder="Pesquisar…" autocomplete="off">
@@ -177,13 +173,13 @@
         <div><div class="card__title">Importar CSV</div><div class="card__muted">Ativos, passivos e movimentos. Lê localmente.</div></div>
       </div>
       <div class="row row--wrap" style="gap:10px">
-        <input id="fileInput" type="file" class="input" accept=".csv,.xls,.xlsx,text/csv">
+        <input id="fileInput" type="file" class="input" accept=".csv,text/csv">
         <button class="btn btn--primary" id="btnImport" disabled>Importar</button>
         <button class="btn" id="btnTemplate">Template CSV</button>
       </div>
       <div class="note">
-        <b>CSV da corretora (DivTracker)</b> — detectado automaticamente, importa todos os tickers de uma vez.<br>
-        Formato genérico: tipo (ativo/passivo/movimento), classe, nome, valor, yield_tipo, yield_valor.
+        Formato: <b>tipo</b> (ativo/passivo/movimento), <b>classe</b>, <b>nome</b>, <b>valor</b>, <b>yield_tipo</b>, <b>yield_valor</b>, <b>data</b>.<br>
+        Também reconhece exports de corretoras (ticker, shares, market value, yield).
       </div>
       <div class="hint" id="importHint">Nenhum ficheiro importado nesta sessão.</div>
     </div>
@@ -192,10 +188,9 @@
         <div><div class="card__title">Importar movimentos do banco</div><div class="card__muted">CSV do banco (CGD, Millennium, BPI…). Duplicados ignorados.</div></div>
       </div>
       <div class="row" style="gap:10px; flex-wrap:wrap">
-        <input class="input" id="bankCsvFile" type="file" accept=".csv,.xls,.xlsx,.pdf,text/csv">
+        <input class="input" id="bankCsvFile" type="file" accept=".csv,text/csv,application/csv">
         <button class="btn btn--primary" id="btnImportBankCsv" disabled>Importar</button>
       </div>
-      <div class="note" style="margin-top:8px">Aceita <b>Excel (.xls/.xlsx)</b>, PDF e CSV do Santander, CGD, Millennium, BPI…<br>Transferências entre contas próprias são filtradas automaticamente.</div>
       <div id="bankCsvName" class="card__muted" style="margin-top:6px;font-size:12px"></div>
       <div id="bankImportDebug" class="card__muted" style="margin-top:10px;display:none"></div>
     </div>
@@ -627,6 +622,10 @@
         <label class="lbl" style="margin-top:14px">Objetivo de rendimento passivo mensal (€)</label>
         <input class="input" id="settingsGoal" inputmode="decimal" placeholder="ex: 2000">
         <button class="btn btn--primary" style="margin-top:10px;width:100%" id="btnSaveGoal">Guardar objetivo</button>
+        <label class="lbl" style="margin-top:18px">🔗 Cloudflare Worker URL (cotações em tempo real)</label>
+        <input class="input" id="settingsWorkerUrl" type="url" placeholder="https://patrimonio-quotes.SEU-NOME.workers.dev">
+        <div class="note" style="margin-top:6px;font-size:12px">URL do Worker que proxifica o Yahoo Finance. Ver <b>worker.js</b> incluído na exportação.</div>
+        <button class="btn btn--primary" style="margin-top:8px;width:100%" id="btnSaveWorkerUrl">Guardar URL do Worker</button>
       </div>
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Metodologia de Rendimento</div>

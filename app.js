@@ -293,8 +293,12 @@ async function storageClear() {
 /* ─── STATE ───────────────────────────────────────────────── */
 const DEFAULT_STATE = {
   settings: { currency: "EUR", goalMonthly: 0 },
-  assets: [], liabilities: [], transactions: [],
-  dividends: [], divSummaries: [], history: [], quotesCache: {}
+  assets: [],
+  liabilities: [],
+  transactions: [],
+  dividends: [],
+  divSummaries: [], // {id, year, gross, tax, yieldPct, notes}
+  history: []
 };
 
 let state = safeClone(DEFAULT_STATE);
@@ -334,8 +338,7 @@ async function loadStateAsync() {
       transactions: Array.isArray(p.transactions) ? p.transactions : [],
       dividends: Array.isArray(p.dividends) ? p.dividends : [],
       divSummaries: Array.isArray(p.divSummaries) ? p.divSummaries : [],
-      history: Array.isArray(p.history) ? p.history : [],
-      quotesCache: (p.quotesCache && typeof p.quotesCache === "object") ? p.quotesCache : {}
+      history: Array.isArray(p.history) ? p.history : []
     };
   } catch { return safeClone(DEFAULT_STATE); }
 }
@@ -911,16 +914,14 @@ function renderItems() {
   for (const it of src) {
     const row = document.createElement("div");
     row.className = "item";
-    const badge  = !showingLiabs ? yieldBadge(it) : "";
-    const qbadge = !showingLiabs ? tickerBadge(it) : "";
+    const badge = !showingLiabs ? yieldBadge(it) : "";
     row.innerHTML = `<div class="item__l">
       <div class="item__t">${escapeHtml(it.name || "—")}</div>
-      <div class="item__s">${escapeHtml(it.class || "")}${badge}${qbadge}</div>
+      <div class="item__s">${escapeHtml(it.class || "")}${badge}</div>
     </div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
     row.addEventListener("click", () => editItem(it.id));
     list.appendChild(row);
   }
-  updateQuotesBarVisibility();
 }
 
 function yieldBadge(it) {
@@ -929,145 +930,6 @@ function yieldBadge(it) {
   if (yt === "yield_eur_year" && yv > 0) return ` · <span class="badge badge--green">${fmtEUR(yv)}/ano</span>`;
   if (yt === "rent_month" && yv > 0) return ` · <span class="badge badge--green">${fmtEUR(yv)}/mês</span>`;
   return "";
-}
-
-function tickerBadge(it) {
-  if (!it.ticker) return "";
-  const q = (state.quotesCache || {})[it.ticker];
-  if (!q) return ` · <span class="badge" style="background:#e0e7ff;color:#3730a3">📡 ${escapeHtml(it.ticker)}</span>`;
-  const pct = q.changePct || 0;
-  const sign = pct >= 0 ? "+" : "";
-  const col = pct >= 0 ? "#f0fdf4;color:#166534" : "#fef2f2;color:#991b1b";
-  return ` · <span class="badge" style="background:${col}">${escapeHtml(it.ticker)} ${fmtEUR2(q.price)} ${sign}${fmt(pct, 2)}%</span>`;
-}
-
-/* ─── QUOTES ENGINE (Cloudflare Worker) ─────────────────────── */
-const QUOTES_WORKER = "https://aged-hat-28db.pedrossnunes.workers.dev";
-
-async function fetchQuote(ticker) {
-  const res = await fetch(`${QUOTES_WORKER}?ticker=${encodeURIComponent(ticker)}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  if (data.error) throw new Error(data.error);
-  return data;
-}
-
-async function refreshAllQuotes() {
-  const tickers = [...new Set(state.assets.filter(a => a.ticker).map(a => a.ticker))];
-  if (!tickers.length) { toast("Nenhum ativo tem ticker. Importa o CSV da corretora primeiro."); return; }
-
-  const bar  = document.getElementById("quotesBar");
-  const stat = document.getElementById("quotesBarStatus");
-  const log  = document.getElementById("quotesBarLog");
-  const btn  = document.getElementById("btnRefreshQuotes");
-  if (bar)  bar.style.display = "";
-  if (btn)  { btn.disabled = true; btn.textContent = "⏳ A actualizar…"; }
-  if (stat) stat.textContent = `A actualizar ${tickers.length} tickers…`;
-  if (log)  log.textContent = "";
-
-  if (!state.quotesCache) state.quotesCache = {};
-  let ok = 0, fail = 0;
-
-  // Lotes de 8 para não sobrecarregar
-  for (let i = 0; i < tickers.length; i += 8) {
-    const batch = tickers.slice(i, i + 8);
-    await Promise.allSettled(batch.map(async ticker => {
-      try {
-        const q = await fetchQuote(ticker);
-        state.quotesCache[ticker] = q;
-        state.assets.filter(a => a.ticker === ticker && a.units > 0)
-          .forEach(a => { a.value = a.units * q.price; });
-        ok++;
-      } catch { fail++; }
-    }));
-    if (stat) stat.textContent = `✅ ${ok}/${tickers.length} actualizados…`;
-  }
-
-  saveState();
-  renderItems();
-  renderDashboard();
-  if (btn)  { btn.disabled = false; btn.textContent = "🔄 Actualizar cotações"; }
-  const ts = new Date().toLocaleTimeString("pt-PT", { hour:"2-digit", minute:"2-digit" });
-  if (stat) stat.textContent = `Actualizado às ${ts} · ${ok} OK${fail ? ` · ${fail} falhou` : ""}`;
-  toast(`Cotações: ${ok}/${tickers.length} actualizadas`);
-}
-
-function updateQuotesBarVisibility() {
-  const bar = document.getElementById("quotesBar");
-  if (bar) bar.style.display = state.assets.some(a => a.ticker) ? "" : "none";
-}
-
-/* ─── DIVTRACKER / BROKER CSV IMPORT ────────────────────────── */
-function parseDivTrackerCSV(text) {
-  const raw = String(text || "").replace(/^\uFEFF/, "");
-  const lines = raw.split(/\r?\n/).filter(l => l.trim());
-  if (!lines.length) return [];
-  const headerLine = lines[0].toLowerCase();
-  if (!headerLine.includes("ticker") || !headerLine.includes("quantity")) return [];
-
-  const headers = splitCSVLine(lines[0], ",").map(h => h.trim().toLowerCase());
-  const tickerIdx = headers.indexOf("ticker");
-  const qtyIdx    = headers.indexOf("quantity");
-  const costIdx   = headers.indexOf("cost per share");
-  const currIdx   = headers.indexOf("currency");
-  const dateIdx   = headers.indexOf("date");
-  if (tickerIdx < 0 || qtyIdx < 0) return [];
-
-  const agg = new Map();
-  for (let i = 1; i < lines.length; i++) {
-    const cols = splitCSVLine(lines[i], ",").map(c => c.trim().replace(/^"|"$/g,""));
-    if (!cols[tickerIdx]) continue;
-    const ticker = cols[tickerIdx].toUpperCase();
-    const qty  = parseFloat(cols[qtyIdx]) || 0;
-    const cost = parseFloat(cols[costIdx] || "0") || 0;
-    const cur  = currIdx >= 0 ? (cols[currIdx] || "EUR") : "EUR";
-    const date = dateIdx >= 0 ? (cols[dateIdx] || "") : "";
-    if (!agg.has(ticker)) agg.set(ticker, { qty: 0, totalCost: 0, currency: cur, lastDate: date });
-    const e = agg.get(ticker);
-    e.qty += qty;
-    e.totalCost += qty * cost;
-    if (date > e.lastDate) e.lastDate = date;
-  }
-
-  const assets = [];
-  for (const [ticker, data] of agg) {
-    if (data.qty <= 0.0001) continue;
-    const avgCost = data.totalCost / data.qty;
-    assets.push({ ticker, qty: data.qty, avgCost, value: data.qty * avgCost, currency: data.currency, lastDate: data.lastDate });
-  }
-  return assets;
-}
-
-async function importBrokerCSV(file) {
-  let text = "";
-  const name = file.name.toLowerCase();
-  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-    text = await extractTextFromXLSX(file);
-  } else {
-    text = await fileToText(file);
-  }
-  const parsed = parseDivTrackerCSV(text);
-  if (!parsed.length) return null;
-
-  let added = 0, updated = 0;
-  for (const p of parsed) {
-    const existing = state.assets.find(a => a.ticker && a.ticker.toUpperCase() === p.ticker);
-    if (existing) {
-      existing.units = p.qty;
-      existing.value = p.value;
-      updated++;
-    } else {
-      state.assets.push({
-        id: uid(), class: "Ações/ETFs", name: p.ticker,
-        value: p.value, ticker: p.ticker, units: p.qty,
-        yieldType: "none", yieldValue: 0, maturityDate: "", compoundFreq: 12,
-        notes: `Importado ${p.lastDate || isoToday()} · ${p.qty.toFixed(4)} unid. @ ${p.avgCost.toFixed(4)} ${p.currency}`
-      });
-      added++;
-    }
-  }
-  saveState(); renderItems(); renderDashboard();
-  return { added, updated, total: parsed.length };
 }
 
 /* ─── MODAL: ITEM ─────────────────────────────────────────── */
@@ -2994,102 +2856,43 @@ function autoCategorise(desc, dir) {
   return dir === "in" ? "Outros recebimentos" : "Outras despesas";
 }
 
-/* ─── SANTANDER XLS PARSER (lê números directamente do XLSX) ── */
-async function parseSantanderXLS(file) {
-  try {
-    if (typeof XLSX === "undefined") return [];
-    const arrayBuffer = await file.arrayBuffer();
-    const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: false, raw: true });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-
-    // Find header row: contains "Data" and "Montante" or "Descrição"
-    let headerIdx = -1;
-    for (let i = 0; i < Math.min(15, rows.length); i++) {
-      const r = rows[i].map(c => String(c).toLowerCase());
-      if (r.some(c => c.includes("data") || c.includes("date")) &&
-          r.some(c => c.includes("montante") || c.includes("amount") || c.includes("valor"))) {
-        headerIdx = i;
-        break;
-      }
-    }
-    if (headerIdx < 0) return [];
-
-    const headers = rows[headerIdx].map(c => String(c).toLowerCase().trim());
-    const dateCol  = headers.findIndex(h => h.includes("data") || h.includes("date"));
-    const descCol  = headers.findIndex(h => h.includes("descri") || h.includes("movimento") || h.includes("narrat"));
-    const amtCol   = headers.findIndex(h => h.includes("montante") || h.includes("amount") || h.includes("valor") && !h.includes("saldo"));
-
-    if (dateCol < 0 || amtCol < 0) return [];
-
-    const out = [];
-    for (let i = headerIdx + 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row || !row[dateCol]) continue;
-
-      // Date: DD-MM-YYYY or DD/MM/YYYY
-      const rawDate = String(row[dateCol]).trim();
-      const dm = rawDate.match(/(\d{1,2})[-\/\.](\d{1,2})[-\/\.](\d{4})/);
-      if (!dm) continue;
-      const isoDate = `${dm[3]}-${dm[2].padStart(2,"0")}-${dm[1].padStart(2,"0")}`;
-
-      // Amount: already a number from XLSX
-      const rawAmt = row[amtCol];
-      let amount = 0;
-      if (typeof rawAmt === "number") {
-        amount = rawAmt;
-      } else {
-        const s = String(rawAmt || "").replace(/\s/g,"").replace(/\./g,"").replace(",",".");
-        amount = parseFloat(s) || 0;
-      }
-      if (!amount) continue;
-
-      // Description
-      const desc = descCol >= 0 ? String(row[descCol] || "").trim() : "Movimento";
-      if (!desc || /data opera|descri|montante|saldo/i.test(desc)) continue;
-
-      out.push({ date: isoDate, desc, amount });
-    }
-    return out;
-  } catch(e) {
-    console.error("parseSantanderXLS error:", e);
-    return [];
-  }
-}
-
 async function importBankFile(file) {
   if (!file) throw new Error("Sem ficheiro.");
   const name = file.name.toLowerCase();
-
-  // ── XLSX/XLS: try dedicated structured parser first ──────────
-  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-    const xlsParsed = await parseSantanderXLS(file);
-    if (xlsParsed.length) {
-      return finalizeBankImport(xlsParsed);
-    }
-    // fallback: convert to text
-  }
-
   let text = "";
+
+  // Tenta parsers em cascata — do mais específico para o mais genérico
+  let parsed = [];
+
   if (name.endsWith(".pdf")) {
     text = await extractTextFromPDF(file);
+    if (!parsed.length) parsed = parseSantanderTabular(text);
+    if (!parsed.length) parsed = parseSantanderPDF(text);
+    if (!parsed.length) parsed = parseBankCsvLikeText(text);
+    if (!parsed.length) parsed = parseBankCsvGeneric(text);
   } else if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-    text = await extractTextFromXLSX(file);
+    // XLSX: usa parser estruturado directo (mais fiável que texto)
+    parsed = await parseXLSXBankRows(file);
+    // Fallback para texto
+    if (!parsed.length) {
+      text = await extractTextFromXLSX(file);
+      if (text.trim()) {
+        if (!parsed.length) parsed = parseSantanderTabular(text);
+        if (!parsed.length) parsed = parseBankCsvGeneric(text);
+      }
+    }
   } else {
+    // CSV, TXT, ou qualquer outro texto
     text = await fileToText(file);
+    if (!parsed.length) parsed = parseSantanderTabular(text);
+    if (!parsed.length) parsed = parseBankCsvLikeText(text);
+    if (!parsed.length) parsed = parseBankCsvGeneric(text);
   }
 
-  if (!text.trim()) {
+  if (!parsed.length && !text.trim()) {
     showBankResult("error", "Não foi possível extrair texto do ficheiro.");
     return { added: 0, dup: 0, read: 0 };
   }
-
-  // Parsers em cascata
-  let parsed = [];
-  if (!parsed.length) parsed = parseSantanderTabular(text);
-  if (!parsed.length) parsed = parseSantanderPDF(text);
-  if (!parsed.length) parsed = parseBankCsvLikeText(text);
-  if (!parsed.length) parsed = parseBankCsvGeneric(text);
 
   if (!parsed.length) {
     const firstLines = text.split("\n").slice(0, 3).join(" | ").slice(0, 300);
@@ -3097,45 +2900,26 @@ async function importBankFile(file) {
     return { added: 0, dup: 0, read: 0 };
   }
 
-  return finalizeBankImport(parsed);
-}
-
-/* Filtra movimentos irrelevantes para balanço pessoal:
-   - Transferências entre contas próprias (neutras)
-   - Depósitos a prazo constituídos (poupança, não despesa)
-   - Resgates de DP (não são receita de trabalho)
-   Mantém: salários, rendas, despesas reais, MB Way, etc.
-*/
-function shouldSkipForCashflow(desc, amount) {
-  const d = normStr(desc);
-  // Transferências internas entre contas do mesmo banco
-  if (/transferencia entre contas|transf entre contas/.test(d)) return true;
-  // Depósito a prazo constituído — é poupança, não despesa real
-  if (/constituicao de d\.?p|dp constituicao|constituicao dp/.test(d) && amount < 0) return true;
-  return false;
-}
-
-function finalizeBankImport(parsed) {
-  // Deduplicação
+  // Deduplica
+  // Deduplicação: chave = data|tipo|montante|descrição_original
+  // A descrição original fica em notes; category pode ter mudado com auto-categorização
   const existing = new Set(state.transactions.map(tx => {
     const origDesc = tx.notes || tx.category || "";
     return `${String(tx.date||"").slice(0,10)}|${tx.type}|${Math.round(Math.abs(parseNum(tx.amount))*100)}|${normStr(origDesc)}`;
   }));
 
-  let added = 0, dup = 0, skipped = 0;
+  let added = 0, dup = 0;
   let totalIn = 0, totalOut = 0;
   const newTx = [];
 
   for (const r of parsed) {
-    // Filtrar movimentos irrelevantes para balanço pessoal
-    if (shouldSkipForCashflow(r.desc, r.amount)) { skipped++; continue; }
-
     const dir = r.amount >= 0 ? "in" : "out";
     const amount = Math.abs(r.amount);
     const key = `${r.date}|${dir}|${Math.round(amount*100)}|${normStr(r.desc)}`;
     if (existing.has(key)) { dup++; continue; }
     existing.add(key);
     const category = autoCategorise(r.desc, dir);
+    // Guardar descrição original em notes para deduplicação futura
     const tx = { id: uid(), type: dir, category, amount, date: r.date, recurring: "none", notes: r.desc || "" };
     state.transactions.push(tx);
     newTx.push(tx);
@@ -3172,7 +2956,6 @@ function finalizeBankImport(parsed) {
       <div style="margin-bottom:10px">
         ✅ <b>${added}</b> movimento${added!==1?"s":""} importado${added!==1?"s":""}
         ${dup > 0 ? ` · <span style="color:#92400e">${dup} duplicado${dup!==1?"s":""} ignorado${dup!==1?"s":""}</span>` : ""}
-        ${skipped > 0 ? ` · <span style="color:#6366f1">${skipped} transf. internas filtradas</span>` : ""}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
         <div style="background:#f0fdf4;border-radius:10px;padding:8px;text-align:center">
@@ -3192,11 +2975,11 @@ function finalizeBankImport(parsed) {
       ${catRows}
     `);
   } else {
-    showBankResult("info", `ℹ️ 0 novos · ${dup} já existiam · ${skipped} filtrados · ${parsed.length} lidos`);
+    showBankResult("info", `ℹ️ 0 novos · ${dup} já existiam · ${parsed.length} lidos`);
   }
 
   toast(`${added} movimentos importados · Entradas ${fmtEUR2(totalIn)} · Saídas ${fmtEUR2(totalOut)}`);
-  return { added, dup, skipped, read: parsed.length };
+  return { added, dup, read: parsed.length };
 }
 
 function showBankResult(type, html) {
@@ -3518,11 +3301,109 @@ async function extractTextFromXLSX(file) {
     const arrayBuffer = await file.arrayBuffer();
     const wb = XLSX.read(arrayBuffer, { type: "array", dateNF: "yyyy-mm-dd" });
     const ws = wb.Sheets[wb.SheetNames[0]];
-    // Convert to CSV text for parsing
     return XLSX.utils.sheet_to_csv(ws, { FS: ";", RS: "\n" });
   } catch (e) {
     console.error("XLSX extraction error:", e);
     return "";
+  }
+}
+
+// ─── XLSX BANK PARSER: structured row parsing (handles Santander, BCP, CGD…) ───
+// Reads XLSX directly as row objects — no lossy text conversion.
+// Detects columns by keyword, handles PT number format, separate debit/credit cols.
+async function parseXLSXBankRows(file) {
+  try {
+    if (typeof XLSX === "undefined") return [];
+    const arrayBuffer = await file.arrayBuffer();
+    const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: true, raw: false });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const jsonRows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+    if (!jsonRows.length) return [];
+
+    // Find header row — score each row by keyword matches
+    const dateKw   = ["data","date","datum","fecha","dt","data op"];
+    const descKw   = ["descri","movimento","operac","conceito","narrat","detail","memo","ref","hist"];
+    const amtKw    = ["montante","valor","amount","importe","movim","net"];
+    const debitKw  = ["debito","saida","debit","out","saída","gastos"];
+    const creditKw = ["credito","entrada","credit","in","crédi"];
+    const balKw    = ["saldo","balance","balanc"];
+
+    let headerIdx = -1, dateCol = -1, descCol = -1, amtCol = -1;
+    let debitCol = -1, creditCol = -1, balCol = -1;
+
+    for (let i = 0; i < Math.min(25, jsonRows.length); i++) {
+      const row = jsonRows[i].map(c => String(c || "").trim().toLowerCase());
+      let score = 0, di=-1, dsi=-1, ai=-1, dbi=-1, cri=-1, bi=-1;
+      row.forEach((c, j) => {
+        if (dateKw.some(k => c.includes(k))) { di = j; score++; }
+        if (descKw.some(k => c.includes(k))) { dsi = j; score++; }
+        if (debitKw.some(k => c.includes(k))) { dbi = j; score++; }
+        else if (creditKw.some(k => c.includes(k))) { cri = j; score++; }
+        else if (amtKw.some(k => c.includes(k))) { ai = j; score++; }
+        if (balKw.some(k => c.includes(k))) { bi = j; }
+      });
+      if (score >= 2) {
+        headerIdx = i; dateCol = di; descCol = dsi;
+        amtCol = ai; debitCol = dbi; creditCol = cri; balCol = bi;
+        break;
+      }
+    }
+    if (headerIdx < 0) return [];
+
+    const out = [];
+    for (let i = headerIdx + 1; i < jsonRows.length; i++) {
+      const cols = jsonRows[i].map(c => String(c || "").trim());
+      if (cols.every(c => !c)) continue; // blank row
+
+      // DATE — try designated col, then first col
+      const rawDate = dateCol >= 0 ? cols[dateCol] : cols[0];
+      const isoDate = parseDateFlexible(rawDate);
+      if (!isoDate) continue;
+
+      // DESCRIPTION
+      let desc = "";
+      if (descCol >= 0) {
+        desc = cols[descCol];
+      } else {
+        // Grab first non-date, non-numeric column
+        for (let j = 0; j < cols.length; j++) {
+          if (j === dateCol || j === amtCol || j === debitCol || j === creditCol || j === balCol) continue;
+          const v = cols[j];
+          if (v && isNaN(parseEuroNum(v))) { desc = v; break; }
+        }
+      }
+      desc = desc.trim() || "Movimento";
+
+      // Skip balance-only / header-echo rows
+      if (/^saldo|^balance|^data|^descrição/i.test(desc)) continue;
+
+      // AMOUNT
+      let amount = null;
+      if (debitCol >= 0 || creditCol >= 0) {
+        const debit  = debitCol  >= 0 ? (parseEuroNum(cols[debitCol])  || 0) : 0;
+        const credit = creditCol >= 0 ? (parseEuroNum(cols[creditCol]) || 0) : 0;
+        // Santander: Montante column has negative for debits, positive for credits
+        amount = credit - debit;
+      } else if (amtCol >= 0) {
+        amount = parseEuroNum(cols[amtCol]);
+      }
+
+      // Fallback: scan all columns for numeric value that isn't the balance
+      if (amount === null || amount === undefined) {
+        for (let j = cols.length - 1; j >= 0; j--) {
+          if (j === balCol) continue;
+          const v = parseEuroNum(cols[j]);
+          if (v !== null && Math.abs(v) > 0) { amount = v; break; }
+        }
+      }
+
+      if (amount === null || amount === undefined || !Number.isFinite(amount)) continue;
+      out.push({ date: isoDate, desc, amount });
+    }
+    return out;
+  } catch (e) {
+    console.error("parseXLSXBankRows error:", e);
+    return [];
   }
 }
 
@@ -3771,6 +3652,10 @@ function wire() {
   $("btnSaveItem").addEventListener("click", saveItemFromModal);
   $("btnDeleteItem").addEventListener("click", deleteCurrentItem);
 
+  // Quote refresh button
+  const btnRefresh = $("btnRefreshQuotes");
+  if (btnRefresh) btnRefresh.addEventListener("click", refreshLiveQuotes);
+
   // Sync compound fields from asset
   const compAsset = document.getElementById("compAsset");
   if (compAsset) compAsset.addEventListener("change", syncCompoundFromAsset);
@@ -3811,30 +3696,13 @@ function wire() {
   const cfGran = document.getElementById("cfGranularity");
   if (cfGran) cfGran.addEventListener("change", renderCashflow);
 
-  // Import CSV (assets/liabilities/movements OR broker CSV)
+  // Import CSV
   $("fileInput").addEventListener("change", () => { $("btnImport").disabled = !($("fileInput").files && $("fileInput").files.length); });
   $("btnImport").addEventListener("click", async () => {
     const f = $("fileInput").files && $("fileInput").files[0];
     if (!f) return;
-    const hint = document.getElementById("importHint");
     try {
-      // Try broker/DivTracker CSV first
-      const brokerResult = await importBrokerCSV(f);
-      if (brokerResult) {
-        if (hint) hint.innerHTML = `✅ Corretora: <b>${brokerResult.added}</b> novos · <b>${brokerResult.updated}</b> actualizados · <b>${brokerResult.total}</b> tickers.<br>
-          <span style="font-size:12px;color:#6366f1">Vai a <b>Ativos → 🔄 Actualizar cotações</b> para obter preços reais.</span>`;
-        toast(`${brokerResult.added} ativos importados · ${brokerResult.updated} actualizados`);
-        setView("assets");
-        return;
-      }
-      // Fallback: generic asset/liability/movement CSV
-      let text = "";
-      const fname = f.name.toLowerCase();
-      if (fname.endsWith(".xlsx") || fname.endsWith(".xls")) {
-        text = await extractTextFromXLSX(f);
-      } else {
-        text = await fileToText(f);
-      }
+      const text = await fileToText(f);
       const rows = csvToObjects(text);
       importRows(rows);
     } catch (e) { toast("Falha no import: " + (e && e.message ? e.message : String(e))); }
@@ -3908,6 +3776,18 @@ function wire() {
   const btnGoImport = document.getElementById("btnGoImport");
   if (btnGoImport) btnGoImport.addEventListener("click", () => setView("import"));
 
+  // Worker URL para cotações
+  const workerInput = document.getElementById("settingsWorkerUrl");
+  if (workerInput) workerInput.value = state.settings.workerUrl || "";
+  const btnSaveWorkerUrl = document.getElementById("btnSaveWorkerUrl");
+  if (btnSaveWorkerUrl) btnSaveWorkerUrl.addEventListener("click", () => {
+    const val = (document.getElementById("settingsWorkerUrl").value || "").trim();
+    if (!state.settings) state.settings = {};
+    state.settings.workerUrl = val;
+    saveState();
+    toast(val ? "✅ Worker URL guardado" : "Worker URL removido");
+  });
+
   // Objetivo de rendimento
   const btnEditGoal = document.getElementById("btnEditGoal");
   if (btnEditGoal) btnEditGoal.addEventListener("click", () => {
@@ -3924,10 +3804,6 @@ function wire() {
   if (btnSearch) btnSearch.addEventListener("click", toggleSearch);
   const gSearch = document.getElementById("globalSearch");
   if (gSearch) gSearch.addEventListener("input", e => renderSearchResults(e.target.value));
-
-  // Refresh quotes
-  const btnRefreshQuotes = document.getElementById("btnRefreshQuotes");
-  if (btnRefreshQuotes) btnRefreshQuotes.addEventListener("click", refreshAllQuotes);
 
   // Apagar movimento
   const btnDeleteTx = document.getElementById("btnDeleteTx");
@@ -3981,6 +3857,115 @@ function wire() {
   // Init
   setModeLiabs(false);
   setView("dashboard");
+}
+
+/* ─── LIVE QUOTE REFRESH (via Cloudflare Worker proxy) ──────────────────────
+   Arquitectura:
+     PWA → Cloudflare Worker (worker.patrimonio.pages.dev) → Yahoo Finance API
+   O Worker evita restrições CORS do browser.
+   URL do worker configurável em Settings > Worker URL.
+   Se não configurado, permite edição manual do valor do ativo.
+──────────────────────────────────────────────────────────────────────────────*/
+
+// Classes de ativos que têm cotação de mercado (ticker)
+const QUOTE_CLASSES = ["Ações/ETFs", "Cripto", "Obrigações"];
+
+function extractTicker(asset) {
+  // Tenta extrair ticker do nome ou notas do ativo
+  // Exemplos: "VWCE.DE", "Apple (AAPL)", "ETF [IWDA.L]"
+  const src = `${asset.name || ""} ${asset.notes || ""}`;
+  const m = src.match(/\b([A-Z0-9]{1,6}(?:\.[A-Z]{1,4})?)\b/);
+  return m ? m[1] : null;
+}
+
+async function fetchQuote(ticker, workerUrl) {
+  // Chama o Cloudflare Worker que proxifica Yahoo Finance
+  const url = `${workerUrl.replace(/\/$/, "")}/quote?ticker=${encodeURIComponent(ticker)}`;
+  const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error);
+  return data; // { ticker, price, currency, name, change_pct }
+}
+
+async function refreshLiveQuotes() {
+  const btn = $("btnRefreshQuotes");
+  const workerUrl = (state.settings && state.settings.workerUrl) || "";
+
+  if (!workerUrl) {
+    // Sem Worker configurado — mostrar modal de configuração
+    const url = prompt(
+      "⚙️ Cloudflare Worker URL\n\nIntroduz o URL do teu Worker para actualizar cotações automaticamente.\nEx: https://patrimonio-quotes.SEU-NOME.workers.dev\n\n(Deixa em branco para configurar mais tarde)"
+    );
+    if (url && url.trim().startsWith("http")) {
+      if (!state.settings) state.settings = {};
+      state.settings.workerUrl = url.trim();
+      saveState();
+      toast("✅ Worker URL guardado. A tentar actualizar…");
+      return refreshLiveQuotes();
+    }
+    toast("⚠️ Worker URL não configurado. Ver README para instruções.", 4000);
+    return;
+  }
+
+  // Identificar ativos com ticker e classe de mercado
+  const candidates = state.assets.filter(a => {
+    const cls = (a.class || "").trim();
+    return QUOTE_CLASSES.some(c => cls === c) || extractTicker(a);
+  });
+
+  if (!candidates.length) {
+    toast("Sem ativos com ticker detectado em Ações/ETFs/Cripto.", 3000);
+    return;
+  }
+
+  // UI: spinning button
+  if (btn) { btn.disabled = true; btn.textContent = "⟳ A actualizar…"; }
+
+  let updated = 0, failed = 0;
+  const errors = [];
+
+  for (const asset of candidates) {
+    const ticker = asset.name && /^[A-Z0-9.]{2,10}$/.test(asset.name.trim())
+      ? asset.name.trim()
+      : extractTicker(asset);
+    if (!ticker) continue;
+
+    try {
+      const q = await fetchQuote(ticker, workerUrl);
+      if (q && Number.isFinite(q.price) && q.price > 0) {
+        // Detectar qty das notas (importado via DivTracker)
+        const qtyMatch = (asset.notes || "").match(/Qty=([\d.]+)/);
+        const qty = qtyMatch ? parseFloat(qtyMatch[1]) : null;
+        const newValue = qty ? qty * q.price : q.price;
+
+        // Guardar preço unitário e data de actualização nas notas
+        const noteBase = (asset.notes || "").replace(/\s*·?\s*Preço:[^\n·]*/g, "").trim();
+        asset.value = newValue;
+        asset.notes = `${noteBase}${noteBase ? " · " : ""}Preço: ${fmtEUR2(q.price)} (${new Date().toLocaleDateString("pt-PT")})`;
+        updated++;
+      } else {
+        failed++;
+        errors.push(ticker);
+      }
+    } catch (e) {
+      failed++;
+      errors.push(`${ticker} (${e.message})`);
+    }
+  }
+
+  saveState();
+  renderAll();
+
+  if (btn) { btn.disabled = false; btn.textContent = "⟳ Cotações"; }
+
+  if (updated > 0 && !failed) {
+    toast(`✅ ${updated} ativo${updated !== 1 ? "s" : ""} actualizado${updated !== 1 ? "s" : ""}`, 3000);
+  } else if (updated > 0) {
+    toast(`✅ ${updated} actualizado${updated !== 1 ? "s" : ""} · ⚠️ ${failed} erro${failed !== 1 ? "s" : ""}: ${errors.slice(0,3).join(", ")}`, 5000);
+  } else {
+    toast(`⚠️ Falha a actualizar: ${errors.slice(0,3).join(", ")}. Verifica o Worker.`, 5000);
+  }
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
