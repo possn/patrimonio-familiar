@@ -605,12 +605,13 @@ function renderCatChart() {
 
   // Aggregate by category for selected period
   let txs;
+  const notInternal = t => !isInterAccountTransfer(t);
   if (gran === "month") {
-    txs = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === key && t.type === "out");
+    txs = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === key && t.type === "out" && notInternal(t));
   } else if (gran === "year") {
-    txs = expandRecurring(state.transactions).filter(t => String(t.date || "").slice(0,4) === y && t.type === "out");
+    txs = expandRecurring(state.transactions).filter(t => String(t.date || "").slice(0,4) === y && t.type === "out" && notInternal(t));
   } else {
-    txs = expandRecurring(state.transactions).filter(t => t.type === "out");
+    txs = expandRecurring(state.transactions).filter(t => t.type === "out" && notInternal(t));
   }
 
   const byCat = {};
@@ -1089,7 +1090,7 @@ function expandRecurring(tx) {
 
 // ─── Cashflow granularity: daily / weekly / monthly / annual ─
 function cfGranData(granularity) {
-  const all = expandRecurring(state.transactions).filter(t => parseNum(t.amount) > 0);
+  const all = expandRecurring(state.transactions).filter(t => parseNum(t.amount) > 0 && !isInterAccountTransfer(t));
   const bucket = {};
   for (const t of all) {
     let key;
@@ -2070,6 +2071,7 @@ function calcAvgMonthlySavings(months = 6) {
   const now = new Date();
   const byMonth = new Map();
   for (const t of state.transactions) {
+    if (isInterAccountTransfer(t)) continue;
     const d = String(t.date || "").slice(0, 7);
     if (!d) continue;
     const cur = byMonth.get(d) || { in: 0, out: 0 };
@@ -2472,6 +2474,7 @@ function renderFire() {
 
   const byMonth = new Map();
   for (const t of (state.transactions || [])) {
+    if (isInterAccountTransfer(t)) continue;
     const d = t.date || "";
     if (d.length < 7) continue;
     const ym = d.slice(0, 7);
