@@ -4171,7 +4171,7 @@ async function refreshLiveQuotes() {
     }
   }
 
-  await saveStateAsync(); // await ensures IndexedDB write completes before app can close
+  await saveStateAsync();
   renderAll();
 
   if (btn) { btn.disabled = false; btn.textContent = "⟳ Cotações"; }
@@ -4204,17 +4204,15 @@ function checkDuplicateWarning() {
   card.style.display = hasDups ? "" : "none";
 }
 
+// Save when app goes to background or is closed (critical for iOS PWA)
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") saveStateAsync();
+});
+window.addEventListener("pagehide", () => saveStateAsync());
+
 document.addEventListener("DOMContentLoaded", async () => {
   await requestPersistentStorage();
   state = await loadStateAsync();
   wire();
   renderAll();
 });
-
-// Guarantee state is saved when app goes to background or is closed
-// Critical for iOS PWA where the process can be killed without warning
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") saveStateAsync();
-});
-window.addEventListener("pagehide", () => saveStateAsync());
-window.addEventListener("beforeunload", () => saveStateAsync());
