@@ -606,12 +606,15 @@ function renderCatChart() {
   // Aggregate by category for selected period
   let txs;
   const notInternal = t => !isInterAccountTransfer(t);
-  if (gran === "month") {
-    txs = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === key && t.type === "out" && notInternal(t));
-  } else if (gran === "year") {
+  const m2 = String($("cfMonth").value).padStart(2, "0");
+  const monthKey2 = `${y}-${m2}`;
+  if (gran === "year") {
     txs = expandRecurring(state.transactions).filter(t => String(t.date || "").slice(0,4) === y && t.type === "out" && notInternal(t));
-  } else {
+  } else if (gran === "all") {
     txs = expandRecurring(state.transactions).filter(t => t.type === "out" && notInternal(t));
+  } else {
+    // month (default)
+    txs = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === monthKey2 && t.type === "out" && notInternal(t));
   }
 
   const byCat = {};
@@ -1141,18 +1144,39 @@ function renderCashflow() {
   ensureMonthYearOptions();
   const y = $("cfYear").value;
   const m = String($("cfMonth").value).padStart(2, "0");
-  const key = `${y}-${m}`;
-  // Excluir transferências entre contas próprias dos totais (são neutras)
-  const tx = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === key);
-  const txReal = tx.filter(t => !isInterAccountTransfer(t));
-  const totalIn = txReal.filter(t => t.type === "in").reduce((a, t) => a + parseNum(t.amount), 0);
-  const totalOut = txReal.filter(t => t.type === "out").reduce((a, t) => a + parseNum(t.amount), 0);
-  const net = totalIn - totalOut;
+  const gran = ($("cfGranularity") && $("cfGranularity").value) || "month";
+  const monthKey = `${y}-${m}`;
+
+  // Filter transactions by selected period AND exclude internal transfers
+  const allExpanded = expandRecurring(state.transactions).filter(t => !isInterAccountTransfer(t));
+
+  let periodTx;
+  if (gran === "year") {
+    periodTx = allExpanded.filter(t => String(t.date || "").slice(0, 4) === y);
+  } else if (gran === "all") {
+    periodTx = allExpanded;
+  } else {
+    // month (default) — or day/week still show monthly summary totals
+    periodTx = allExpanded.filter(t => monthKeyFromDateISO(t.date) === monthKey);
+  }
+
+  const totalIn  = periodTx.filter(t => t.type === "in" ).reduce((a, t) => a + parseNum(t.amount), 0);
+  const totalOut = periodTx.filter(t => t.type === "out").reduce((a, t) => a + parseNum(t.amount), 0);
+  const net  = totalIn - totalOut;
   const rate = totalIn > 0 ? (net / totalIn) * 100 : 0;
-  $("cfIn").textContent = fmtEUR(totalIn);
+
+  $("cfIn").textContent  = fmtEUR(totalIn);
   $("cfOut").textContent = fmtEUR(totalOut);
   $("cfNet").textContent = fmtEUR(net);
   $("cfRate").textContent = `${Math.round(rate)}%`;
+
+  // Period label
+  const periodLabel = gran === "year" ? `Ano ${y}` :
+                      gran === "all"  ? "Todo o período" :
+                      `${m}/${y}`;
+  const cfTitle = document.getElementById("cfPeriodLabel");
+  if (cfTitle) cfTitle.textContent = periodLabel;
+
   renderSavingsRate(totalIn, totalOut);
   renderTxList();
   renderCashflowChart();
@@ -1192,8 +1216,17 @@ function renderTxList() {
   const key = `${y}-${m}`;
 
   // Mostrar TODOS os movimentos originais (não expandidos) do mês seleccionado
+  const gran2 = ($("cfGranularity") && $("cfGranularity").value) || "month";
+  let txFilter;
+  if (gran2 === "year") {
+    txFilter = t => String(t.date || "").slice(0,4) === y;
+  } else if (gran2 === "all") {
+    txFilter = t => true;
+  } else {
+    txFilter = t => monthKeyFromDateISO(t.date) === key;
+  }
   const tx = state.transactions
-    .filter(t => monthKeyFromDateISO(t.date) === key && parseNum(t.amount) > 0)
+    .filter(t => txFilter(t) && parseNum(t.amount) > 0)
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
   if (!tx.length) {
@@ -3783,7 +3816,12 @@ function wire() {
   $("cfYear").addEventListener("change", renderCashflow);
   $("btnTxToggle").addEventListener("click", () => { txExpanded = !txExpanded; renderTxList(); });
   const cfGran = document.getElementById("cfGranularity");
-  if (cfGran) cfGran.addEventListener("change", renderCashflow);
+  if (cfGran) cfGran.addEventListener("change", () => {
+    const gran = cfGran.value;
+    const monthSel = document.getElementById("cfMonth");
+    if (monthSel) monthSel.style.opacity = (gran === "year" || gran === "all") ? "0.3" : "1";
+    renderCashflow();
+  });
 
   // Import CSV
   $("fileInput").addEventListener("change", () => { $("btnImport").disabled = !($("fileInput").files && $("fileInput").files.length); });
