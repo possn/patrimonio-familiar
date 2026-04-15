@@ -377,13 +377,71 @@ function calcTotals() {
     .filter(d => d.date >= cutoff12m)
     .reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
 
-  // Priority: summary > individual > theoretical
-  const realPassive = summaryNet > 0 ? summaryNet : realDividends12m;
-  const passiveAnnual = realPassive > 0
-    ? Math.max(realPassive, theoreticalPassive)
-    : theoreticalPassive;
+  // ── Passive income calculation ────────────────────────────────────────────
+  // Strategy: ADDITIVE, not MAX. Each source is counted once, no double-counting.
+  //
+  // 1. Deposits / PPR / Imóveis / Obrigações: use yield% configured on each asset
+  //    (these never have dividend records — safe to use theoretical)
+  //
+  // 2. ETFs / Stocks / Funds: use REAL dividends if registered, else yield% if set
+  //    (avoids double-counting: if user registered dividends AND set yield%, prefer real)
+  //
+  // 3. Result = sum of (1) + sum of (2)
+  // ─────────────────────────────────────────────────────────────────────────
 
-  return { assetsTotal, liabsTotal, net, passiveAnnual, theoreticalPassive, realDividends12m, summaryNet };
+  const REAL_DIV_CLASSES = ["ações/etfs","acoes/etfs","fundos","cripto","obrigações","obrigacoes"];
+  function isRealDivClass(a) {
+    const cls = (a.class || "").toLowerCase();
+    return REAL_DIV_CLASSES.some(c => cls.includes(c.replace(/[\/çõ]/g, m => ({"/":"",ç:"c",õ:"o"})[m] || m)));
+  }
+
+  // Theoretical from NON-dividend-class assets (deposits, PPR, imóveis, etc.)
+  const passiveBreakdown = {};
+  let passiveFromNonDiv = 0;
+  for (const a of state.assets) {
+    if (isRealDivClass(a)) continue; // will be covered by real dividends below
+    const p = passiveFromItem(a);
+    if (p <= 0) continue;
+    passiveFromNonDiv += p;
+    const cls = a.class || "Outros";
+    passiveBreakdown[cls] = (passiveBreakdown[cls] || 0) + p;
+  }
+
+  // From ETF/stock assets: prefer real dividends (annualised) if available, else yield%
+  // Annualise real dividends based on months elapsed in current year
+  const monthsElapsed = Math.max(1, new Date().getMonth() + 1); // Jan=1 … Dec=12
+  const realDividendsCurrentYear = (state.dividends || [])
+    .filter(d => String(d.date || "").slice(0, 4) === String(new Date().getFullYear()))
+    .reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
+
+  // Use summary if available (more accurate), else annualise YTD
+  let passiveFromDivAssets = 0;
+  if (summaryNet > 0) {
+    passiveFromDivAssets = summaryNet;
+    passiveBreakdown["Dividendos (resumo anual)"] = summaryNet;
+  } else if (realDividendsCurrentYear > 0) {
+    // Annualise: if we're in April (4 months), multiply by 12/4
+    const annualised = realDividendsCurrentYear * (12 / monthsElapsed);
+    passiveFromDivAssets = annualised;
+    passiveBreakdown["Dividendos (anualizados)"] = annualised;
+  } else if (realDividends12m > 0) {
+    passiveFromDivAssets = realDividends12m;
+    passiveBreakdown["Dividendos (últ.12m)"] = realDividends12m;
+  } else {
+    // No real dividend data — fall back to yield% on ETF/stock assets
+    for (const a of state.assets) {
+      if (!isRealDivClass(a)) continue;
+      const p = passiveFromItem(a);
+      if (p <= 0) continue;
+      passiveFromDivAssets += p;
+      const cls = a.class || "Outros";
+      passiveBreakdown[cls] = (passiveBreakdown[cls] || 0) + p;
+    }
+  }
+
+  const passiveAnnual = passiveFromNonDiv + passiveFromDivAssets;
+
+  return { assetsTotal, liabsTotal, net, passiveAnnual, theoreticalPassive: passiveAnnual, realDividends12m, summaryNet, passiveBreakdown };
 }
 
 /* ─── COMPOUND INTEREST ENGINE ────────────────────────────── */
@@ -485,6 +543,18 @@ function renderGoal() {
   }
   if (cur) cur.textContent = `${fmtEUR(monthly)}/mês atual`;
   if (tgt) tgt.textContent = `Objetivo: ${fmtEUR(goal)}/mês`;
+
+  // Breakdown: where does the passive income come from?
+  const breakEl = document.getElementById("goalBreakdown");
+  if (breakEl && t.passiveBreakdown) {
+    const entries = Object.entries(t.passiveBreakdown).sort((a,b) => b[1]-a[1]);
+    let html = entries.map(([cls, v]) => `${escapeHtml(cls)}: <b>${fmtEUR(v)}</b>`).join(" &nbsp;·&nbsp; ");
+    if (t.realDividends12m > 0) {
+      html += ` &nbsp;·&nbsp; <span style="color:#059669">Divid. reais (12m): <b>${fmtEUR(t.realDividends12m)}</b></span>`;
+    }
+    breakEl.innerHTML = html;
+    breakEl.style.display = entries.length ? "" : "none";
+  }
 
   // update settings input
   const si = $("settingsGoal");
