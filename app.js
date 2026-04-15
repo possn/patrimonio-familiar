@@ -343,7 +343,8 @@ async function loadStateAsync() {
   } catch { return safeClone(DEFAULT_STATE); }
 }
 
-function saveState() { void storageSet(JSON.stringify(state)); }
+function saveState() { return storageSet(JSON.stringify(state)); }
+async function saveStateAsync() { await storageSet(JSON.stringify(state)); }
 
 /* ─── TOTALS ──────────────────────────────────────────────── */
 function passiveFromItem(it) {
@@ -4170,7 +4171,7 @@ async function refreshLiveQuotes() {
     }
   }
 
-  saveState();
+  await saveStateAsync(); // await ensures IndexedDB write completes before app can close
   renderAll();
 
   if (btn) { btn.disabled = false; btn.textContent = "⟳ Cotações"; }
@@ -4209,3 +4210,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   wire();
   renderAll();
 });
+
+// Guarantee state is saved when app goes to background or is closed
+// Critical for iOS PWA where the process can be killed without warning
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") saveStateAsync();
+});
+window.addEventListener("pagehide", () => saveStateAsync());
+window.addEventListener("beforeunload", () => saveStateAsync());
