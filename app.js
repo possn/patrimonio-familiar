@@ -2902,7 +2902,7 @@ function importRows(rows) {
 
     const fxNote = p.ccys.some(c => c !== "EUR")
       ? " · ⚠️ Custo histórico (FX aprox.) — actualiza via ⟳ Cotações" : "";
-    const notes = `Importado trades. Qty=${fmt(p.qty)} · PM=${p.cost > 0 ? fmt(p.cost/p.qty,4) : "—"} ${ccyLabel}${fxNote}`;
+    const notes = `Importado trades. Qty=${String(Math.round(p.qty*1e6)/1e6)} · PM=${p.cost > 0 ? String(Math.round(p.cost/p.qty*1e4)/1e4) : "—"} ${ccyLabel}${fxNote}`;
 
     const existingIx = state.assets.findIndex(a => (a.name||"").toUpperCase() === upper && a.class === cls);
     if (existingIx >= 0) {
@@ -4285,8 +4285,8 @@ async function refreshLiveQuotes() {
     const fxToEur = ccy === "EUR" ? 1 : (fxRates[ccy] || FX_FALLBACK[ccy] || 1);
     const priceEur = q.price * fxToEur;
 
-    const qtyMatch = (asset.notes||"").match(/Qty=([\d.]+)/);
-    const qty = qtyMatch ? parseFloat(qtyMatch[1]) : null;
+    const qtyMatch = (asset.notes||"").match(/Qty=([\d.,]+)/);
+    const qty = qtyMatch ? parseFloat(qtyMatch[1].replace(",", ".")) : null;
     const newValue = qty ? qty * priceEur : priceEur;
 
     const priceLabel = ccy === "EUR"
