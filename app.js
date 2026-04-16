@@ -2882,14 +2882,45 @@ function importRows(rows) {
     if (!m.ccys.includes(p.ccy)) m.ccys.push(p.ccy);
   }
 
+  // Approximate FX rates to EUR (used only for cost-basis estimation)
+  // These are rough — user should update actual value via ⟳ Cotações or manually
+  const FX_TO_EUR = {
+    EUR:1, USD:0.92, GBP:1.17, DKK:0.134, CHF:1.05, PLN:0.23,
+    SEK:0.087, NOK:0.085, CAD:0.68, AUD:0.59, JPY:0.006,
+    HKD:0.118, SGD:0.68, BRL:0.17, MXN:0.046, CZK:0.04
+  };
+
   // Step 2: Create or UPDATE one asset per ticker
   for (const p of mergedPos.values()) {
     const upper = String(p.ticker).toUpperCase();
     const isCrypto = upper.endsWith(".CC") || ["BTC","ETH","SOL","ADA","XRP","DOT","BNB"].includes(upper.replace(/\.CC$/, ""));
     const cls = isCrypto ? "Cripto" : "Ações/ETFs";
-    const estValue = p.cost + (p.comm || 0);
     const ccyLabel = p.ccys.join("/");
-    const notes = `Importado trades. Qty=${fmt(p.qty)} · PM=${p.cost > 0 ? fmt(p.cost / p.qty, 4) : "—"} ${ccyLabel}`;
+
+    // Convert cost to EUR using FX rates
+    // If all purchases are in EUR, no conversion needed (exact)
+    // If mixed/foreign currency, apply FX and flag for user review
+    const allEUR = p.ccys.length === 1 && p.ccys[0] === "EUR";
+    let estValue;
+    let fxNote = "";
+    if (allEUR) {
+      estValue = p.cost + (p.comm || 0);
+    } else {
+      // For merged positions: re-compute with FX per original posMap entry
+      let costEUR = 0;
+      for (const [key, pos] of posMap.entries()) {
+        if (pos.ticker !== p.ticker || pos.qty <= 0) continue;
+        const fx = FX_TO_EUR[pos.ccy] || 1;
+        costEUR += pos.cost * fx;
+      }
+      costEUR += (p.comm || 0);
+      estValue = costEUR;
+      const isApprox = p.ccys.some(c => c !== "EUR");
+      fxNote = isApprox ? " · ⚠️ Valor estimado (FX aprox.) — actualiza via ⟳ Cotações" : "";
+    }
+
+    const avg = p.cost > 0 ? fmt(p.cost / p.qty, 4) : "—";
+    const notes = `Importado trades. Qty=${fmt(p.qty)} · PM=${avg} ${ccyLabel}${fxNote}`;
 
     // Find existing asset by ticker name (case-insensitive, same class)
     const existingIx = state.assets.findIndex(a =>
@@ -4186,33 +4217,91 @@ async function refreshLiveQuotes() {
   let updated = 0, failed = 0;
   const errors = [];
 
-  for (const asset of candidates) {
-    const ticker = asset.name && /^[A-Z0-9.]{2,10}$/.test(asset.name.trim())
-      ? asset.name.trim()
-      : extractTicker(asset);
+  // Step 1: fetch all quotes in parallel (faster)
+  const tickers = candidates.map(asset =>
+    (asset.name && /^[A-Z0-9.]{2,10}$/.test(asset.name.trim()))
+      ? asset.name.trim() : extractTicker(asset)
+  ).filter(Boolean);
+
+  const quoteResults = await Promise.allSettled(
+    tickers.map(t => fetchQuote(t, workerUrl))
+  );
+
+  // Build quote map: ticker -> quote
+  const quoteMap = {};
+  quoteResults.forEach((r, i) => {
+    if (r.status === "fulfilled" && r.value) quoteMap[tickers[i]] = r.value;
+  });
+
+  // Step 2: collect unique non-EUR currencies that need FX rates
+  const ccysNeeded = new Set();
+  for (const q of Object.values(quoteMap)) {
+    const ccy = (q.currency || "EUR").toUpperCase();
+    if (ccy !== "EUR") ccysNeeded.add(ccy);
+  }
+
+  // Step 3: fetch FX rates from Yahoo Finance via Worker
+  // Yahoo Finance FX tickers: EURUSD=X gives EUR/USD rate (how many USD per 1 EUR)
+  // We want price_in_EUR = price_in_CCY / (EUR per CCY) = price_in_CCY * (CCY per EUR)
+  // Yahoo EURCCY=X = how many CCY per 1 EUR -> divide price by this rate
+  const fxRates = {}; // ccy -> EUR per 1 CCY (multiply price by this)
+  await Promise.allSettled(
+    [...ccysNeeded].map(async ccy => {
+      try {
+        // e.g. EURDKK=X = how many DKK per 1 EUR
+        const fxTicker = `EUR${ccy}=X`;
+        const fxQuote = await fetchQuote(fxTicker, workerUrl);
+        if (fxQuote && Number.isFinite(fxQuote.price) && fxQuote.price > 0) {
+          fxRates[ccy] = 1 / fxQuote.price; // EUR per 1 CCY
+        }
+      } catch (_) { /* use fallback */ }
+    })
+  );
+
+  // Fallback static rates if Yahoo FX fails
+  const FX_FALLBACK = {
+    USD:0.92, GBP:1.17, DKK:0.134, CHF:1.05, PLN:0.23,
+    SEK:0.087, NOK:0.085, CAD:0.68, AUD:0.59, JPY:0.006,
+    HKD:0.118, SGD:0.68, BRL:0.17
+  };
+  for (const ccy of ccysNeeded) {
+    if (!fxRates[ccy] && FX_FALLBACK[ccy]) fxRates[ccy] = FX_FALLBACK[ccy];
+  }
+
+  // Step 4: update each asset with FX-converted price
+  const today = new Date().toLocaleDateString("pt-PT");
+  for (let i = 0; i < candidates.length; i++) {
+    const asset = candidates[i];
+    const ticker = tickers[i];
     if (!ticker) continue;
 
-    try {
-      const q = await fetchQuote(ticker, workerUrl);
-      if (q && Number.isFinite(q.price) && q.price > 0) {
-        // Detectar qty das notas (importado via DivTracker)
-        const qtyMatch = (asset.notes || "").match(/Qty=([\d.]+)/);
-        const qty = qtyMatch ? parseFloat(qtyMatch[1]) : null;
-        const newValue = qty ? qty * q.price : q.price;
-
-        // Guardar preço unitário e data de actualização nas notas
-        const noteBase = (asset.notes || "").replace(/\s*·?\s*Preço:[^\n·]*/g, "").trim();
-        asset.value = newValue;
-        asset.notes = `${noteBase}${noteBase ? " · " : ""}Preço: ${fmtEUR2(q.price)} (${new Date().toLocaleDateString("pt-PT")})`;
-        updated++;
-      } else {
-        failed++;
-        errors.push(ticker);
-      }
-    } catch (e) {
+    const q = quoteMap[ticker];
+    if (!q || !Number.isFinite(q.price) || q.price <= 0) {
       failed++;
-      errors.push(`${ticker} (${e.message})`);
+      errors.push(ticker);
+      continue;
     }
+
+    // Convert price to EUR
+    const ccy = (q.currency || "EUR").toUpperCase();
+    const fxToEur = ccy === "EUR" ? 1 : (fxRates[ccy] || FX_FALLBACK[ccy] || 1);
+    const priceEur = q.price * fxToEur;
+
+    // Detect qty from notes
+    const qtyMatch = (asset.notes || "").match(/Qty=([\d.]+)/);
+    const qty = qtyMatch ? parseFloat(qtyMatch[1]) : null;
+    const newValue = qty ? qty * priceEur : priceEur;
+
+    // Build price label showing original currency if not EUR
+    const priceLabel = ccy === "EUR"
+      ? fmtEUR2(priceEur)
+      : `${fmtEUR2(priceEur)} (${q.price.toFixed(2)} ${ccy})`;
+
+    const noteBase = (asset.notes || "").replace(/\s*·?\s*Preço:[^\n·]*/g, "")
+      .replace(/\s*·?\s*⚠️ Valor estimado[^·]*/g, "").trim();
+    asset.value = newValue;
+    asset.notes = `${noteBase}${noteBase ? " · " : ""}Preço: ${priceLabel} (${today})`;
+    updated++;
   }
 
   await saveStateAsync();
