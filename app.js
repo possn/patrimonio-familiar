@@ -2269,7 +2269,6 @@ function renderDivChart(divs) {
 
 /* ─── PORTFOLIO ANALYSIS: SECTOR + GEOGRAPHY CHARTS ─────────────────────── */
 
-// Sector name mapping: Yahoo English -> Portuguese label
 const SECTOR_PT = {
   "Technology": "Tecnologia",
   "Financial Services": "Financeiros",
@@ -2282,59 +2281,91 @@ const SECTOR_PT = {
   "Real Estate": "Imobiliário",
   "Utilities": "Utilidades",
   "Communication Services": "Comunicações",
-  "ETF": "ETF",
-  "Cripto": "Cripto",
-  "Outros": "Outros",
 };
 
-// Geography mapping: country/exchange -> region
-function assetToRegion(meta) {
-  if (!meta) return null;
+const SECTOR_PALETTE = [
+  "#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6",
+  "#06b6d4","#84cc16","#f97316","#ec4899","#64748b","#14b8a6","#a855f7"
+];
+const GEO_PALETTE = ["#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#84cc16"];
+
+function assetToRegion(asset) {
+  const meta = asset.meta || {};
   const qt = (meta.quoteType || "").toUpperCase();
   if (qt === "CRYPTOCURRENCY") return "Cripto";
-
-  const country = (meta.country || "").toLowerCase();
-  const exchange = (meta.exchange || "").toUpperCase();
-
-  // By country first
-  if (country.includes("united states") || country === "usa") return "EUA";
-  if (country.includes("united kingdom")) return "Europa";
-  if (["germany","france","italy","spain","netherlands","portugal",
-       "belgium","sweden","norway","denmark","finland","switzerland",
-       "austria","ireland","poland","greece"].some(c => country.includes(c))) return "Europa";
-  if (country.includes("japan")) return "Ásia-Pacífico";
-  if (country.includes("china") || country.includes("hong kong") ||
-      country.includes("south korea") || country.includes("taiwan") ||
-      country.includes("singapore") || country.includes("australia") ||
-      country.includes("india") || country.includes("new zealand")) return "Ásia-Pacífico";
-  if (country.includes("brazil") || country.includes("mexico") ||
-      country.includes("argentina") || country.includes("chile")) return "Lat. América";
-  if (country.includes("canada")) return "EUA"; // often bundled with North America
-  if (country) return "Outros";
-
-  // Fall back to exchange suffix
-  if (["NMS","NYQ","NGM","PCX","ASE","BATS"].some(e => exchange.startsWith(e))) return "EUA";
-  if (["LSE","IOB"].includes(exchange)) return "Europa";
-  if (["GER","FRA","XETRA","EBS","EPA"].some(e => exchange.includes(e))) return "Europa";
-  if (["TYO","HKG","SHG","SES"].some(e => exchange.includes(e))) return "Ásia-Pacífico";
-
-  // By ticker suffix (stored in asset.name)
-  return null;
+  const cc = (meta.country || "").toLowerCase();
+  const ex = (meta.exchange || "").toUpperCase();
+  // By country
+  if (cc.includes("united states")) return "EUA";
+  if (["united kingdom","germany","france","italy","spain","netherlands",
+       "portugal","belgium","sweden","norway","denmark","finland",
+       "switzerland","austria","ireland","poland","greece"].some(c => cc.includes(c))) return "Europa";
+  if (["japan","china","hong kong","south korea","taiwan",
+       "singapore","australia","india","new zealand"].some(c => cc.includes(c))) return "Ásia-Pac.";
+  if (["brazil","mexico","argentina","chile","colombia"].some(c => cc.includes(c))) return "Lat. América";
+  if (cc.includes("canada")) return "EUA"; // N. America
+  if (cc) return "Outros";
+  // By exchange
+  if (["NMS","NYQ","NGM","PCX","ASE","BATS","NCM"].some(e => ex === e || ex.startsWith(e))) return "EUA";
+  if (["LSE","IOB"].includes(ex)) return "Europa";
+  if (["GER","XETRA","EPA","EBS","AMS","MCE","BIT","WSE"].some(e => ex === e)) return "Europa";
+  if (["TYO","HKG","SHG","SES","ASX"].some(e => ex === e)) return "Ásia-Pac.";
+  // By ticker suffix fallback
+  const name = (asset.name || "").toUpperCase();
+  if ([".L",".LS",".DE",".PA",".MI",".AS",".MC",".BR",".WA",".SW",".ST",".OL",".HE",".CO"].some(s => name.endsWith(s))) return "Europa";
+  if (name.endsWith(".AX") || name.endsWith(".T")) return "Ásia-Pac.";
+  if (name.endsWith("-USD") || name.endsWith(".CC")) return "Cripto";
+  return "EUA"; // plain tickers default to US
 }
 
 function assetToSector(asset) {
   const meta = asset.meta || {};
-  const cls = (asset.class || "").toLowerCase().replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o");
-  if (cls === "cripto") return "Cripto";
   const qt = (meta.quoteType || "").toUpperCase();
-  if (qt === "CRYPTOCURRENCY") return "Cripto";
-  if (qt === "ETF" || qt === "MUTUALFUND") return "ETF";
-  const s = meta.sector || "";
-  if (!s) return null; // no data yet
-  return SECTOR_PT[s] || s;
+  const cls = (asset.class || "").toLowerCase().replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o");
+  if (cls === "cripto" || qt === "CRYPTOCURRENCY") return "Cripto";
+  if (qt === "ETF" || qt === "MUTUALFUND") return "ETF / Fundo";
+  if (meta.sector) return SECTOR_PT[meta.sector] || meta.sector;
+  return null; // no data yet
 }
 
 let sectorChartInst = null, geoChartInst = null;
+
+function makeLegendRow(label, value, total, color) {
+  const pct = total > 0 ? (value / total * 100) : 0;
+  return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #f1f5f9">
+    <div style="width:12px;height:12px;border-radius:3px;background:${color};flex-shrink:0"></div>
+    <div style="flex:1;font-size:13px;font-weight:600">${escapeHtml(label)}</div>
+    <div style="font-size:13px;color:#64748b">${fmtEUR(value)}</div>
+    <div style="font-size:12px;font-weight:700;color:#0f172a;min-width:42px;text-align:right">${pct.toFixed(1)}%</div>
+  </div>`;
+}
+
+function buildDonut(canvasId, labels, values, palette) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return null;
+  return new Chart(ctx.getContext("2d"), {
+    type: "doughnut",
+    data: {
+      labels,
+      datasets: [{ data: values, backgroundColor: palette, borderWidth: 3, borderColor: "#fff", hoverOffset: 8 }]
+    },
+    options: {
+      cutout: "68%",
+      animation: { animateRotate: true, duration: 600 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => {
+              const total = c.dataset.data.reduce((a,b) => a+b, 0);
+              return ` ${fmtEUR(c.raw)}  (${(c.raw/total*100).toFixed(1)}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
 
 function renderPortfolioCharts() {
   const EQUITY_CLS = new Set(["ações/etfs","acoes/etfs","cripto"]);
@@ -2343,124 +2374,63 @@ function renderPortfolioCharts() {
     return EQUITY_CLS.has(c) && parseNum(a.value) > 0;
   });
 
-  // ── SECTOR CHART ──────────────────────────────────────────
+  // ── SECTOR ────────────────────────────────────────────────
   const bySector = {};
-  let sectorCovered = 0;
   for (const a of equityAssets) {
-    const sector = assetToSector(a);
-    if (!sector) continue;
-    sectorCovered++;
-    bySector[sector] = (bySector[sector] || 0) + parseNum(a.value);
+    const s = assetToSector(a) || "Sem dados";
+    bySector[s] = (bySector[s] || 0) + parseNum(a.value);
   }
+  const hasSector = equityAssets.some(a => a.meta && (a.meta.sector || a.meta.quoteType));
 
-  const sectorNoData = document.getElementById("sectorNoData");
-  const sectorWrap   = document.getElementById("sectorChartWrap");
-  if (sectorCovered === 0) {
-    if (sectorNoData) sectorNoData.style.display = "";
-    if (sectorWrap)   sectorWrap.style.display   = "none";
-    document.getElementById("sectorLegend").innerHTML = "";
+  const sND = document.getElementById("sectorNoData");
+  const sW  = document.getElementById("sectorChartWrap");
+  const sT  = document.getElementById("sectorTotal");
+  if (!hasSector) {
+    if (sND) sND.style.display = "";
+    if (sW)  sW.style.display  = "none";
   } else {
-    if (sectorNoData) sectorNoData.style.display = "none";
-    if (sectorWrap)   sectorWrap.style.display   = "";
+    if (sND) sND.style.display = "none";
+    if (sW)  sW.style.display  = "";
     const sLabels = Object.keys(bySector).sort((a,b) => bySector[b]-bySector[a]);
     const sValues = sLabels.map(k => bySector[k]);
-    const sTotal  = sValues.reduce((a,b) => a+b, 0);
-    const ctx1 = document.getElementById("sectorChart").getContext("2d");
-    if (sectorChartInst) sectorChartInst.destroy();
-    sectorChartInst = new Chart(ctx1, {
-      type: "doughnut",
-      data: {
-        labels: sLabels,
-        datasets: [{ data: sValues, backgroundColor: PALETTE, borderWidth: 2, borderColor: "#fff" }]
-      },
-      options: {
-        cutout: "65%",
-        plugins: {
-          legend: { display: false },
-          tooltip: { callbacks: { label: c => ` ${c.label}: ${fmtEUR(c.raw)} (${(c.raw/sTotal*100).toFixed(1)}%)` } }
-        }
-      }
-    });
-    // Custom legend
-    const sLegend = document.getElementById("sectorLegend");
-    sLegend.innerHTML = sLabels.map((l,i) =>
-      `<div style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">
-        <span style="width:11px;height:11px;border-radius:3px;background:${PALETTE[i%PALETTE.length]};display:inline-block;flex-shrink:0"></span>
-        <span>${escapeHtml(l)}</span>
-        <span style="color:#64748b">${(bySector[l]/sTotal*100).toFixed(1)}%</span>
-      </div>`
-    ).join("");
+    const sTotal  = sValues.reduce((s,v) => s+v, 0);
+    if (sT) sT.textContent = fmtEUR(sTotal);
+    if (sectorChartInst) { sectorChartInst.destroy(); sectorChartInst = null; }
+    sectorChartInst = buildDonut("sectorChart", sLabels, sValues, SECTOR_PALETTE);
+    const sLeg = document.getElementById("sectorLegend");
+    if (sLeg) sLeg.innerHTML = sLabels.map((l,i) => makeLegendRow(l, bySector[l], sTotal, SECTOR_PALETTE[i%SECTOR_PALETTE.length])).join("");
   }
 
-  // ── GEOGRAPHY CHART ───────────────────────────────────────
+  // ── GEOGRAPHY ─────────────────────────────────────────────
   const byRegion = {};
-  let geoCovered = 0;
   for (const a of equityAssets) {
-    // First try meta.country/exchange
-    let region = assetToRegion(a.meta);
-    // If no meta, infer from ticker suffix
-    if (!region) {
-      const name = (a.name || "").toUpperCase();
-      if (name.endsWith("-USD") || (!name.includes(".") && !name.endsWith(".CC"))) region = "EUA";
-      else if (name.endsWith(".LS")) region = "Europa";
-      else if (name.endsWith(".L"))  region = "Europa";
-      else if (name.endsWith(".DE") || name.endsWith(".PA") || name.endsWith(".MI") ||
-               name.endsWith(".AS") || name.endsWith(".MC") || name.endsWith(".BR") ||
-               name.endsWith(".WA") || name.endsWith(".SW") || name.endsWith(".ST") ||
-               name.endsWith(".OL") || name.endsWith(".HE") || name.endsWith(".CO")) region = "Europa";
-      else if (name.endsWith(".TO")) region = "EUA";
-      else if (name.endsWith(".AX")) region = "Ásia-Pacífico";
-      else if (name.endsWith(".T"))  region = "Ásia-Pacífico";
-      else if (name.endsWith("-USD") || name.includes(".CC")) region = "Cripto";
-      else region = "EUA"; // default for plain tickers (AAPL, MSFT etc)
-    }
-    geoCovered++;
-    byRegion[region] = (byRegion[region] || 0) + parseNum(a.value);
+    const r = assetToRegion(a);
+    byRegion[r] = (byRegion[r] || 0) + parseNum(a.value);
   }
 
-  const GEO_PALETTE = ["#5b5ce6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#84cc16"];
-  const geoNoData = document.getElementById("geoNoData");
-  const geoWrap   = document.getElementById("geoChartWrap");
-  if (geoCovered === 0) {
-    if (geoNoData) geoNoData.style.display = "";
-    if (geoWrap)   geoWrap.style.display   = "none";
-    document.getElementById("geoLegend").innerHTML = "";
+  const gND = document.getElementById("geoNoData");
+  const gW  = document.getElementById("geoChartWrap");
+  const gT  = document.getElementById("geoTotal");
+  if (!equityAssets.length) {
+    if (gND) gND.style.display = "";
+    if (gW)  gW.style.display  = "none";
   } else {
-    if (geoNoData) geoNoData.style.display = "none";
-    if (geoWrap)   geoWrap.style.display   = "";
+    if (gND) gND.style.display = "none";
+    if (gW)  gW.style.display  = "";
     const gLabels = Object.keys(byRegion).sort((a,b) => byRegion[b]-byRegion[a]);
     const gValues = gLabels.map(k => byRegion[k]);
-    const gTotal  = gValues.reduce((a,b) => a+b, 0);
-    const ctx2 = document.getElementById("geoChart").getContext("2d");
-    if (geoChartInst) geoChartInst.destroy();
-    geoChartInst = new Chart(ctx2, {
-      type: "doughnut",
-      data: {
-        labels: gLabels,
-        datasets: [{ data: gValues, backgroundColor: GEO_PALETTE, borderWidth: 2, borderColor: "#fff" }]
-      },
-      options: {
-        cutout: "65%",
-        plugins: {
-          legend: { display: false },
-          tooltip: { callbacks: { label: c => ` ${c.label}: ${fmtEUR(c.raw)} (${(c.raw/gTotal*100).toFixed(1)}%)` } }
-        }
-      }
-    });
-    const gLegend = document.getElementById("geoLegend");
-    gLegend.innerHTML = gLabels.map((l,i) =>
-      `<div style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">
-        <span style="width:11px;height:11px;border-radius:3px;background:${GEO_PALETTE[i%GEO_PALETTE.length]};display:inline-block;flex-shrink:0"></span>
-        <span>${escapeHtml(l)}</span>
-        <span style="color:#64748b">${(byRegion[l]/gTotal*100).toFixed(1)}%</span>
-      </div>`
-    ).join("");
+    const gTotal  = gValues.reduce((s,v) => s+v, 0);
+    if (gT) gT.textContent = fmtEUR(gTotal);
+    if (geoChartInst) { geoChartInst.destroy(); geoChartInst = null; }
+    geoChartInst = buildDonut("geoChart", gLabels, gValues, GEO_PALETTE);
+    const gLeg = document.getElementById("geoLegend");
+    if (gLeg) gLeg.innerHTML = gLabels.map((l,i) => makeLegendRow(l, byRegion[l], gTotal, GEO_PALETTE[i%GEO_PALETTE.length])).join("");
   }
 }
 
 /* ─── ANALYSIS VIEW ───────────────────────────────────────── */
 function renderAnalysis() {
-  const tab = ($("analysisTab") && $("analysisTab").value) || "portfolio";
+  const tab = ($("analysisTab") && $("analysisTab").value) || "compound";
   document.querySelectorAll(".analysisPanelTab").forEach(p => { p.style.display = "none"; });
   const panel = document.getElementById("analysisPanelTab_" + tab);
   if (panel) panel.style.display = "";
