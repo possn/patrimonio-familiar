@@ -2866,16 +2866,47 @@ function importRows(rows) {
   }
 
   // Convert trades to assets
+  // Step 1: Merge multi-currency positions for same ticker into one
+  // (e.g. ABR|EUR + ABR|USD → single "ABR" asset with combined qty/cost)
+  const mergedPos = new Map(); // key = ticker (no currency)
   for (const p of posMap.values()) {
     if (!(p.qty > 0) || !(p.cost > 0)) continue;
+    const t = p.ticker;
+    if (!mergedPos.has(t)) {
+      mergedPos.set(t, { ticker: t, qty: 0, cost: 0, comm: 0, ccys: [] });
+    }
+    const m = mergedPos.get(t);
+    m.qty  += p.qty;
+    m.cost += p.cost;
+    m.comm += p.comm || 0;
+    if (!m.ccys.includes(p.ccy)) m.ccys.push(p.ccy);
+  }
+
+  // Step 2: Create or UPDATE one asset per ticker
+  for (const p of mergedPos.values()) {
     const upper = String(p.ticker).toUpperCase();
     const isCrypto = upper.endsWith(".CC") || ["BTC","ETH","SOL","ADA","XRP","DOT","BNB"].includes(upper.replace(/\.CC$/, ""));
     const cls = isCrypto ? "Cripto" : "Ações/ETFs";
     const estValue = p.cost + (p.comm || 0);
-    const existingIx = state.assets.findIndex(a => (a.name || "").toUpperCase() === upper && a.class === cls);
-    const item = { id: existingIx >= 0 ? state.assets[existingIx].id : uid(), class: cls, name: p.ticker, value: estValue, yieldType: "none", yieldValue: 0, compoundFreq: 12, notes: `Importado trades. Qty=${fmt(p.qty)} · PM=${p.cost > 0 ? fmt(p.cost / p.qty, 4) : "—"} ${p.ccy}` };
-    if (existingIx >= 0) state.assets[existingIx] = item; else state.assets.push(item);
-    addedA++;
+    const ccyLabel = p.ccys.join("/");
+    const notes = `Importado trades. Qty=${fmt(p.qty)} · PM=${p.cost > 0 ? fmt(p.cost / p.qty, 4) : "—"} ${ccyLabel}`;
+
+    // Find existing asset by ticker name (case-insensitive, same class)
+    const existingIx = state.assets.findIndex(a =>
+      (a.name || "").toUpperCase() === upper && a.class === cls
+    );
+
+    if (existingIx >= 0) {
+      // UPDATE: preserve id, yieldType, yieldValue set by user
+      state.assets[existingIx] = {
+        ...state.assets[existingIx],
+        value: estValue,
+        notes
+      };
+    } else {
+      state.assets.push({ id: uid(), class: cls, name: p.ticker, value: estValue, yieldType: "none", yieldValue: 0, compoundFreq: 12, notes });
+      addedA++;
+    }
   }
 
   saveState();
