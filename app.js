@@ -1061,14 +1061,85 @@ function renderDivYTD() {
 
 function renderDashboard() {
   const t = calcTotals();
+
+  // ── Hero ──────────────────────────────────────────────────
   $("kpiNet").textContent = fmtEUR(t.net);
   $("kpiAP").textContent = `Ativos ${fmtEUR(t.assetsTotal)} | Passivos ${fmtEUR(t.liabsTotal)}`;
+
+  // Variação MoM e YoY a partir do histórico
+  const h = state.history.slice().sort((a,b) => String(a.dateISO).localeCompare(String(b.dateISO)));
+  const changesEl = document.getElementById("kpiChanges");
+  if (changesEl && h.length >= 2) {
+    const last = h[h.length-1];
+    const prev = h[h.length-2];
+    const yearAgo = h.find(x => {
+      const d = new Date(x.dateISO), now = new Date(last.dateISO);
+      return Math.abs((now - d) / (1000*60*60*24*365) - 1) < 0.15;
+    });
+    const chips = [];
+    const chip = (label, val, ref) => {
+      if (ref == null || ref === 0) return "";
+      const diff = val - ref, pct = diff / Math.abs(ref) * 100;
+      const pos = diff >= 0;
+      const color = pos ? "#059669" : "#ef4444";
+      const arrow = pos ? "▲" : "▼";
+      return `<div style="background:${pos?"#f0fdf4":"#fff1f2"};border-radius:8px;padding:5px 10px;font-size:12px">
+        <span style="color:#64748b">${label} </span>
+        <span style="color:${color};font-weight:700">${arrow} ${fmtEUR(Math.abs(diff))} (${Math.abs(pct).toFixed(1)}%)</span>
+      </div>`;
+    };
+    if (prev) chips.push(chip("vs mês ant.", t.net, parseNum(prev.net)));
+    if (yearAgo) chips.push(chip("vs ano ant.", t.net, parseNum(yearAgo.net)));
+    changesEl.innerHTML = chips.join("") || "";
+    changesEl.style.display = chips.some(Boolean) ? "flex" : "none";
+  } else if (changesEl) {
+    changesEl.style.display = "none";
+  }
+
+  // ── KPIs secundários ──────────────────────────────────────
   $("kpiPassiveAnnual").textContent = fmtEUR(t.passiveAnnual);
   $("kpiPassiveMonthly").textContent = fmtEUR(t.passiveAnnual / 12);
+
+  const pm2 = document.getElementById("kpiPassiveMonthly2");
+  const pa2 = document.getElementById("kpiPassiveAnnualSub");
+  if (pm2) pm2.textContent = fmtEUR(t.passiveAnnual / 12);
+  if (pa2) pa2.textContent = fmtEUR(t.passiveAnnual) + "/ano";
+
+  // Yield médio carteira
+  const yieldEl = document.getElementById("kpiYield");
+  if (yieldEl) {
+    const y = t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0;
+    yieldEl.textContent = fmtPct(y);
+  }
+
+  // Autonomia passiva (rendimento passivo / despesas mensais)
+  const autEl = document.getElementById("kpiAutonomy");
+  if (autEl) {
+    const byMonth = new Map();
+    for (const tx of (state.transactions||[])) {
+      if (isInterAccountTransfer(tx)) continue;
+      const d = (tx.date||"").slice(0,7); if (!d) continue;
+      const cur = byMonth.get(d)||{out:0}; if (tx.type==="out") cur.out += parseNum(tx.amount);
+      byMonth.set(d, cur);
+    }
+    const last6 = [...byMonth.keys()].sort().slice(-6);
+    const avgOut = last6.length ? last6.reduce((s,k)=>s+(byMonth.get(k).out||0),0)/last6.length : 0;
+    const exp12 = avgOut * 12;
+    const pct = exp12 > 0 ? Math.min(999, t.passiveAnnual / exp12 * 100) : 0;
+    autEl.textContent = pct > 0 ? fmtPct(pct) : "—";
+    autEl.style.color = pct >= 100 ? "#059669" : pct >= 50 ? "#f59e0b" : "#8b5cf6";
+  }
+
   updatePassiveBar();
   renderGoal();
   renderAlerts();
   renderDivYTD();
+  // Sync secondary DivYTD
+  const d2 = document.getElementById("kpiDivYTD2");
+  const dc2 = document.getElementById("kpiDivCount2");
+  if (d2) d2.textContent = $("kpiDivYTD").textContent;
+  if (dc2) dc2.textContent = $("kpiDivCount").textContent;
+
   renderSummary();
   renderDistChart();
   renderTrendChart();
@@ -1125,23 +1196,60 @@ function renderTrendChart() {
   if (trendChart) trendChart.destroy();
   const h = state.history.slice().sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
   const hint = $("historyHint");
+  const snapTable = document.getElementById("snapshotTable");
+  const trendSub = document.getElementById("trendSubtitle");
+
   if (!h.length) {
     if (hint) hint.style.display = "block";
+    if (snapTable) snapTable.innerHTML = "";
     trendChart = new Chart(ctx, { type: "line", data: { labels: ["—"], datasets: [{ data: [0], tension: .35, pointRadius: 0 }] }, options: { plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } } });
     return;
   }
   if (hint) hint.style.display = "none";
+
+  // Update subtitle with count and date range
+  if (trendSub) trendSub.textContent = `${h.length} snapshot${h.length!==1?"s":""} · ${h[0].dateISO.slice(0,7)} → ${h[h.length-1].dateISO.slice(0,7)}`;
+
   trendChart = new Chart(ctx, {
     type: "line",
     data: {
       labels: h.map(x => x.dateISO.slice(0, 7)),
       datasets: [
-        { label: "Património", data: h.map(x => parseNum(x.net)), tension: .4, pointRadius: 3, borderColor: "#5b5ce6", backgroundColor: "rgba(91,92,230,.08)", fill: true },
-        { label: "Ativos", data: h.map(x => parseNum(x.assets)), tension: .4, pointRadius: 0, borderDash: [4, 4], borderColor: "#39d6d8", borderWidth: 1.5 }
+        { label: "Património líquido", data: h.map(x => parseNum(x.net)), tension: .4, pointRadius: h.length <= 12 ? 4 : 2, borderColor: "#5b5ce6", backgroundColor: "rgba(91,92,230,.08)", fill: true, borderWidth: 2 },
+        { label: "Total ativos", data: h.map(x => parseNum(x.assets)), tension: .4, pointRadius: 0, borderDash: [4,4], borderColor: "#39d6d8", borderWidth: 1.5 },
+        { label: "Rend. passivo/ano", data: h.map(x => parseNum(x.passiveAnnual||0)), tension: .4, pointRadius: 0, borderColor: "#10b981", borderWidth: 1.5 }
       ]
     },
-    options: { plugins: { legend: { display: true, labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } } }, scales: { y: { ticks: { callback: v => fmtEUR(v) } } } }
+    options: {
+      plugins: {
+        legend: { display: true, labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } }
+      },
+      scales: { y: { ticks: { callback: v => v >= 1e6 ? (v/1e6).toFixed(1)+"M€" : fmtEUR(v), font:{size:10} } } }
+    }
   });
+
+  // Mini table: last 6 snapshots with MoM change
+  if (snapTable) {
+    const recent = h.slice(-6).reverse();
+    const rows = recent.map((s, i) => {
+      const prev = recent[i+1];
+      const net = parseNum(s.net);
+      const diff = prev ? net - parseNum(prev.net) : null;
+      const pct = (diff != null && parseNum(prev.net) !== 0) ? diff / Math.abs(parseNum(prev.net)) * 100 : null;
+      const changeHtml = pct != null
+        ? `<span style="color:${diff>=0?"#059669":"#ef4444"};font-size:12px">${diff>=0?"▲":"▼"} ${Math.abs(pct).toFixed(1)}%</span>`
+        : `<span style="color:#94a3b8;font-size:12px">—</span>`;
+      return `<div style="display:flex;align-items:center;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:13px">
+        <span style="color:#64748b;min-width:70px">${s.dateISO.slice(0,7)}</span>
+        <span style="flex:1;font-weight:700">${fmtEUR(net)}</span>
+        ${changeHtml}
+      </div>`;
+    }).join("");
+    snapTable.innerHTML = rows
+      ? `<div style="margin-top:8px"><div style="font-size:11px;color:#94a3b8;margin-bottom:4px">Últimos snapshots</div>${rows}</div>`
+      : "";
+  }
 }
 
 function snapshotMonth() {
@@ -2093,12 +2201,17 @@ function setDivMode(mode) {
   divMode = mode;
   const summary = document.getElementById("paneDivSummary");
   const detail = document.getElementById("paneDivDetail");
+  const calendar = document.getElementById("paneDivCalendar");
   const segS = $("segDivSummary");
   const segD = $("segDivDetail");
+  const segC = $("segDivCalendar");
   if (summary) summary.style.display = mode === "summary" ? "" : "none";
   if (detail) detail.style.display = mode === "detail" ? "" : "none";
+  if (calendar) calendar.style.display = mode === "calendar" ? "" : "none";
   segS.classList.toggle("seg__btn--active", mode === "summary");
   segD.classList.toggle("seg__btn--active", mode === "detail");
+  if (segC) segC.classList.toggle("seg__btn--active", mode === "calendar");
+  if (mode === "calendar") renderDivCalendar();
   if (mode === "summary") {
     initDivSummaryYearSelect();
     renderDivSummaryKPIs();
@@ -2302,6 +2415,223 @@ function renderDivChart(divs) {
   });
 }
 
+
+const DIV_CALENDAR_DB = {
+  "AAPL": {freq:"quarterly",months:[2, 5, 8, 11],yield:0.5,name:"Apple"},
+  "ABEV": {freq:"semi",months:[4, 9],yield:6.4,name:"Ambev"},
+  "ABR": {freq:"monthly",months:[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],yield:13.8,name:"Arbor Realty"},
+  "ABT": {freq:"quarterly",months:[2, 5, 8, 11],yield:2.0,name:"Abbott"},
+  "ADC": {freq:"monthly",months:[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],yield:4.2,name:"Agree Realty"},
+  "ADM": {freq:"quarterly",months:[3, 6, 9, 12],yield:4.1,name:"Archer-Daniels"},
+  "ADP": {freq:"quarterly",months:[1, 4, 7, 10],yield:2.2,name:"ADP"},
+  "AFL": {freq:"quarterly",months:[3, 6, 9, 12],yield:2.1,name:"Aflac"},
+  "AGNC": {freq:"monthly",months:[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],yield:14.5,name:"AGNC Investment"},
+  "AIR.FR": {freq:"annual",months:[4],yield:1.2,name:"Airbus"},
+  "ARE": {freq:"quarterly",months:[1, 4, 7, 10],yield:5.1,name:"Alexandria RE"},
+  "BAC": {freq:"quarterly",months:[1, 4, 7, 10],yield:2.4,name:"Bank of America"},
+  "BAYN.DE": {freq:"annual",months:[5],yield:6.8,name:"Bayer"},
+  "BCP.PT": {freq:"annual",months:[5],yield:4.5,name:"BCP"},
+  "BEN": {freq:"quarterly",months:[1, 4, 7, 10],yield:5.1,name:"Franklin Templeton"},
+  "BMY": {freq:"quarterly",months:[2, 5, 8, 11],yield:5.1,name:"Bristol-Myers Squibb"},
+  "BP.GB": {freq:"quarterly",months:[3, 6, 9, 12],yield:5.8,name:"BP"},
+  "CB": {freq:"quarterly",months:[1, 4, 7, 10],yield:1.4,name:"Chubb"},
+  "CL": {freq:"quarterly",months:[3, 6, 9, 12],yield:2.3,name:"Colgate-Palmolive"},
+  "CMCSA": {freq:"quarterly",months:[1, 4, 7, 10],yield:3.1,name:"Comcast"},
+  "COR.PT": {freq:"annual",months:[5],yield:3.5,name:"Corticeira Amorim"},
+  "CSCO": {freq:"quarterly",months:[1, 4, 7, 10],yield:3.1,name:"Cisco"},
+  "CVX": {freq:"quarterly",months:[3, 6, 9, 12],yield:4.2,name:"Chevron"},
+  "EDP.PT": {freq:"annual",months:[5],yield:6.5,name:"EDP"},
+  "EMR": {freq:"quarterly",months:[3, 6, 9, 12],yield:1.9,name:"Emerson Electric"},
+  "EOG": {freq:"quarterly",months:[1, 4, 7, 10],yield:3.1,name:"EOG Resources"},
+  "EQNR": {freq:"quarterly",months:[2, 5, 8, 11],yield:8.1,name:"Equinor"},
+  "FDX": {freq:"quarterly",months:[1, 4, 7, 10],yield:2.1,name:"FedEx"},
+  "FMC": {freq:"quarterly",months:[1, 4, 7, 10],yield:3.2,name:"FMC Corp"},
+  "GAIN": {freq:"monthly",months:[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],yield:7.1,name:"Gladstone Investment"},
+  "GALP.PT": {freq:"semi",months:[5, 10],yield:5.2,name:"Galp"},
+  "GD": {freq:"quarterly",months:[2, 5, 8, 11],yield:2.1,name:"General Dynamics"},
+  "GILD": {freq:"quarterly",months:[3, 6, 9, 12],yield:3.7,name:"Gilead"},
+  "GIS": {freq:"quarterly",months:[2, 5, 8, 11],yield:3.8,name:"General Mills"},
+  "GOOD": {freq:"monthly",months:[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],yield:8.2,name:"Gladstone Commercial"},
+  "GSK.GB": {freq:"semi",months:[4, 10],yield:4.2,name:"GSK"},
+  "GTY": {freq:"monthly",months:[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],yield:5.5,name:"Getty Realty"},
+  "HAL": {freq:"quarterly",months:[3, 6, 9, 12],yield:2.1,name:"Halliburton"},
+  "HD": {freq:"quarterly",months:[3, 6, 9, 12],yield:2.5,name:"Home Depot"},
+  "HRL": {freq:"quarterly",months:[2, 5, 8, 11],yield:3.8,name:"Hormel"},
+  "IBM": {freq:"quarterly",months:[3, 6, 9, 12],yield:3.1,name:"IBM"},
+  "IMB.GB": {freq:"semi",months:[4, 10],yield:9.1,name:"Imperial Brands"},
+  "INTC": {freq:"quarterly",months:[3, 6, 9, 12],yield:2.2,name:"Intel"},
+  "ITW": {freq:"quarterly",months:[1, 4, 7, 10],yield:2.3,name:"Illinois Tool Works"},
+  "JMT.PT": {freq:"annual",months:[4],yield:2.1,name:"Jerónimo Martins"},
+  "KHC": {freq:"quarterly",months:[3, 6, 9, 12],yield:5.5,name:"Kraft Heinz"},
+  "KMB": {freq:"quarterly",months:[1, 4, 7, 10],yield:3.7,name:"Kimberly-Clark"},
+  "KO": {freq:"quarterly",months:[4, 7, 10, 12],yield:3.1,name:"Coca-Cola"},
+  "KVUE": {freq:"quarterly",months:[3, 6, 9, 12],yield:3.8,name:"Kenvue"},
+  "LAND": {freq:"quarterly",months:[1, 4, 7, 10],yield:5.8,name:"Gladstone Land"},
+  "LGEN.GB": {freq:"semi",months:[6, 11],yield:8.5,name:"Legal & General"},
+  "LMT": {freq:"quarterly",months:[3, 6, 9, 12],yield:2.8,name:"Lockheed Martin"},
+  "LTC": {freq:"monthly",months:[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],yield:6.1,name:"LTC Properties"},
+  "LYB": {freq:"quarterly",months:[3, 6, 9, 12],yield:7.2,name:"LyondellBasell"},
+  "MAIN": {freq:"monthly",months:[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],yield:5.9,name:"Main Street Capital"},
+  "MCD": {freq:"quarterly",months:[3, 6, 9, 12],yield:2.3,name:"McDonald\'s"},
+  "MDLZ": {freq:"quarterly",months:[1, 4, 7, 10],yield:2.8,name:"Mondelez"},
+  "MDT": {freq:"quarterly",months:[1, 4, 7, 10],yield:3.5,name:"Medtronic"},
+  "MET": {freq:"quarterly",months:[3, 6, 9, 12],yield:3.2,name:"MetLife"},
+  "MMM": {freq:"quarterly",months:[3, 6, 9, 12],yield:2.1,name:"3M"},
+  "MPT": {freq:"quarterly",months:[1, 4, 7, 10],yield:16.0,name:"Medical Properties"},
+  "MRK": {freq:"quarterly",months:[1, 4, 7, 10],yield:2.7,name:"Merck"},
+  "MSFT": {freq:"quarterly",months:[3, 6, 9, 12],yield:0.8,name:"Microsoft"},
+  "NEE": {freq:"quarterly",months:[3, 6, 9, 12],yield:3.3,name:"NextEra Energy"},
+  "NESN.CH": {freq:"annual",months:[4],yield:3.1,name:"Nestlé"},
+  "NGAS.GB": {freq:"quarterly",months:[3, 6, 9, 12],yield:5.5,name:"National Grid"},
+  "NOVO-B.DK": {freq:"semi",months:[3, 8],yield:1.8,name:"Novo Nordisk"},
+  "NUE": {freq:"quarterly",months:[2, 5, 8, 11],yield:1.5,name:"Nucor"},
+  "O": {freq:"monthly",months:[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],yield:5.8,name:"Realty Income"},
+  "PEP": {freq:"quarterly",months:[1, 4, 7, 10],yield:3.2,name:"PepsiCo"},
+  "PFE": {freq:"quarterly",months:[3, 6, 9, 12],yield:6.8,name:"Pfizer"},
+  "PG": {freq:"quarterly",months:[2, 5, 8, 11],yield:2.4,name:"Procter & Gamble"},
+  "PKN.PL": {freq:"annual",months:[6],yield:8.2,name:"PKN Orlen"},
+  "PLD": {freq:"quarterly",months:[3, 6, 9, 12],yield:3.0,name:"Prologis"},
+  "PPG": {freq:"quarterly",months:[3, 6, 9, 12],yield:2.2,name:"PPG Industries"},
+  "PSEC": {freq:"monthly",months:[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],yield:11.2,name:"Prospect Capital"},
+  "RENE.PT": {freq:"annual",months:[5],yield:7.2,name:"REN"},
+  "REXR": {freq:"quarterly",months:[1, 4, 7, 10],yield:3.9,name:"Rexford Industrial"},
+  "RIO": {freq:"semi",months:[3, 9],yield:6.8,name:"Rio Tinto"},
+  "SAP.DE": {freq:"annual",months:[5],yield:1.5,name:"SAP"},
+  "SBUX": {freq:"quarterly",months:[3, 6, 9, 12],yield:3.1,name:"Starbucks"},
+  "SLB": {freq:"quarterly",months:[1, 4, 7, 10],yield:2.5,name:"Schlumberger"},
+  "SPGI": {freq:"quarterly",months:[3, 6, 9, 12],yield:0.8,name:"S&P Global"},
+  "STAG": {freq:"monthly",months:[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],yield:4.1,name:"STAG Industrial"},
+  "SU.FR": {freq:"annual",months:[5],yield:4.5,name:"Schneider Electric"},
+  "SWKS": {freq:"quarterly",months:[3, 6, 9, 12],yield:3.2,name:"Skyworks"},
+  "SYY": {freq:"quarterly",months:[1, 4, 7, 10],yield:2.8,name:"Sysco"},
+  "T": {freq:"quarterly",months:[2, 5, 8, 11],yield:5.6,name:"AT&T"},
+  "TGT": {freq:"quarterly",months:[3, 6, 9, 12],yield:3.8,name:"Target"},
+  "TROW": {freq:"quarterly",months:[3, 6, 9, 12],yield:4.8,name:"T. Rowe Price"},
+  "TTE.FR": {freq:"quarterly",months:[1, 4, 7, 10],yield:4.8,name:"TotalEnergies"},
+  "VFC": {freq:"quarterly",months:[3, 6, 9, 12],yield:7.1,name:"VF Corp"},
+  "VICI": {freq:"quarterly",months:[1, 4, 7, 10],yield:5.2,name:"VICI Properties"},
+  "VOD.GB": {freq:"semi",months:[2, 8],yield:10.2,name:"Vodafone"},
+  "VOW.DE": {freq:"annual",months:[5],yield:7.5,name:"Volkswagen"},
+  "VZ": {freq:"quarterly",months:[2, 5, 8, 11],yield:6.5,name:"Verizon"},
+  "WEN": {freq:"quarterly",months:[3, 6, 9, 12],yield:5.1,name:"Wendy\'s"},
+  "XOM": {freq:"quarterly",months:[3, 6, 9, 12],yield:3.5,name:"ExxonMobil"},
+};
+
+/* ─── DIVIDEND CALENDAR ──────────────────────────────────────────────────── */
+
+function renderDivCalendar() {
+  const container = document.getElementById("divCalendarContent");
+  if (!container) return;
+
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1; // 1-12
+  const currentYear = now.getFullYear();
+
+  // Get all equity assets
+  const EQUITY_CLS = new Set(["ações/etfs","acoes/etfs"]);
+  const equityAssets = state.assets.filter(a => {
+    const c = (a.class||"").toLowerCase().replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o");
+    return EQUITY_CLS.has(c) && parseNum(a.value) > 0;
+  });
+
+  // Build upcoming payments for next 12 months
+  const payments = [];
+  for (const asset of equityAssets) {
+    const ticker = (asset.name||"").toUpperCase().trim();
+    const db = DIV_CALENDAR_DB[ticker];
+    if (!db || db.freq === 'none' || !db.months.length) continue;
+
+    const value = parseNum(asset.value);
+    // Estimate annual dividend
+    // First check if asset has a yield configured
+    const configuredYield = asset.yieldType === 'yield_pct' ? parseNum(asset.yieldValue) : 0;
+    const yieldPct = configuredYield > 0 ? configuredYield : db.yield;
+    const annualDiv = value * (yieldPct / 100);
+    const perPayment = annualDiv / db.months.length;
+
+    // Add upcoming payment months
+    for (let mi = 0; mi < 12; mi++) {
+      let m = currentMonth + mi;
+      let y = currentYear;
+      if (m > 12) { m -= 12; y++; }
+      if (db.months.includes(m)) {
+        payments.push({
+          ticker, name: db.name, month: m, year: y,
+          amount: perPayment, freq: db.freq, yieldPct
+        });
+      }
+    }
+  }
+
+  // Sort by year+month
+  payments.sort((a,b) => a.year !== b.year ? a.year-b.year : a.month-b.month);
+
+  if (!payments.length) {
+    container.innerHTML = `<div style="text-align:center;padding:30px;color:#64748b">
+      <div style="font-size:32px;margin-bottom:8px">📅</div>
+      <div style="font-weight:600">Sem dividendos previstos</div>
+      <div style="font-size:13px;margin-top:4px">Importa o CSV do DivTracker para ver o calendário</div>
+    </div>`;
+    return;
+  }
+
+  // Group by month
+  const byMonth = {};
+  for (const p of payments) {
+    const key = `${p.year}-${String(p.month).padStart(2,'0')}`;
+    if (!byMonth[key]) byMonth[key] = {year:p.year, month:p.month, total:0, items:[]};
+    byMonth[key].total += p.amount;
+    byMonth[key].items.push(p);
+  }
+
+  const MONTHS_PT = ['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const FREQ_LABEL = {monthly:'Mensal',quarterly:'Trimestral',semi:'Semestral',annual:'Anual'};
+
+  let html = '';
+  for (const key of Object.keys(byMonth).sort()) {
+    const grp = byMonth[key];
+    const isCurrentMonth = grp.month === currentMonth && grp.year === currentYear;
+    const headerBg = isCurrentMonth ? '#eef2ff' : '#f8fafc';
+    const headerColor = isCurrentMonth ? '#4f46e5' : '#475569';
+
+    html += `<div style="margin-bottom:16px">
+      <div style="background:${headerBg};border-radius:10px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="font-weight:800;font-size:15px;color:${headerColor}">
+          ${isCurrentMonth ? '📍 ' : ''}${MONTHS_PT[grp.month]} ${grp.year}
+        </div>
+        <div style="font-weight:700;font-size:15px;color:#059669">~${fmtEUR(grp.total)}</div>
+      </div>`;
+
+    // Sort items by amount desc
+    grp.items.sort((a,b) => b.amount-a.amount);
+    for (const item of grp.items) {
+      html += `<div style="display:flex;align-items:center;gap:10px;padding:7px 14px;border-bottom:1px solid #f1f5f9">
+        <div style="font-weight:700;font-size:13px;font-family:monospace;min-width:80px;color:#0f172a">${escapeHtml(item.ticker)}</div>
+        <div style="flex:1;font-size:12px;color:#64748b">${escapeHtml(item.name)} · ${FREQ_LABEL[item.freq]||item.freq}</div>
+        <div style="font-weight:600;font-size:13px;color:#059669">~${fmtEUR(item.amount)}</div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Summary stats
+  const totalAnnual = payments.reduce((s,p) => s + (p.amount * 12 / byMonth[`${p.year}-${String(p.month).padStart(2,'0')}`].items.length), 0);
+  const uniqueTickers = [...new Set(payments.map(p=>p.ticker))].length;
+
+  container.innerHTML = `
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:100px;background:#f0fdf4;border-radius:10px;padding:10px;text-align:center">
+        <div style="font-size:11px;color:#64748b;margin-bottom:2px">Próximos 12 meses</div>
+        <div style="font-weight:800;font-size:16px;color:#059669">${fmtEUR(payments.reduce((s,p)=>s+p.amount,0))}</div>
+      </div>
+      <div style="flex:1;min-width:100px;background:#eff6ff;border-radius:10px;padding:10px;text-align:center">
+        <div style="font-size:11px;color:#64748b;margin-bottom:2px">Ações com dividendo</div>
+        <div style="font-weight:800;font-size:16px;color:#4f46e5">${uniqueTickers}</div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:#94a3b8;margin-bottom:12px">⚠️ Estimativas baseadas em yields históricos. Datas e valores aproximados.</div>
+    ${html}`;
+}
 
 const TICKER_DB = {
   "2B76.DE": {s:"Tecnologia",r:"Europa"},
@@ -3281,79 +3611,169 @@ function renderComparePanel() {
 
 /* ── FIRE Panel ── */
 function renderFire() {
-  const capEl = $("fireCap"), expEl = $("fireExp"), passEl = $("firePass");
-  const list = $("fireResults"), canvas = $("fireChart");
-  if (!list || !canvas) return;
+  const W = parseInt($("fireWindow").value || "6", 10);
+  const H = parseInt($("fireHorizon").value || "30", 10);
 
-  const W = parseInt($("fireWindow") && $("fireWindow").value || "6", 10);
-  const H = parseInt($("fireHorizon") && $("fireHorizon").value || "30", 10);
-
+  // Capital investível (excluindo habitação própria)
   const isHome = a => {
-    const name = (a.name || "").toLowerCase(), cls = (a.class || "").toLowerCase();
-    return cls.includes("imob") && (name.includes("casa") || name.includes("habita") || name.includes("home"));
+    const nm = (a.name||"").toLowerCase(), cl = (a.class||"").toLowerCase();
+    return cl.includes("imob") && (nm.includes("casa")||nm.includes("habita")||nm.includes("home")||nm.includes("própri"));
   };
-  const investible = state.assets.filter(a => !isHome(a)).reduce((s, a) => s + parseNum(a.value), 0);
-  const debt = state.liabilities.reduce((s, a) => s + Math.abs(parseNum(a.value)), 0);
-  const cap0 = investible - debt;
+  const investible = state.assets.filter(a => !isHome(a)).reduce((s,a) => s + parseNum(a.value), 0);
+  const debt = state.liabilities.reduce((s,a) => s + Math.abs(parseNum(a.value)), 0);
+  const cap0 = Math.max(0, investible - debt);
 
+  // Cashflow from transactions
   const byMonth = new Map();
-  for (const t of (state.transactions || [])) {
+  for (const t of (state.transactions||[])) {
     if (isInterAccountTransfer(t)) continue;
-    const d = t.date || "";
-    if (d.length < 7) continue;
-    const ym = d.slice(0, 7);
-    const cur = byMonth.get(ym) || { inc: 0, out: 0 };
-    const v = parseNum(t.amount); // FIXED: was t.value
-    if (t.type === "out") cur.out += v; else cur.inc += v;
+    const d = t.date||""; if (d.length < 7) continue;
+    const ym = d.slice(0,7);
+    const cur = byMonth.get(ym) || {inc:0,out:0};
+    const v = parseNum(t.amount);
+    if (t.type==="out") cur.out += v; else cur.inc += v;
     byMonth.set(ym, cur);
   }
-  const months = [...byMonth.keys()].sort();
-  const last = months.slice(-W);
-  const avg = key => last.length ? last.reduce((s, m) => s + (byMonth.get(m)?.[key] || 0), 0) / last.length : 0;
-  const incM = avg("inc"), outM = avg("out"), saveM = Math.max(0, incM - outM);
+  const mKeys = [...byMonth.keys()].sort().slice(-W);
+  const avg = k => mKeys.length ? mKeys.reduce((s,m) => s + (byMonth.get(m)?.[k]||0), 0) / mKeys.length : 0;
+
+  // Allow manual override
+  const expInputVal = parseNum($("fireExpInput").value);
+  const saveInputVal = parseNum($("fireSaveInput").value);
+  const outM  = expInputVal  > 0 ? expInputVal  : avg("out");
+  const saveM = saveInputVal > 0 ? saveInputVal : Math.max(0, avg("inc") - avg("out"));
+
+  // Auto-fill inputs if empty
+  if (!$("fireExpInput").value  && outM  > 0) $("fireExpInput").placeholder  = fmtEUR(outM).replace("€","").trim() + " (auto)";
+  if (!$("fireSaveInput").value && saveM > 0) $("fireSaveInput").placeholder = fmtEUR(saveM).replace("€","").trim() + " (auto)";
+
   const exp0 = outM * 12;
-  const passiveAnnual = calcTotals().passiveAnnual;
-  const passY = cap0 > 0 ? passiveAnnual / cap0 : 0;
+  const totals = calcTotals();
+  const passiveAnnual = totals.passiveAnnual;
+  const yieldRate = cap0 > 0 ? passiveAnnual / cap0 : 0;
 
-  if (capEl) capEl.textContent = fmtEUR(cap0);
-  if (expEl) expEl.textContent = fmtEUR(exp0);
-  if (passEl) passEl.textContent = fmtEUR(passiveAnnual);
+  // Update KPIs
+  $("fireCap").textContent  = fmtEUR(cap0);
+  $("fireExp").textContent  = fmtEUR(exp0);
+  $("firePass").textContent = fmtEUR(passiveAnnual);
+  $("fireSave").textContent = fmtEUR(saveM) + "/mês";
 
+  // Progress bars (base scenario FIRE number = exp0 / 0.0375)
+  const baseFireNum = exp0 > 0 ? exp0 / 0.0375 : 0;
+  const capPct  = baseFireNum > 0 ? Math.min(100, cap0 / baseFireNum * 100) : 0;
+  const passPct = exp0 > 0 ? Math.min(100, passiveAnnual / exp0 * 100) : 0;
+  $("fireCapPct").textContent  = capPct.toFixed(1) + "%";
+  $("firePassPct").textContent = passPct.toFixed(1) + "%";
+  const capBar  = document.getElementById("fireCapBar");
+  const passBar = document.getElementById("firePassBar");
+  if (capBar)  setTimeout(() => capBar.style.width  = capPct  + "%", 50);
+  if (passBar) setTimeout(() => passBar.style.width = passPct + "%", 50);
+
+  // Scenarios
   const scenarios = [
-    { name: "Conservador", r: 0.04, inf: 0.03, swr: 0.0325 },
-    { name: "Base", r: 0.06, inf: 0.025, swr: 0.0375 },
-    { name: "Otimista", r: 0.08, inf: 0.02, swr: 0.04 }
+    { name:"Conservador", emoji:"🐢", r:0.04, inf:0.03,  swr:0.0325, color:"#f59e0b" },
+    { name:"Base",        emoji:"⚖️", r:0.06, inf:0.025, swr:0.0375, color:"#6366f1" },
+    { name:"Optimista",   emoji:"🚀", r:0.08, inf:0.02,  swr:0.04,   color:"#10b981" },
   ];
 
   const results = [];
   for (const sc of scenarios) {
     let cap = cap0, exp = exp0, hit = null;
+    const fireNum = sc.swr > 0 ? exp0 / sc.swr : Infinity;
     for (let t = 0; t <= H; t++) {
-      const pass = passY * cap;
-      const fireNum = sc.swr > 0 ? exp / sc.swr : Infinity;
-      if (cap >= fireNum && pass >= exp) { hit = { t, cap, exp, pass, fireNum }; break; }
-      cap = cap * (1 + sc.r) + saveM * 12;
-      exp = exp * (1 + sc.inf);
+      const pass = yieldRate * cap;
+      const fn = sc.swr > 0 ? exp / sc.swr : Infinity;
+      if (!hit && cap >= fn && pass >= exp) hit = {t, cap, exp, pass, fireNum: fn};
+      if (t < H) {
+        cap = cap * (1 + sc.r) + saveM * 12;
+        exp = exp * (1 + sc.inf);
+      }
     }
-    results.push({ sc, hit });
+    results.push({sc, hit, fireNum});
   }
 
+  // Results list
+  const list = $("fireResults");
   list.innerHTML = results.map(r => {
-    const right = r.hit ? `🎯 FIRE em ${r.hit.t}a (cap: ${fmtEUR(r.hit.cap)})` : `Sem FIRE em ${H}a`;
-    const cls = r.hit ? "kpi--in" : "";
-    return `<div class="item ${cls}">
-      <div class="item__l"><div class="item__t">${r.sc.name}</div><div class="item__s">r ${fmtPct(r.sc.r * 100)} · infl. ${fmtPct(r.sc.inf * 100)} · SWR ${fmtPct(r.sc.swr * 100)}</div></div>
-      <div class="item__v">${right}</div>
+    const hitLabel = r.hit
+      ? `<span style="color:#059669;font-weight:700">🎯 FIRE em ${r.hit.t} anos</span><br><span style="font-size:11px;color:#64748b">Capital: ${fmtEUR(r.hit.cap)} · Rend: ${fmtEUR(r.hit.pass)}/ano</span>`
+      : `<span style="color:#ef4444;font-weight:600">Não atinge em ${H}a</span>`;
+    return `<div style="padding:12px;border-bottom:1px solid #f1f5f9">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-size:18px">${r.sc.emoji}</span>
+        <div style="flex:1">
+          <div style="font-weight:700;font-size:14px">${r.sc.name}</div>
+          <div style="font-size:11px;color:#94a3b8">Retorno ${fmtPct(r.sc.r*100)} · Inflação ${fmtPct(r.sc.inf*100)} · SWR ${fmtPct(r.sc.swr*100)}</div>
+        </div>
+        <div style="text-align:right">${hitLabel}</div>
+      </div>
+      <div style="height:5px;background:#f1f5f9;border-radius:3px;overflow:hidden">
+        <div style="height:5px;background:${r.sc.color};border-radius:3px;width:${Math.min(100,cap0/r.fireNum*100).toFixed(1)}%"></div>
+      </div>
     </div>`;
   }).join("");
 
+  // FIRE numbers card
+  const numsEl = document.getElementById("fireNumbers");
+  if (numsEl) {
+    numsEl.innerHTML = scenarios.map(sc => {
+      const fn = sc.swr > 0 ? exp0 / sc.swr : Infinity;
+      const gap = Math.max(0, fn - cap0);
+      return `<div style="padding:10px;border-bottom:1px solid #f1f5f9">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-weight:600">${sc.emoji} ${sc.name} (SWR ${fmtPct(sc.swr*100)})</div>
+          <div style="font-weight:800;color:#0f172a">${fmtEUR(fn)}</div>
+        </div>
+        <div style="font-size:12px;color:${gap > 0 ? "#ef4444" : "#059669"};margin-top:2px">
+          ${gap > 0 ? `Faltam ${fmtEUR(gap)}` : "✅ Já atingiste!"}
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  // Partial independence
+  const partialEl = document.getElementById("firePartial");
+  if (partialEl && exp0 > 0) {
+    const coverPct = Math.min(100, passiveAnnual / exp0 * 100);
+    const uncovered = Math.max(0, exp0 - passiveAnnual);
+    partialEl.innerHTML = `
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="font-size:13px">O teu rendimento passivo cobre</span>
+        <span style="font-weight:800;font-size:15px;color:${coverPct>=100?"#059669":"#6366f1"}">${coverPct.toFixed(1)}%</span>
+      </div>
+      <div style="height:10px;background:#e2e8f0;border-radius:5px;overflow:hidden;margin-bottom:10px">
+        <div style="height:10px;background:linear-gradient(90deg,#10b981,#6366f1);border-radius:5px;width:${coverPct}%;transition:width .6s"></div>
+      </div>
+      <div style="font-size:13px;color:#475569">
+        ${coverPct >= 100
+          ? "🎉 O teu rendimento passivo já cobre todas as despesas — estás financeiramente independente!"
+          : `Faltam <b>${fmtEUR(uncovered)}/ano</b> (${fmtEUR(uncovered/12)}/mês) para cobertura total.`}
+      </div>
+      <div style="margin-top:10px;font-size:12px;color:#94a3b8">
+        💡 Reduzir despesas em ${fmtEUR(uncovered/12)}/mês <b>ou</b> aumentar rendimento passivo ao mesmo valor = independência financeira.
+      </div>`;
+  }
+
+  // Chart
+  const canvas = $("fireChart");
+  if (!canvas || !canvas.getContext) return;
   const base = scenarios[1];
   let cap = cap0, exp = exp0;
-  const labels = [], capS = [], fireS = [], passS = [];
+  const labels = [], capS = [], fireS = [], passS = [], cap2 = [], cap3 = [];
+  let cap_cons = cap0, exp_cons = exp0;
+  let cap_opt  = cap0, exp_opt  = exp0;
   for (let t = 0; t <= H; t++) {
-    labels.push("+" + t + "a");
-    capS.push(cap); fireS.push(base.swr > 0 ? exp / base.swr : null); passS.push(passY * cap * 12);
-    cap = cap * (1 + base.r) + saveM * 12; exp = exp * (1 + base.inf);
+    labels.push(t === 0 ? "Hoje" : "+" + t + "a");
+    capS.push(Math.round(cap));
+    fireS.push(base.swr > 0 ? Math.round(exp / base.swr) : null);
+    passS.push(Math.round(yieldRate * cap * 1));
+    cap2.push(Math.round(cap_cons));
+    cap3.push(Math.round(cap_opt));
+    if (t < H) {
+      cap      = cap      * (1 + base.r)         + saveM * 12; exp      = exp      * (1 + base.inf);
+      cap_cons = cap_cons * (1 + scenarios[0].r)  + saveM * 12; exp_cons = exp_cons * (1 + scenarios[0].inf);
+      cap_opt  = cap_opt  * (1 + scenarios[2].r)  + saveM * 12; exp_opt  = exp_opt  * (1 + scenarios[2].inf);
+    }
   }
 
   const ctx = canvas.getContext("2d");
@@ -3363,14 +3783,18 @@ function renderFire() {
     data: {
       labels,
       datasets: [
-        { label: "Capital", data: capS, tension: .3, borderColor: "#5b5ce6", pointRadius: 0, borderWidth: 2 },
-        { label: "FIRE número", data: fireS, tension: .3, borderDash: [6, 4], borderColor: "#ef4444", pointRadius: 0 },
-        { label: "Rendimento passivo/ano", data: passS, tension: .3, borderColor: "#10b981", pointRadius: 0 }
+        { label: "Capital (Base)", data: capS, tension:.3, borderColor:"#6366f1", backgroundColor:"rgba(99,102,241,.08)", fill:true, pointRadius:0, borderWidth:2 },
+        { label: "Capital (Cons.)", data: cap2, tension:.3, borderColor:"#f59e0b", borderDash:[3,3], pointRadius:0, borderWidth:1.5 },
+        { label: "Capital (Opt.)",  data: cap3, tension:.3, borderColor:"#10b981", borderDash:[3,3], pointRadius:0, borderWidth:1.5 },
+        { label: "FIRE número", data: fireS, tension:.3, borderColor:"#ef4444", borderDash:[8,4], pointRadius:0, borderWidth:2 },
       ]
     },
     options: {
-      plugins: { legend: { labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } } },
-      scales: { y: { ticks: { callback: v => fmtEUR(v) } } }
+      plugins: {
+        legend: { labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } }
+      },
+      scales: { y: { ticks: { callback: v => v >= 1e6 ? (v/1e6).toFixed(1)+"M€" : fmtEUR(v), font:{size:10} } } }
     }
   });
 }
@@ -4848,8 +5272,10 @@ function wire() {
   // Dividendos — modo selector
   const segDivS = document.getElementById("segDivSummary");
   const segDivD = document.getElementById("segDivDetail");
+  const segDivC = document.getElementById("segDivCalendar");
   if (segDivS) segDivS.addEventListener("click", () => setDivMode("summary"));
   if (segDivD) segDivD.addEventListener("click", () => setDivMode("detail"));
+  if (segDivC) segDivC.addEventListener("click", () => setDivMode("calendar"));
   const btnSaveDivSummary = document.getElementById("btnSaveDivSummary");
   if (btnSaveDivSummary) btnSaveDivSummary.addEventListener("click", saveDivSummary);
   const btnDeleteDivSummary = document.getElementById("btnDeleteDivSummary");

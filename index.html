@@ -53,6 +53,7 @@
   <!-- DASHBOARD -->
   <section class="view" data-view="dashboard" id="viewDashboard">
 
+    <!-- Hero: Net Worth + variação -->
     <div class="card hero">
       <div class="hero__label">
         Património líquido
@@ -60,6 +61,34 @@
       </div>
       <div class="hero__value" id="kpiNet">0 €</div>
       <div class="hero__sub" id="kpiAP">Ativos 0 € | Passivos 0 €</div>
+      <!-- Variação MoM e YoY -->
+      <div id="kpiChanges" style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap"></div>
+    </div>
+
+    <!-- KPIs secundários: 4 métricas rápidas -->
+    <div class="card" style="padding:12px 14px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div style="background:#f8fafc;border-radius:10px;padding:10px">
+          <div style="font-size:11px;color:#64748b;margin-bottom:2px">Rendimento passivo/mês</div>
+          <div style="font-weight:800;font-size:17px;color:#059669" id="kpiPassiveMonthly2">—</div>
+          <div style="font-size:11px;color:#94a3b8" id="kpiPassiveAnnualSub">0 €/ano</div>
+        </div>
+        <div style="background:#f8fafc;border-radius:10px;padding:10px">
+          <div style="font-size:11px;color:#64748b;margin-bottom:2px">Dividendos YTD</div>
+          <div style="font-weight:800;font-size:17px;color:#6366f1" id="kpiDivYTD2">—</div>
+          <div style="font-size:11px;color:#94a3b8" id="kpiDivCount2"></div>
+        </div>
+        <div style="background:#f8fafc;border-radius:10px;padding:10px">
+          <div style="font-size:11px;color:#64748b;margin-bottom:2px">Yield médio carteira</div>
+          <div style="font-weight:800;font-size:17px;color:#f59e0b" id="kpiYield">—</div>
+          <div style="font-size:11px;color:#94a3b8">rendimento/capital</div>
+        </div>
+        <div style="background:#f8fafc;border-radius:10px;padding:10px">
+          <div style="font-size:11px;color:#64748b;margin-bottom:2px">Autonomia passiva</div>
+          <div style="font-weight:800;font-size:17px;color:#8b5cf6" id="kpiAutonomy">—</div>
+          <div style="font-size:11px;color:#94a3b8">rend. passivo / despesas</div>
+        </div>
+      </div>
     </div>
 
     <!-- Objetivo de rendimento passivo -->
@@ -91,6 +120,7 @@
       </div>
     </div>
 
+    <!-- Botões de acção + KPIs originais (hidden, kept for JS compat) -->
     <div class="card">
       <div class="pillRow">
         <div class="pill">
@@ -111,6 +141,7 @@
       </div>
     </div>
 
+    <!-- Top ativos -->
     <div class="card">
       <div class="card__head">
         <div><div class="card__title">Top ativos</div><div class="card__muted">Por valor · clica para editar</div></div>
@@ -122,21 +153,25 @@
       </div>
     </div>
 
+    <!-- Distribuição -->
     <div class="card">
       <div class="card__head">
         <div><div class="card__title">Distribuição</div><div class="card__muted">Por classe (Ativos)</div></div>
         <button class="link" id="btnDistDetail">Detalhe</button>
       </div>
-      <div class="chartWrap"><canvas id="distChart" height="240"></canvas></div>
+      <div class="chartWrap"><canvas id="distChart" height="220"></canvas></div>
     </div>
 
+    <!-- Tendência melhorada -->
     <div class="card">
       <div class="card__head">
-        <div><div class="card__title">Tendência</div><div class="card__muted">Histórico de snapshots</div></div>
+        <div><div class="card__title">Evolução do Património</div><div class="card__muted" id="trendSubtitle">Histórico de snapshots</div></div>
         <button class="link" id="btnTrendClear">Limpar</button>
       </div>
       <div class="chartWrap"><canvas id="trendChart" height="240"></canvas></div>
-      <div class="hint" id="historyHint" style="display:none">Sem histórico. Usa "Registar mês".</div>
+      <div class="hint" id="historyHint" style="display:none">Sem histórico. Usa "📸 Registar mês".</div>
+      <!-- Mini tabela de snapshots recentes -->
+      <div id="snapshotTable" style="margin-top:10px"></div>
     </div>
 
   </section>
@@ -307,6 +342,7 @@
     <div class="seg">
       <button class="seg__btn seg__btn--active" id="segDivSummary">📊 Resumo anual</button>
       <button class="seg__btn" id="segDivDetail">📋 Por dividendo</button>
+      <button class="seg__btn" id="segDivCalendar">📅 Calendário</button>
     </div>
 
     <!-- MODO 1: Resumo anual (dados da corretora) -->
@@ -497,6 +533,18 @@
     </div>
 
     <!-- MODO 2: Por dividendo individual -->
+    <div id="paneDivCalendar" style="display:none">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <span style="font-size:22px">📅</span>
+          <div>
+            <div class="card__title" style="margin-bottom:0">Calendário de Dividendos</div>
+            <div class="card__muted" style="font-size:12px">Próximos 12 meses · estimativas baseadas em yields históricos</div>
+          </div>
+        </div>
+        <div id="divCalendarContent"></div>
+      </div>
+    </div>
     <div id="paneDivDetail" style="display:none">
       <div class="card">
         <div class="card__head">
@@ -626,32 +674,94 @@
       <div class="card"><div id="compareTable" class="list"></div></div>
     </div>
     <div class="analysisPanelTab" id="analysisPanelTab_fire" style="display:none">
+      <!-- Inputs -->
       <div class="card">
-        <div class="card__title" style="margin-bottom:10px">Projeção FIRE <button class="info-btn" onclick="openTip('fire')" title="O que é FIRE?">ℹ️</button></div>
-        <div class="card__muted">3 cenários · Capital ≥ Despesas/SWR e Rendimento passivo ≥ Despesas</div>
-        <div class="row row--wrap" style="margin-top:12px;gap:10px">
-          <div><label class="lbl" style="margin:0 0 4px">Janela cashflow</label>
-            <select class="input" id="fireWindow" style="max-width:160px">
+        <div class="card__title" style="margin-bottom:4px">Projeção FIRE <button class="info-btn" onclick="openTip('fire')" title="O que é FIRE?">ℹ️</button></div>
+        <div class="card__muted" style="margin-bottom:14px">Financial Independence, Retire Early · 3 cenários</div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+          <div>
+            <label class="lbl">Janela cashflow</label>
+            <select class="input" id="fireWindow">
               <option value="3">3 meses</option><option value="6" selected>6 meses</option><option value="12">12 meses</option>
             </select>
           </div>
-          <div><label class="lbl" style="margin:0 0 4px">Horizonte</label>
-            <select class="input" id="fireHorizon" style="max-width:160px">
+          <div>
+            <label class="lbl">Horizonte</label>
+            <select class="input" id="fireHorizon">
               <option value="20">20 anos</option><option value="30" selected>30 anos</option><option value="40">40 anos</option>
             </select>
           </div>
-          <div style="display:flex;align-items:flex-end"><button class="btn btn--primary" id="btnRecalcFire">Recalcular</button></div>
+          <div>
+            <label class="lbl">Despesas mensais (€) <span style="font-size:11px;color:#94a3b8">auto</span></label>
+            <input class="input" id="fireExpInput" inputmode="decimal" placeholder="automático do Balanço">
+          </div>
+          <div>
+            <label class="lbl">Poupança mensal (€) <span style="font-size:11px;color:#94a3b8">auto</span></label>
+            <input class="input" id="fireSaveInput" inputmode="decimal" placeholder="automático do Balanço">
+          </div>
         </div>
-        <div class="kpiRow" style="margin-top:12px">
+        <button class="btn btn--primary" id="btnRecalcFire" style="width:100%">🔄 Calcular</button>
+      </div>
+
+      <!-- Estado actual -->
+      <div class="card" id="fireStatusCard">
+        <div class="card__title" style="margin-bottom:12px">Estado actual</div>
+        <div class="kpiRow" style="margin-bottom:8px">
           <div class="kpi"><div class="kpi__k">Capital investível</div><div class="kpi__v" id="fireCap">—</div></div>
-          <div class="kpi kpi--out"><div class="kpi__k">Despesas anuais</div><div class="kpi__v" id="fireExp">—</div></div>
-          <div class="kpi kpi--in"><div class="kpi__k">Rendimento passivo</div><div class="kpi__v" id="firePass">—</div></div>
+          <div class="kpi kpi--out"><div class="kpi__k">Despesas/ano</div><div class="kpi__v" id="fireExp">—</div></div>
+        </div>
+        <div class="kpiRow" style="margin-bottom:12px">
+          <div class="kpi kpi--in"><div class="kpi__k">Rendimento passivo/ano</div><div class="kpi__v" id="firePass">—</div></div>
+          <div class="kpi"><div class="kpi__k">Poupança/mês</div><div class="kpi__v" id="fireSave">—</div></div>
+        </div>
+        <!-- Progress bars -->
+        <div style="margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+            <span style="font-weight:600">Capital vs FIRE número</span>
+            <span id="fireCapPct" style="color:#6366f1;font-weight:700">—</span>
+          </div>
+          <div style="height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden">
+            <div id="fireCapBar" style="height:8px;background:#6366f1;border-radius:4px;width:0%;transition:width .6s"></div>
+          </div>
+        </div>
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+            <span style="font-weight:600">Rendimento passivo vs Despesas</span>
+            <span id="firePassPct" style="color:#10b981;font-weight:700">—</span>
+          </div>
+          <div style="height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden">
+            <div id="firePassBar" style="height:8px;background:#10b981;border-radius:4px;width:0%;transition:width .6s"></div>
+          </div>
         </div>
       </div>
+
+      <!-- Cenários -->
       <div class="card">
-        <div class="card__title" style="margin-bottom:10px">Resultados</div>
+        <div class="card__title" style="margin-bottom:10px">3 Cenários</div>
         <div id="fireResults" class="list"></div>
-        <div class="chartWrap" style="margin-top:12px"><canvas id="fireChart" height="240"></canvas></div>
+      </div>
+
+      <!-- Gráfico -->
+      <div class="card">
+        <div class="card__title" style="margin-bottom:4px">Evolução projectada</div>
+        <div class="card__muted" style="margin-bottom:10px;font-size:12px">Cenário base · linha vermelha = FIRE número</div>
+        <div class="chartWrap"><canvas id="fireChart" height="260"></canvas></div>
+      </div>
+
+      <!-- Números FIRE por cenário -->
+      <div class="card">
+        <div class="card__title" style="margin-bottom:10px">FIRE números necessários</div>
+        <div id="fireNumbers" class="list"></div>
+        <div class="note" style="margin-top:10px;font-size:12px">
+          💡 <b>FIRE número</b> = Despesas anuais ÷ SWR. Com SWR 4%: precisas de 25× as tuas despesas anuais investido.
+        </div>
+      </div>
+
+      <!-- Independência parcial -->
+      <div class="card" id="firePartialCard">
+        <div class="card__title" style="margin-bottom:10px">🌤️ Independência parcial actual</div>
+        <div id="firePartial"></div>
       </div>
     </div>
   </section>
