@@ -2267,101 +2267,409 @@ function renderDivChart(divs) {
 }
 
 
+const TICKER_DB = {
+  "2B76.DE": {s:"Tecnologia",r:"Europa"},
+  "2B7D.DE": {s:"ETF",r:"Europa"},
+  "3SUE.DE": {s:"ETF",r:"Europa"},
+  "4BRZ.DE": {s:"ETF",r:"Europa"},
+  "AAKI.DE": {s:"Tecnologia",r:"Europa"},
+  "AAPL": {s:"Tecnologia",r:"EUA"},
+  "ABEV": {s:"Consumo Básico",r:"Europa"},
+  "ABR": {s:"Financeiros",r:"EUA"},
+  "ABT": {s:"Saúde",r:"EUA"},
+  "ACHR": {s:"Tecnologia",r:"EUA"},
+  "ADC": {s:"Imobiliário",r:"EUA"},
+  "ADM": {s:"Mat. Básicos",r:"EUA"},
+  "AES": {s:"Energia",r:"EUA"},
+  "AFL": {s:"Financeiros",r:"EUA"},
+  "AGN.NL": {s:"Financeiros",r:"Europa"},
+  "AGNC": {s:"Financeiros",r:"EUA"},
+  "AGRO": {s:"Industriais",r:"EUA"},
+  "AI": {s:"Tecnologia",r:"EUA"},
+  "AI.FR": {s:"Tecnologia",r:"Europa"},
+  "AIR": {s:"Industriais",r:"EUA"},
+  "AIR.FR": {s:"Industriais",r:"Europa"},
+  "AKZOF": {s:"Mat. Básicos",r:"EUA"},
+  "ALAB": {s:"Tecnologia",r:"EUA"},
+  "ALGIL.FR": {s:"Financeiros",r:"Europa"},
+  "ALGO.CC": {s:"Cripto",r:"Cripto"},
+  "ALUM.IT": {s:"Mat. Básicos",r:"Europa"},
+  "AMAT": {s:"Tecnologia",r:"EUA"},
+  "AMD": {s:"Tecnologia",r:"EUA"},
+  "AMKR": {s:"Tecnologia",r:"EUA"},
+  "AMZN": {s:"Tecnologia",r:"EUA"},
+  "ANAV.DE": {s:"ETF",r:"Europa"},
+  "APT.CC": {s:"Cripto",r:"Cripto"},
+  "AR.CC": {s:"Cripto",r:"Cripto"},
+  "ARB.CC": {s:"Cripto",r:"Cripto"},
+  "ARE": {s:"Imobiliário",r:"EUA"},
+  "ARM": {s:"Tecnologia",r:"EUA"},
+  "ARRY": {s:"Tecnologia",r:"EUA"},
+  "ATKR": {s:"Industriais",r:"EUA"},
+  "ATOM.CC": {s:"Cripto",r:"Cripto"},
+  "BA.GB": {s:"Industriais",r:"Europa"},
+  "BABA": {s:"Consumo Cíclico",r:"Ásia-Pac."},
+  "BAC": {s:"Financeiros",r:"EUA"},
+  "BAM": {s:"Financeiros",r:"EUA"},
+  "BAS.DE": {s:"Mat. Básicos",r:"Europa"},
+  "BAYN.DE": {s:"Saúde",r:"Europa"},
+  "BBAI": {s:"Tecnologia",r:"EUA"},
+  "BCP.PT": {s:"Financeiros",r:"Europa"},
+  "BEN": {s:"Financeiros",r:"EUA"},
+  "BHP": {s:"Mat. Básicos",r:"EUA"},
+  "BKH": {s:"Utilidades",r:"EUA"},
+  "BMY": {s:"Saúde",r:"EUA"},
+  "BORR": {s:"Energia",r:"EUA"},
+  "BOTZ.GB": {s:"Tecnologia",r:"Europa"},
+  "BP.GB": {s:"Energia",r:"Europa"},
+  "BSX": {s:"Saúde",r:"EUA"},
+  "BTC.CC": {s:"Cripto",r:"Cripto"},
+  "BULL": {s:"Industriais",r:"EUA"},
+  "CB": {s:"Financeiros",r:"EUA"},
+  "CE": {s:"Mat. Básicos",r:"EUA"},
+  "CEBS.DE": {s:"ETF",r:"Europa"},
+  "CHRG.GB": {s:"Energia",r:"Europa"},
+  "CL": {s:"Consumo Básico",r:"EUA"},
+  "CLNX.ES": {s:"Comunicações",r:"Europa"},
+  "CLSK": {s:"Tecnologia",r:"EUA"},
+  "CMCSA": {s:"Comunicações",r:"EUA"},
+  "COPA.GB": {s:"ETF",r:"Europa"},
+  "CRML": {s:"Tecnologia",r:"EUA"},
+  "CRSP": {s:"Tecnologia",r:"EUA"},
+  "CRWV": {s:"Tecnologia",r:"EUA"},
+  "CSAI": {s:"Tecnologia",r:"EUA"},
+  "CSCO": {s:"Tecnologia",r:"EUA"},
+  "CSG.NL": {s:"Financeiros",r:"Europa"},
+  "CVS": {s:"Saúde",r:"EUA"},
+  "CVV": {s:"Energia",r:"EUA"},
+  "CVX": {s:"Energia",r:"EUA"},
+  "DD": {s:"Industriais",r:"EUA"},
+  "DHL.DE": {s:"Industriais",r:"Europa"},
+  "DIS": {s:"Consumo Cíclico",r:"EUA"},
+  "DISH": {s:"Comunicações",r:"EUA"},
+  "DNN": {s:"Energia",r:"EUA"},
+  "DOT.CC": {s:"Cripto",r:"Cripto"},
+  "DPRO": {s:"Tecnologia",r:"EUA"},
+  "DSY.FR": {s:"Tecnologia",r:"Europa"},
+  "DVN": {s:"Energia",r:"EUA"},
+  "EBRO.ES": {s:"Consumo Básico",r:"Europa"},
+  "EDP.PT": {s:"Energia",r:"Europa"},
+  "EDV.GB": {s:"Energia",r:"Europa"},
+  "EGL.PT": {s:"Comunicações",r:"Europa"},
+  "EGLN.GB": {s:"Energia",r:"Europa"},
+  "ELE.ES": {s:"Comunicações",r:"Europa"},
+  "EMR": {s:"Industriais",r:"EUA"},
+  "ENS": {s:"Industriais",r:"EUA"},
+  "EOG": {s:"Energia",r:"EUA"},
+  "EOSE": {s:"Energia",r:"EUA"},
+  "EQNR": {s:"Energia",r:"Europa"},
+  "EQS.FR": {s:"Financeiros",r:"Europa"},
+  "ES": {s:"Utilidades",r:"EUA"},
+  "ETH.CC": {s:"Cripto",r:"Cripto"},
+  "EVTL": {s:"Tecnologia",r:"EUA"},
+  "FAST": {s:"Industriais",r:"EUA"},
+  "FDX": {s:"Industriais",r:"EUA"},
+  "FET.CC": {s:"Cripto",r:"Cripto"},
+  "FIL.CC": {s:"Cripto",r:"Cripto"},
+  "FMC": {s:"Mat. Básicos",r:"EUA"},
+  "FRU.CA": {s:"Energia",r:"EUA"},
+  "FTNT": {s:"Tecnologia",r:"EUA"},
+  "FWIA.DE": {s:"ETF",r:"Europa"},
+  "G2XJ.DE": {s:"ETF",r:"Europa"},
+  "GAIN": {s:"Financeiros",r:"EUA"},
+  "GALP.PT": {s:"Energia",r:"Europa"},
+  "GCLX.GB": {s:"Energia",r:"Europa"},
+  "GCTS": {s:"Tecnologia",r:"EUA"},
+  "GD": {s:"Industriais",r:"EUA"},
+  "GFC.FR": {s:"Financeiros",r:"Europa"},
+  "GFS": {s:"Tecnologia",r:"EUA"},
+  "GILD": {s:"Saúde",r:"EUA"},
+  "GIS": {s:"Consumo Básico",r:"EUA"},
+  "GOOD": {s:"Imobiliário",r:"EUA"},
+  "GOOG": {s:"Tecnologia",r:"EUA"},
+  "GSK.GB": {s:"Saúde",r:"Europa"},
+  "GTY": {s:"Imobiliário",r:"EUA"},
+  "GWW": {s:"Industriais",r:"EUA"},
+  "HAL": {s:"Energia",r:"EUA"},
+  "HBAR.CC": {s:"Cripto",r:"Cripto"},
+  "HD": {s:"Consumo Cíclico",r:"EUA"},
+  "HIMS": {s:"Consumo Cíclico",r:"EUA"},
+  "HIVE.CC": {s:"Cripto",r:"Cripto"},
+  "HOLO": {s:"Tecnologia",r:"EUA"},
+  "HRL": {s:"Consumo Básico",r:"EUA"},
+  "HTOO": {s:"Tecnologia",r:"EUA"},
+  "HTWO.GB": {s:"Energia",r:"Europa"},
+  "IB1T.DE": {s:"ETF",r:"Europa"},
+  "IBM": {s:"Tecnologia",r:"EUA"},
+  "IFX.DE": {s:"Tecnologia",r:"Europa"},
+  "INDI": {s:"Tecnologia",r:"EUA"},
+  "INJ.CC": {s:"Cripto",r:"Cripto"},
+  "INTC": {s:"Tecnologia",r:"EUA"},
+  "IONQ": {s:"Tecnologia",r:"EUA"},
+  "IP": {s:"Industriais",r:"EUA"},
+  "IPDM.GB": {s:"Imobiliário",r:"Europa"},
+  "IPLT.GB": {s:"ETF",r:"Europa"},
+  "ISAG.GB": {s:"ETF",r:"Europa"},
+  "ISLN.GB": {s:"Imobiliário",r:"Europa"},
+  "ITW": {s:"Industriais",r:"EUA"},
+  "KHC": {s:"Consumo Básico",r:"EUA"},
+  "KMB": {s:"Consumo Básico",r:"EUA"},
+  "KO": {s:"Consumo Básico",r:"EUA"},
+  "KVUE": {s:"Consumo Básico",r:"EUA"},
+  "KWEB.GB": {s:"ETF",r:"Europa"},
+  "LAES": {s:"Tecnologia",r:"EUA"},
+  "LAND": {s:"Imobiliário",r:"EUA"},
+  "LFWD": {s:"Tecnologia",r:"EUA"},
+  "LGEN.GB": {s:"Imobiliário",r:"Europa"},
+  "LINE": {s:"Imobiliário",r:"EUA"},
+  "LINK.CC": {s:"Cripto",r:"Cripto"},
+  "LMT": {s:"Industriais",r:"EUA"},
+  "LND": {s:"Imobiliário",r:"EUA"},
+  "LPTH": {s:"Tecnologia",r:"EUA"},
+  "LRC.CC": {s:"Cripto",r:"Cripto"},
+  "LTC": {s:"Imobiliário",r:"EUA"},
+  "LW": {s:"Consumo Básico",r:"EUA"},
+  "LYB": {s:"Mat. Básicos",r:"EUA"},
+  "MAIN": {s:"Financeiros",r:"EUA"},
+  "MARA": {s:"Tecnologia",r:"EUA"},
+  "MAS": {s:"Industriais",r:"EUA"},
+  "MBG.DE": {s:"Consumo Cíclico",r:"Europa"},
+  "MBLY": {s:"Tecnologia",r:"EUA"},
+  "MCD": {s:"Consumo Cíclico",r:"EUA"},
+  "MCHP": {s:"Tecnologia",r:"EUA"},
+  "MDLZ": {s:"Consumo Básico",r:"EUA"},
+  "MDT": {s:"Saúde",r:"EUA"},
+  "MET": {s:"Financeiros",r:"EUA"},
+  "MGAM.GB": {s:"ETF",r:"Europa"},
+  "MLGO": {s:"Tecnologia",r:"EUA"},
+  "MMM": {s:"Industriais",r:"EUA"},
+  "MPT": {s:"Imobiliário",r:"EUA"},
+  "MRK": {s:"Saúde",r:"EUA"},
+  "MRVL": {s:"Tecnologia",r:"EUA"},
+  "MSFT": {s:"Tecnologia",r:"EUA"},
+  "NBIS": {s:"Tecnologia",r:"EUA"},
+  "NEAR.CC": {s:"Cripto",r:"Cripto"},
+  "NEE": {s:"Utilidades",r:"EUA"},
+  "NESN.CH": {s:"Saúde",r:"Europa"},
+  "NET": {s:"Tecnologia",r:"EUA"},
+  "NFE": {s:"Energia",r:"EUA"},
+  "NFG": {s:"Energia",r:"EUA"},
+  "NGAS.GB": {s:"Energia",r:"Europa"},
+  "NKE": {s:"Consumo Cíclico",r:"EUA"},
+  "NNE": {s:"Energia",r:"EUA"},
+  "NONOF": {s:"Saúde",r:"Europa"},
+  "NOVO-B.DK": {s:"Saúde",r:"Europa"},
+  "NOW": {s:"Tecnologia",r:"EUA"},
+  "NUE": {s:"Mat. Básicos",r:"EUA"},
+  "NVDA": {s:"Tecnologia",r:"EUA"},
+  "NXE": {s:"Energia",r:"EUA"},
+  "O": {s:"Imobiliário",r:"EUA"},
+  "OC": {s:"Industriais",r:"EUA"},
+  "OMV.DE": {s:"Industriais",r:"Europa"},
+  "OP.CC": {s:"Cripto",r:"Cripto"},
+  "ORCL": {s:"Tecnologia",r:"EUA"},
+  "OSCR": {s:"Saúde",r:"EUA"},
+  "OTIS": {s:"Industriais",r:"EUA"},
+  "OUST": {s:"Tecnologia",r:"EUA"},
+  "PANW": {s:"Tecnologia",r:"EUA"},
+  "PATH": {s:"Tecnologia",r:"EUA"},
+  "PDYN": {s:"Tecnologia",r:"EUA"},
+  "PEP": {s:"Consumo Básico",r:"EUA"},
+  "PFE": {s:"Saúde",r:"EUA"},
+  "PG": {s:"Consumo Básico",r:"EUA"},
+  "PGNY": {s:"Saúde",r:"EUA"},
+  "PK": {s:"Imobiliário",r:"EUA"},
+  "PKN.PL": {s:"Energia",r:"Europa"},
+  "PLD": {s:"Imobiliário",r:"EUA"},
+  "PNR": {s:"Industriais",r:"EUA"},
+  "POET": {s:"Tecnologia",r:"EUA"},
+  "POL.CC": {s:"Cripto",r:"Cripto"},
+  "PPG": {s:"Mat. Básicos",r:"EUA"},
+  "PROP": {s:"Imobiliário",r:"EUA"},
+  "PSEC": {s:"Financeiros",r:"EUA"},
+  "PSKY": {s:"Tecnologia",r:"EUA"},
+  "PYPL": {s:"Consumo Cíclico",r:"EUA"},
+  "PYTH.CC": {s:"Cripto",r:"Cripto"},
+  "QBTS": {s:"Tecnologia",r:"EUA"},
+  "QCOM": {s:"Tecnologia",r:"EUA"},
+  "QDV5.DE": {s:"ETF",r:"Europa"},
+  "QDVE.DE": {s:"ETF",r:"Europa"},
+  "QNT.CC": {s:"Cripto",r:"Cripto"},
+  "QSR": {s:"Consumo Cíclico",r:"EUA"},
+  "QUBT": {s:"Tecnologia",r:"EUA"},
+  "RCAT": {s:"Tecnologia",r:"EUA"},
+  "RDW": {s:"Tecnologia",r:"EUA"},
+  "RENDER.CC": {s:"Cripto",r:"Cripto"},
+  "RENE.PT": {s:"Energia",r:"Europa"},
+  "REXR": {s:"Imobiliário",r:"EUA"},
+  "RGTI": {s:"Tecnologia",r:"EUA"},
+  "RIO": {s:"Mat. Básicos",r:"EUA"},
+  "RIO1.DE": {s:"Mat. Básicos",r:"Europa"},
+  "RIOT": {s:"Tecnologia",r:"EUA"},
+  "ROG.CH": {s:"Saúde",r:"Europa"},
+  "ROP": {s:"Financeiros",r:"EUA"},
+  "RR.GB": {s:"Industriais",r:"Europa"},
+  "RY": {s:"Financeiros",r:"EUA"},
+  "S": {s:"Industriais",r:"EUA"},
+  "SAP.DE": {s:"Tecnologia",r:"Europa"},
+  "SATL": {s:"Tecnologia",r:"EUA"},
+  "SBUX": {s:"Consumo Cíclico",r:"EUA"},
+  "SEI.CC": {s:"Cripto",r:"Cripto"},
+  "SES": {s:"Tecnologia",r:"EUA"},
+  "SHA0.DE": {s:"ETF",r:"Europa"},
+  "SIDU": {s:"Tecnologia",r:"EUA"},
+  "SLB": {s:"Energia",r:"EUA"},
+  "SMR": {s:"Energia",r:"EUA"},
+  "SNOW": {s:"Tecnologia",r:"EUA"},
+  "SOL.CC": {s:"Cripto",r:"Cripto"},
+  "SON.PT": {s:"Comunicações",r:"Europa"},
+  "SOUN": {s:"Tecnologia",r:"EUA"},
+  "SPGI": {s:"Financeiros",r:"EUA"},
+  "SPIR": {s:"Tecnologia",r:"EUA"},
+  "SPY4.DE": {s:"ETF",r:"Europa"},
+  "SPYD.DE": {s:"ETF",r:"Europa"},
+  "SPYL.DE": {s:"ETF",r:"Europa"},
+  "STAG": {s:"Imobiliário",r:"EUA"},
+  "STLA": {s:"Consumo Cíclico",r:"Europa"},
+  "STX.CC": {s:"Cripto",r:"Cripto"},
+  "SUI.CC": {s:"Cripto",r:"Cripto"},
+  "SWKS": {s:"Tecnologia",r:"EUA"},
+  "SYY": {s:"Consumo Básico",r:"EUA"},
+  "T": {s:"Comunicações",r:"EUA"},
+  "TAO.CC": {s:"Cripto",r:"Cripto"},
+  "TD": {s:"Financeiros",r:"EUA"},
+  "TGT": {s:"Consumo Básico",r:"EUA"},
+  "TRAC.CC": {s:"Cripto",r:"Cripto"},
+  "TROW": {s:"Financeiros",r:"EUA"},
+  "TSLA": {s:"Tecnologia",r:"EUA"},
+  "TSSI": {s:"Tecnologia",r:"EUA"},
+  "TTE.FR": {s:"Energia",r:"Europa"},
+  "UAVS": {s:"Tecnologia",r:"EUA"},
+  "UEC": {s:"Energia",r:"EUA"},
+  "UMAC": {s:"Tecnologia",r:"EUA"},
+  "UNA.NL": {s:"Consumo Básico",r:"Europa"},
+  "URNU.DE": {s:"ETF",r:"Europa"},
+  "UROY": {s:"Energia",r:"EUA"},
+  "USAR": {s:"ETF",r:"Europa"},
+  "UUUU": {s:"Energia",r:"EUA"},
+  "V60A.DE": {s:"ETF",r:"Europa"},
+  "VETH.DE": {s:"ETF",r:"Europa"},
+  "VFC": {s:"Consumo Cíclico",r:"EUA"},
+  "VGWD.DE": {s:"ETF",r:"Europa"},
+  "VIB3.DE": {s:"Financeiros",r:"Europa"},
+  "VICI": {s:"Imobiliário",r:"EUA"},
+  "VIE.FR": {s:"Energia",r:"Europa"},
+  "VOW.DE": {s:"Consumo Cíclico",r:"Europa"},
+  "VOW3.DE": {s:"Consumo Cíclico",r:"Europa"},
+  "VRLA.FR": {s:"Industriais",r:"Europa"},
+  "VUAA.DE": {s:"ETF",r:"Europa"},
+  "VUSA.DE": {s:"ETF",r:"Europa"},
+  "VVMX.DE": {s:"ETF",r:"Europa"},
+  "VVSM.DE": {s:"ETF",r:"Europa"},
+  "VWCE.DE": {s:"ETF",r:"Europa"},
+  "VZ": {s:"Comunicações",r:"EUA"},
+  "WBD": {s:"Comunicações",r:"EUA"},
+  "WCP.CA": {s:"Energia",r:"EUA"},
+  "WEN": {s:"Consumo Básico",r:"EUA"},
+  "WHR": {s:"Consumo Cíclico",r:"EUA"},
+  "WTAI.GB": {s:"Tecnologia",r:"Europa"},
+  "WULF": {s:"Tecnologia",r:"EUA"},
+  "XDC.CC": {s:"Cripto",r:"Cripto"},
+  "XDWH.DE": {s:"ETF",r:"Europa"},
+  "XMLD.DE": {s:"ETF",r:"Europa"},
+  "XOM": {s:"Energia",r:"EUA"},
+  "XTZ.CC": {s:"Cripto",r:"Cripto"},
+  "XYL": {s:"Industriais",r:"EUA"},
+  "ZPRR.DE": {s:"ETF",r:"Europa"},
+  "ZS": {s:"Tecnologia",r:"EUA"},
+  "ZTS": {s:"Saúde",r:"EUA"},
+};
+
 /* ─── PORTFOLIO ANALYSIS: SECTOR + GEOGRAPHY CHARTS ─────────────────────── */
 
-const SECTOR_PT = {
-  "Technology": "Tecnologia",
-  "Financial Services": "Financeiros",
-  "Healthcare": "Saúde",
-  "Consumer Cyclical": "Consumo Cíclico",
-  "Consumer Defensive": "Consumo Básico",
-  "Industrials": "Industriais",
-  "Basic Materials": "Mat. Básicos",
-  "Energy": "Energia",
-  "Real Estate": "Imobiliário",
-  "Utilities": "Utilidades",
-  "Communication Services": "Comunicações",
-};
+// Sector + region from static DB first, then from meta (⟳ Cotações), then from ticker suffix
+function getTickerMeta(asset) {
+  const name = (asset.name || "").trim().toUpperCase();
+  // 1. Static DB (most comprehensive)
+  const db = TICKER_DB[name];
+  if (db) return { sector: db.s, region: db.r };
+
+  // 2. meta from ⟳ Cotações
+  const meta = asset.meta || {};
+  if (meta.sector || meta.quoteType) {
+    const SECTOR_PT = {
+      "Technology":"Tecnologia","Financial Services":"Financeiros",
+      "Healthcare":"Saúde","Consumer Cyclical":"Consumo Cíclico",
+      "Consumer Defensive":"Consumo Básico","Industrials":"Industriais",
+      "Basic Materials":"Mat. Básicos","Energy":"Energia",
+      "Real Estate":"Imobiliário","Utilities":"Utilidades",
+      "Communication Services":"Comunicações",
+    };
+    const qt = (meta.quoteType||"").toUpperCase();
+    const s = qt === "CRYPTOCURRENCY" ? "Cripto"
+            : qt === "ETF" ? "ETF"
+            : (SECTOR_PT[meta.sector] || meta.sector || "");
+    const cc = (meta.country||"").toLowerCase();
+    const ex = (meta.exchange||"").toUpperCase();
+    const r = qt === "CRYPTOCURRENCY" ? "Cripto"
+            : cc.includes("united states") ? "EUA"
+            : ["united kingdom","germany","france","italy","spain","netherlands",
+               "portugal","belgium","sweden","norway","denmark","finland",
+               "switzerland","austria","ireland","poland"].some(c=>cc.includes(c)) ? "Europa"
+            : ["japan","china","hong kong","south korea","taiwan",
+               "singapore","australia","india"].some(c=>cc.includes(c)) ? "Ásia-Pac."
+            : cc.includes("brazil")||cc.includes("mexico") ? "Lat. América"
+            : cc ? "Outros" : null;
+    if (s || r) return { sector: s, region: r };
+  }
+
+  // 3. Infer from ticker suffix
+  const cls = (asset.class||"").toLowerCase().replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o");
+  if (cls === "cripto") return { sector: "Cripto", region: "Cripto" };
+  const suffixes = [[".LS","Europa"],[".L","Europa"],[".DE","Europa"],[".PA","Europa"],
+    [".MI","Europa"],[".AS","Europa"],[".MC","Europa"],[".BR","Europa"],
+    [".WA","Europa"],[".SW","Europa"],[".ST","Europa"],[".OL","Europa"],
+    [".HE","Europa"],[".CO","Europa"],[".AX","Ásia-Pac."],["-USD","Cripto"]];
+  for (const [sfx, rgn] of suffixes)
+    if (name.endsWith(sfx)) return { sector: name.includes("ETF")||name.length<=6 ? "ETF":"", region: rgn };
+
+  // Plain ticker (no suffix) = US equity
+  return { sector: "", region: "EUA" };
+}
 
 const SECTOR_PALETTE = [
   "#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6",
-  "#06b6d4","#84cc16","#f97316","#ec4899","#64748b","#14b8a6","#a855f7"
+  "#06b6d4","#84cc16","#f97316","#ec4899","#64748b","#14b8a6","#a855f7","#f43f5e"
 ];
 const GEO_PALETTE = ["#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#84cc16"];
-
-function assetToRegion(asset) {
-  const meta = asset.meta || {};
-  const qt = (meta.quoteType || "").toUpperCase();
-  if (qt === "CRYPTOCURRENCY") return "Cripto";
-  const cc = (meta.country || "").toLowerCase();
-  const ex = (meta.exchange || "").toUpperCase();
-  // By country
-  if (cc.includes("united states")) return "EUA";
-  if (["united kingdom","germany","france","italy","spain","netherlands",
-       "portugal","belgium","sweden","norway","denmark","finland",
-       "switzerland","austria","ireland","poland","greece"].some(c => cc.includes(c))) return "Europa";
-  if (["japan","china","hong kong","south korea","taiwan",
-       "singapore","australia","india","new zealand"].some(c => cc.includes(c))) return "Ásia-Pac.";
-  if (["brazil","mexico","argentina","chile","colombia"].some(c => cc.includes(c))) return "Lat. América";
-  if (cc.includes("canada")) return "EUA"; // N. America
-  if (cc) return "Outros";
-  // By exchange
-  if (["NMS","NYQ","NGM","PCX","ASE","BATS","NCM"].some(e => ex === e || ex.startsWith(e))) return "EUA";
-  if (["LSE","IOB"].includes(ex)) return "Europa";
-  if (["GER","XETRA","EPA","EBS","AMS","MCE","BIT","WSE"].some(e => ex === e)) return "Europa";
-  if (["TYO","HKG","SHG","SES","ASX"].some(e => ex === e)) return "Ásia-Pac.";
-  // By ticker suffix fallback
-  const name = (asset.name || "").toUpperCase();
-  if ([".L",".LS",".DE",".PA",".MI",".AS",".MC",".BR",".WA",".SW",".ST",".OL",".HE",".CO"].some(s => name.endsWith(s))) return "Europa";
-  if (name.endsWith(".AX") || name.endsWith(".T")) return "Ásia-Pac.";
-  if (name.endsWith("-USD") || name.endsWith(".CC")) return "Cripto";
-  return "EUA"; // plain tickers default to US
-}
-
-function assetToSector(asset) {
-  const meta = asset.meta || {};
-  const qt = (meta.quoteType || "").toUpperCase();
-  const cls = (asset.class || "").toLowerCase().replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o");
-  if (cls === "cripto" || qt === "CRYPTOCURRENCY") return "Cripto";
-  if (qt === "ETF" || qt === "MUTUALFUND") return "ETF / Fundo";
-  if (meta.sector) return SECTOR_PT[meta.sector] || meta.sector;
-  return null; // no data yet
-}
 
 let sectorChartInst = null, geoChartInst = null;
 
 function makeLegendRow(label, value, total, color) {
   const pct = total > 0 ? (value / total * 100) : 0;
-  return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #f1f5f9">
+  return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f1f5f9">
     <div style="width:12px;height:12px;border-radius:3px;background:${color};flex-shrink:0"></div>
     <div style="flex:1;font-size:13px;font-weight:600">${escapeHtml(label)}</div>
     <div style="font-size:13px;color:#64748b">${fmtEUR(value)}</div>
-    <div style="font-size:12px;font-weight:700;color:#0f172a;min-width:42px;text-align:right">${pct.toFixed(1)}%</div>
+    <div style="font-size:12px;font-weight:700;min-width:44px;text-align:right">${pct.toFixed(1)}%</div>
   </div>`;
 }
 
 function buildDonut(canvasId, labels, values, palette) {
-  const ctx = document.getElementById(canvasId);
-  if (!ctx) return null;
-  return new Chart(ctx.getContext("2d"), {
+  const el = document.getElementById(canvasId);
+  if (!el) return null;
+  return new Chart(el.getContext("2d"), {
     type: "doughnut",
-    data: {
-      labels,
-      datasets: [{ data: values, backgroundColor: palette, borderWidth: 3, borderColor: "#fff", hoverOffset: 8 }]
-    },
+    data: { labels, datasets: [{ data: values, backgroundColor: palette,
+              borderWidth: 3, borderColor: "#fff", hoverOffset: 8 }] },
     options: {
-      cutout: "68%",
-      animation: { animateRotate: true, duration: 600 },
+      cutout: "68%", animation: { animateRotate: true, duration: 600 },
       plugins: {
         legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: c => {
-              const total = c.dataset.data.reduce((a,b) => a+b, 0);
-              return ` ${fmtEUR(c.raw)}  (${(c.raw/total*100).toFixed(1)}%)`;
-            }
-          }
-        }
+        tooltip: { callbacks: { label: c => {
+          const total = c.dataset.data.reduce((a,b)=>a+b,0);
+          return ` ${fmtEUR(c.raw)}  (${(c.raw/total*100).toFixed(1)}%)`;
+        }}}
       }
     }
   });
@@ -2377,20 +2685,18 @@ function renderPortfolioCharts() {
   // ── SECTOR ────────────────────────────────────────────────
   const bySector = {};
   for (const a of equityAssets) {
-    const s = assetToSector(a) || "Sem dados";
-    bySector[s] = (bySector[s] || 0) + parseNum(a.value);
+    const { sector } = getTickerMeta(a);
+    const key = sector || "Outros";
+    bySector[key] = (bySector[key] || 0) + parseNum(a.value);
   }
-  const hasSector = equityAssets.some(a => a.meta && (a.meta.sector || a.meta.quoteType));
 
   const sND = document.getElementById("sectorNoData");
   const sW  = document.getElementById("sectorChartWrap");
   const sT  = document.getElementById("sectorTotal");
-  if (!hasSector) {
-    if (sND) sND.style.display = "";
-    if (sW)  sW.style.display  = "none";
-  } else {
-    if (sND) sND.style.display = "none";
-    if (sW)  sW.style.display  = "";
+  const hasS = equityAssets.length > 0;
+  if (sND) sND.style.display = hasS ? "none" : "";
+  if (sW)  sW.style.display  = hasS ? "" : "none";
+  if (hasS) {
     const sLabels = Object.keys(bySector).sort((a,b) => bySector[b]-bySector[a]);
     const sValues = sLabels.map(k => bySector[k]);
     const sTotal  = sValues.reduce((s,v) => s+v, 0);
@@ -2398,25 +2704,24 @@ function renderPortfolioCharts() {
     if (sectorChartInst) { sectorChartInst.destroy(); sectorChartInst = null; }
     sectorChartInst = buildDonut("sectorChart", sLabels, sValues, SECTOR_PALETTE);
     const sLeg = document.getElementById("sectorLegend");
-    if (sLeg) sLeg.innerHTML = sLabels.map((l,i) => makeLegendRow(l, bySector[l], sTotal, SECTOR_PALETTE[i%SECTOR_PALETTE.length])).join("");
+    if (sLeg) sLeg.innerHTML = sLabels.map((l,i) =>
+      makeLegendRow(l, bySector[l], sTotal, SECTOR_PALETTE[i%SECTOR_PALETTE.length])).join("");
   }
 
   // ── GEOGRAPHY ─────────────────────────────────────────────
   const byRegion = {};
   for (const a of equityAssets) {
-    const r = assetToRegion(a);
-    byRegion[r] = (byRegion[r] || 0) + parseNum(a.value);
+    const { region } = getTickerMeta(a);
+    const key = region || "Outros";
+    byRegion[key] = (byRegion[key] || 0) + parseNum(a.value);
   }
 
   const gND = document.getElementById("geoNoData");
   const gW  = document.getElementById("geoChartWrap");
   const gT  = document.getElementById("geoTotal");
-  if (!equityAssets.length) {
-    if (gND) gND.style.display = "";
-    if (gW)  gW.style.display  = "none";
-  } else {
-    if (gND) gND.style.display = "none";
-    if (gW)  gW.style.display  = "";
+  if (gND) gND.style.display = equityAssets.length ? "none" : "";
+  if (gW)  gW.style.display  = equityAssets.length ? "" : "none";
+  if (equityAssets.length) {
     const gLabels = Object.keys(byRegion).sort((a,b) => byRegion[b]-byRegion[a]);
     const gValues = gLabels.map(k => byRegion[k]);
     const gTotal  = gValues.reduce((s,v) => s+v, 0);
@@ -2424,7 +2729,8 @@ function renderPortfolioCharts() {
     if (geoChartInst) { geoChartInst.destroy(); geoChartInst = null; }
     geoChartInst = buildDonut("geoChart", gLabels, gValues, GEO_PALETTE);
     const gLeg = document.getElementById("geoLegend");
-    if (gLeg) gLeg.innerHTML = gLabels.map((l,i) => makeLegendRow(l, byRegion[l], gTotal, GEO_PALETTE[i%GEO_PALETTE.length])).join("");
+    if (gLeg) gLeg.innerHTML = gLabels.map((l,i) =>
+      makeLegendRow(l, byRegion[l], gTotal, GEO_PALETTE[i%GEO_PALETTE.length])).join("");
   }
 }
 
