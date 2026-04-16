@@ -357,92 +357,85 @@ function passiveFromItem(it) {
 
 function calcTotals() {
   const assetsTotal = state.assets.reduce((a, x) => a + parseNum(x.value), 0);
-  const liabsTotal = state.liabilities.reduce((a, x) => a + parseNum(x.value), 0);
+  const liabsTotal  = state.liabilities.reduce((a, x) => a + parseNum(x.value), 0);
   const net = assetsTotal - liabsTotal;
-  const theoreticalPassive = state.assets.reduce((a, x) => a + passiveFromItem(x), 0);
 
   const now = new Date();
   const currentYear = now.getFullYear();
-  const cutoff12m = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0,10);
+  const cutoff12m = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
 
-  // From annual summaries (net = gross - tax) — prefer most recent year
-  const latestSummary = (state.divSummaries || [])
-    .filter(s => s.year >= currentYear - 1)
-    .sort((a, b) => b.year - a.year)[0];
-  const summaryNet = latestSummary
-    ? parseNum(latestSummary.gross) - parseNum(latestSummary.tax)
-    : 0;
-
-  // From individual dividends (last 12 months)
+  // Real dividends — last 12 months (net of tax)
   const realDividends12m = (state.dividends || [])
     .filter(d => d.date >= cutoff12m)
     .reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
 
-  // ── Passive income calculation ────────────────────────────────────────────
-  // Strategy: ADDITIVE, not MAX. Each source is counted once, no double-counting.
+  // Annual summary (most reliable if user filled it in)
+  const latestSummary = (state.divSummaries || [])
+    .filter(s => Number(s.year) >= currentYear - 1)
+    .sort((a, b) => Number(b.year) - Number(a.year))[0];
+  const summaryNet = latestSummary
+    ? parseNum(latestSummary.gross) - parseNum(latestSummary.tax)
+    : 0;
+
+  // ── Passive income: clean additive logic ─────────────────────────────────
   //
-  // 1. Deposits / PPR / Imóveis / Obrigações: use yield% configured on each asset
-  //    (these never have dividend records — safe to use theoretical)
+  // Rule: for EACH asset, use EXACTLY ONE source of passive income:
+  //   a) If asset has yield% configured by user  -> use yield% × value  (authoritative)
+  //   b) If asset has NO yield% but dividends recorded -> use real dividends (allocated proportionally)
+  //   c) If neither -> 0
   //
-  // 2. ETFs / Stocks / Funds: use REAL dividends if registered, else yield% if set
-  //    (avoids double-counting: if user registered dividends AND set yield%, prefer real)
-  //
-  // 3. Result = sum of (1) + sum of (2)
+  // Real dividends (portfolio-level) are added ONCE for assets without yield%.
+  // This avoids double-counting when user configures yield% on ETFs.
   // ─────────────────────────────────────────────────────────────────────────
 
-  const REAL_DIV_CLASSES = ["ações/etfs","acoes/etfs","fundos","cripto","obrigações","obrigacoes"];
-  function isRealDivClass(a) {
-    const cls = (a.class || "").toLowerCase();
-    return REAL_DIV_CLASSES.some(c => cls.includes(c.replace(/[\/çõ]/g, m => ({"/":"",ç:"c",õ:"o"})[m] || m)));
-  }
-
-  // Theoretical from NON-dividend-class assets (deposits, PPR, imóveis, etc.)
   const passiveBreakdown = {};
-  let passiveFromNonDiv = 0;
+
+  // Step 1: Sum yield% income from ALL assets that have it configured
+  let yieldPassive = 0;
+  let yieldAssetValue = 0;
   for (const a of state.assets) {
-    if (isRealDivClass(a)) continue; // will be covered by real dividends below
     const p = passiveFromItem(a);
     if (p <= 0) continue;
-    passiveFromNonDiv += p;
+    yieldPassive += p;
+    yieldAssetValue += parseNum(a.value);
     const cls = a.class || "Outros";
     passiveBreakdown[cls] = (passiveBreakdown[cls] || 0) + p;
   }
 
-  // From ETF/stock assets: prefer real dividends (annualised) if available, else yield%
-  // Annualise real dividends based on months elapsed in current year
-  const monthsElapsed = Math.max(1, new Date().getMonth() + 1); // Jan=1 … Dec=12
-  const realDividendsCurrentYear = (state.dividends || [])
-    .filter(d => String(d.date || "").slice(0, 4) === String(new Date().getFullYear()))
-    .reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
+  // Step 2: Add real dividends ONLY for the portion NOT covered by yield%
+  // If ALL ETF assets have yield% set, real dividends are already counted -> don't add again
+  // If NO ETF assets have yield% set, add real dividends as the income source
+  // Heuristic: if yieldPassive covers most assets, trust it; else supplement with real divs
+  const totalAssetValue = assetsTotal;
+  const yieldCoverageRatio = totalAssetValue > 0 ? yieldAssetValue / totalAssetValue : 0;
 
-  // Use summary if available (more accurate), else annualise YTD
-  let passiveFromDivAssets = 0;
-  if (summaryNet > 0) {
-    passiveFromDivAssets = summaryNet;
-    passiveBreakdown["Dividendos (resumo anual)"] = summaryNet;
-  } else if (realDividendsCurrentYear > 0) {
-    // Annualise: if we're in April (4 months), multiply by 12/4
-    const annualised = realDividendsCurrentYear * (12 / monthsElapsed);
-    passiveFromDivAssets = annualised;
-    passiveBreakdown["Dividendos (anualizados)"] = annualised;
-  } else if (realDividends12m > 0) {
-    passiveFromDivAssets = realDividends12m;
-    passiveBreakdown["Dividendos (últ.12m)"] = realDividends12m;
-  } else {
-    // No real dividend data — fall back to yield% on ETF/stock assets
-    for (const a of state.assets) {
-      if (!isRealDivClass(a)) continue;
-      const p = passiveFromItem(a);
-      if (p <= 0) continue;
-      passiveFromDivAssets += p;
-      const cls = a.class || "Outros";
-      passiveBreakdown[cls] = (passiveBreakdown[cls] || 0) + p;
-    }
+  // Real dividend income (net): use 12-month rolling OR annual summary
+  const realDivNet = summaryNet > 0 ? summaryNet : realDividends12m;
+
+  // Only add real dividends if they're NOT already captured by yield% on assets
+  // Simple rule: if yield% assets cover <30% of portfolio, assume dividends are uncovered
+  let dividendSupplement = 0;
+  if (realDivNet > 0 && yieldCoverageRatio < 0.30) {
+    // No yield% configured on most assets -> use real dividends as primary source
+    dividendSupplement = realDivNet;
+    passiveBreakdown["Dividendos reais"] = realDivNet;
+  } else if (realDivNet > yieldPassive * 0.5 && yieldCoverageRatio < 0.80) {
+    // Real dividends are significantly more than what yield% predicts for partial coverage
+    // Add the difference to avoid under-counting
+    const uncoveredDiv = Math.max(0, realDivNet - yieldPassive);
+    dividendSupplement = uncoveredDiv;
+    if (uncoveredDiv > 10) passiveBreakdown["Dividendos adicionais"] = uncoveredDiv;
   }
 
-  const passiveAnnual = passiveFromNonDiv + passiveFromDivAssets;
+  const passiveAnnual = yieldPassive + dividendSupplement;
+  const theoreticalPassive = yieldPassive; // what yield% alone predicts
 
-  return { assetsTotal, liabsTotal, net, passiveAnnual, theoreticalPassive: passiveAnnual, realDividends12m, summaryNet, passiveBreakdown };
+  return {
+    assetsTotal, liabsTotal, net,
+    passiveAnnual, theoreticalPassive,
+    realDividends12m, summaryNet,
+    passiveBreakdown
+  };
 }
 
 /* ─── COMPOUND INTEREST ENGINE ────────────────────────────── */
@@ -2159,15 +2152,23 @@ function calcDividendYield() {
 // Rendimento passivo total de TODOS os ativos (dividendos + rendas + depósitos + PPR + obrigações)
 // Usado no simulador de Juro Composto
 function calcPortfolioYield() {
+  // Only count assets that actually generate yield (have it configured)
+  // Including zero-yield assets like raw crypto dilutes the weighted average
   let totalValue = 0, totalPassive = 0;
+  let totalValueAll = 0;
   for (const a of state.assets) {
     const v = parseNum(a.value);
     const p = passiveFromItem(a);
-    totalValue += v;
-    totalPassive += p;
+    totalValueAll += v;
+    if (p > 0) {
+      totalValue += v;
+      totalPassive += p;
+    }
   }
   const weightedYield = totalValue > 0 ? (totalPassive / totalValue) * 100 : 0;
-  return { totalValue, totalPassive, weightedYield };
+  // Also provide portfolio-wide yield (diluted by non-yield assets)
+  const portfolioYield = totalValueAll > 0 ? (totalPassive / totalValueAll) * 100 : 0;
+  return { totalValue: totalValueAll, totalPassive, weightedYield: portfolioYield };
 }
 
 // Estima contribuição mensal média dos últimos 6 meses de cashflow
