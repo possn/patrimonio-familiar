@@ -4217,17 +4217,52 @@ async function refreshLiveQuotes() {
   let updated = 0, failed = 0;
   const errors = [];
 
-  // Step 1: fetch all quotes in parallel (faster)
-  const tickers = candidates.map(asset =>
-    (asset.name && /^[A-Z0-9.]{2,10}$/.test(asset.name.trim()))
-      ? asset.name.trim() : extractTicker(asset)
-  ).filter(Boolean);
+  // Step 1: Convert DivTracker tickers to Yahoo Finance format
+  // DivTracker uses .CC for crypto, .PT/.GB/.PL/.CH/.DK etc. for exchanges
+  // Yahoo Finance uses -USD for crypto, .LS/.L/.WA/.SW/.CO etc. for exchanges
+  function toYahooTicker(rawTicker) {
+    const t = (rawTicker || "").trim().toUpperCase();
+    // Crypto: strip .CC and add -USD
+    if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD");
+    // Exchange suffixes mapping
+    const exchangeMap = {
+      ".PT": ".LS",   // Portugal -> Euronext Lisbon
+      ".GB": ".L",    // UK -> London Stock Exchange
+      ".PL": ".WA",   // Poland -> Warsaw
+      ".CH": ".SW",   // Switzerland -> SIX Swiss
+      ".DK": ".CO",   // Denmark -> Copenhagen
+      ".SE": ".ST",   // Sweden -> Stockholm
+      ".NO": ".OL",   // Norway -> Oslo
+      ".FI": ".HE",   // Finland -> Helsinki
+      ".BE": ".BR",   // Belgium -> Brussels
+      ".IT": ".MI",   // Italy -> Milan
+      ".FR": ".PA",   // France -> Paris
+      ".NL": ".AS",   // Netherlands -> Amsterdam
+      ".ES": ".MC",   // Spain -> Madrid
+      ".AU": ".AX",   // Australia -> ASX
+      ".CA": ".TO",   // Canada -> Toronto (most common)
+      ".HK": ".HK",   // Hong Kong (same)
+    };
+    for (const [from, to] of Object.entries(exchangeMap)) {
+      if (t.endsWith(from)) return t.slice(0, -from.length) + to;
+    }
+    return t; // Already in Yahoo format (US stocks, .DE, .PA already correct)
+  }
+
+  // Build ticker list: asset -> yahoo ticker (for fetch) + keep original name
+  const tickerList = candidates.map(asset => {
+    const raw = (asset.name && /^[A-Z0-9.\-]{1,12}$/.test(asset.name.trim()))
+      ? asset.name.trim() : extractTicker(asset);
+    return { asset, raw, yahoo: raw ? toYahooTicker(raw) : null };
+  }).filter(x => x.yahoo);
+
+  const tickers = tickerList.map(x => x.yahoo);
 
   const quoteResults = await Promise.allSettled(
     tickers.map(t => fetchQuote(t, workerUrl))
   );
 
-  // Build quote map: ticker -> quote
+  // Build quote map: yahoo ticker -> quote
   const quoteMap = {};
   quoteResults.forEach((r, i) => {
     if (r.status === "fulfilled" && r.value) quoteMap[tickers[i]] = r.value;
@@ -4235,6 +4270,10 @@ async function refreshLiveQuotes() {
 
   // Step 2: collect unique non-EUR currencies that need FX rates
   const ccysNeeded = new Set();
+  // Crypto fetched as -USD always needs USD->EUR conversion
+  for (const { yahoo } of tickerList) {
+    if (yahoo && yahoo.endsWith("-USD")) ccysNeeded.add("USD");
+  }
   for (const q of Object.values(quoteMap)) {
     const ccy = (q.currency || "EUR").toUpperCase();
     if (ccy !== "EUR") ccysNeeded.add(ccy);
@@ -4270,15 +4309,14 @@ async function refreshLiveQuotes() {
 
   // Step 4: update each asset with FX-converted price
   const today = new Date().toLocaleDateString("pt-PT");
-  for (let i = 0; i < candidates.length; i++) {
-    const asset = candidates[i];
-    const ticker = tickers[i];
-    if (!ticker) continue;
+  for (let i = 0; i < tickerList.length; i++) {
+    const { asset, raw, yahoo } = tickerList[i];
+    if (!yahoo) continue;
 
-    const q = quoteMap[ticker];
+    const q = quoteMap[yahoo];
     if (!q || !Number.isFinite(q.price) || q.price <= 0) {
       failed++;
-      errors.push(ticker);
+      errors.push(raw);
       continue;
     }
 
@@ -4295,10 +4333,9 @@ async function refreshLiveQuotes() {
     // Build price label showing original currency if not EUR
     const priceLabel = ccy === "EUR"
       ? fmtEUR2(priceEur)
-      : `${fmtEUR2(priceEur)} (${q.price.toFixed(2)} ${ccy})`;
+      : `${fmtEUR2(priceEur)} (${q.price.toFixed(4)} ${ccy})`;
 
-    const noteBase = (asset.notes || "").replace(/\s*·?\s*Preço:[^\n·]*/g, "")
-      .replace(/\s*·?\s*⚠️ Valor estimado[^·]*/g, "").trim();
+    const noteBase = (asset.notes || "").replace(/\s*·?\s*Preço:[^·]*/g, "").replace(/\s*·?\s*⚠️ Valor estimado[^·]*/g, "").trim();
     asset.value = newValue;
     asset.notes = `${noteBase}${noteBase ? " · " : ""}Preço: ${priceLabel} (${today})`;
     updated++;
