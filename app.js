@@ -2658,12 +2658,18 @@ function makeLegendRow(label, value, total, color) {
 function buildDonut(canvasId, labels, values, palette) {
   const el = document.getElementById(canvasId);
   if (!el) return null;
+  // Reset canvas dimensions so Chart.js recalculates correctly after display:none parent
+  el.style.width = "";
+  el.style.height = "";
   return new Chart(el.getContext("2d"), {
     type: "doughnut",
     data: { labels, datasets: [{ data: values, backgroundColor: palette,
               borderWidth: 3, borderColor: "#fff", hoverOffset: 8 }] },
     options: {
-      cutout: "68%", animation: { animateRotate: true, duration: 600 },
+      responsive: true,
+      maintainAspectRatio: true,
+      cutout: "68%",
+      animation: { animateRotate: true, duration: 600 },
       plugins: {
         legend: { display: false },
         tooltip: { callbacks: { label: c => {
@@ -2740,7 +2746,7 @@ function renderAnalysis() {
   document.querySelectorAll(".analysisPanelTab").forEach(p => { p.style.display = "none"; });
   const panel = document.getElementById("analysisPanelTab_" + tab);
   if (panel) panel.style.display = "";
-  if (tab === "portfolio") renderPortfolioCharts();
+  if (tab === "portfolio") setTimeout(renderPortfolioCharts, 50);
   if (tab === "compound") renderCompoundPanel();
   if (tab === "forecast") renderForecastPanel();
   if (tab === "compare") renderComparePanel();
