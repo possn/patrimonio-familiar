@@ -390,11 +390,10 @@ function calcTotals() {
   // 3. Result = sum of (1) + sum of (2)
   // ─────────────────────────────────────────────────────────────────────────
 
-  // Only Ações/ETFs and Cripto use real dividend records as income source.
-  // Fundos, Obrigações, PPR, Depósitos use their configured yield% directly.
+  const REAL_DIV_CLASSES = ["ações/etfs","acoes/etfs","fundos","cripto","obrigações","obrigacoes"];
   function isRealDivClass(a) {
-    const cls = (a.class || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"");
-    return cls.includes("acoes") || cls.includes("acoes/etfs") || cls.includes("cripto");
+    const cls = (a.class || "").toLowerCase();
+    return REAL_DIV_CLASSES.some(c => cls.includes(c.replace(/[\/çõ]/g, m => ({"/":"",ç:"c",õ:"o"})[m] || m)));
   }
 
   // Theoretical from NON-dividend-class assets (deposits, PPR, imóveis, etc.)
@@ -2867,51 +2866,16 @@ function importRows(rows) {
   }
 
   // Convert trades to assets
-  // Step 1: merge multi-currency positions for same ticker into one asset
-  const FX_TO_EUR = {
-    EUR:1, USD:0.92, GBP:1.17, DKK:0.134, CHF:1.05, PLN:0.23,
-    SEK:0.087, NOK:0.085, CAD:0.68, AUD:0.59, JPY:0.006,
-    HKD:0.118, SGD:0.68, BRL:0.17, MXN:0.046, ZAR:0.052
-  };
-  const mergedPos = new Map();
   for (const p of posMap.values()) {
     if (!(p.qty > 0) || !(p.cost > 0)) continue;
-    const t = p.ticker;
-    if (!mergedPos.has(t)) mergedPos.set(t, { ticker:t, qty:0, cost:0, comm:0, ccys:[] });
-    const m = mergedPos.get(t);
-    m.qty  += p.qty;
-    m.cost += p.cost;
-    m.comm += p.comm || 0;
-    if (!m.ccys.includes(p.ccy)) m.ccys.push(p.ccy);
-  }
-
-  // Step 2: create or update one asset per ticker with FX-converted cost
-  for (const p of mergedPos.values()) {
     const upper = String(p.ticker).toUpperCase();
     const isCrypto = upper.endsWith(".CC") || ["BTC","ETH","SOL","ADA","XRP","DOT","BNB"].includes(upper.replace(/\.CC$/, ""));
     const cls = isCrypto ? "Cripto" : "Ações/ETFs";
-    const ccyLabel = p.ccys.join("/");
-
-    // Convert cost to EUR — re-iterate posMap to apply per-currency FX
-    let costEUR = 0;
-    for (const [, pos] of posMap.entries()) {
-      if (pos.ticker !== p.ticker || pos.qty <= 0) continue;
-      costEUR += pos.cost * (FX_TO_EUR[pos.ccy] || 1);
-    }
-    costEUR += p.comm || 0;
-
-    const fxNote = p.ccys.some(c => c !== "EUR")
-      ? " · ⚠️ Custo histórico (FX aprox.) — actualiza via ⟳ Cotações" : "";
-    const notes = `Importado trades. Qty=${fmt(p.qty)} · PM=${p.cost > 0 ? fmt(p.cost/p.qty,4) : "—"} ${ccyLabel}${fxNote}`;
-
-    const existingIx = state.assets.findIndex(a => (a.name||"").toUpperCase() === upper && a.class === cls);
-    if (existingIx >= 0) {
-      state.assets[existingIx] = { ...state.assets[existingIx], value: costEUR, notes };
-    } else {
-      state.assets.push({ id: uid(), class: cls, name: p.ticker, value: costEUR,
-        yieldType: "none", yieldValue: 0, compoundFreq: 12, notes });
-      addedA++;
-    }
+    const estValue = p.cost + (p.comm || 0);
+    const existingIx = state.assets.findIndex(a => (a.name || "").toUpperCase() === upper && a.class === cls);
+    const item = { id: existingIx >= 0 ? state.assets[existingIx].id : uid(), class: cls, name: p.ticker, value: estValue, yieldType: "none", yieldValue: 0, compoundFreq: 12, notes: `Importado trades. Qty=${fmt(p.qty)} · PM=${p.cost > 0 ? fmt(p.cost / p.qty, 4) : "—"} ${p.ccy}` };
+    if (existingIx >= 0) state.assets[existingIx] = item; else state.assets.push(item);
+    addedA++;
   }
 
   saveState();
@@ -4017,18 +3981,6 @@ function wire() {
   const btnClearTx2 = document.getElementById("btnClearTransactions2");
   if (btnClearTx2) btnClearTx2.addEventListener("click", clearTransactions);
 
-  // Limpar só Ações/ETFs/Cripto (mantém depósitos, PPR, fundos, movimentos)
-  const btnClearEq = document.getElementById("btnClearEquities");
-  if (btnClearEq) btnClearEq.addEventListener("click", () => {
-    const EQ = ["Ações/ETFs", "Cripto"];
-    const toRemove = state.assets.filter(a => EQ.includes(a.class));
-    if (!toRemove.length) { toast("Sem Ações/ETFs/Cripto para limpar."); return; }
-    if (!confirm(`Apagar ${toRemove.length} activos de Ações/ETFs/Cripto?\n\nDepósitos, PPR, Fundos e movimentos são mantidos.`)) return;
-    state.assets = state.assets.filter(a => !EQ.includes(a.class));
-    saveState(); renderAll();
-    toast(`🗑️ ${toRemove.length} activos removidos. Reimporta o CSV do DivTracker.`, 4000);
-  });
-
   // Check on import view open
   checkDuplicateWarning();
 
@@ -4190,79 +4142,33 @@ async function refreshLiveQuotes() {
   let updated = 0, failed = 0;
   const errors = [];
 
-  // Convert DivTracker ticker format to Yahoo Finance format
-  function toYahooTicker(raw) {
-    const t = (raw||"").trim().toUpperCase();
-    if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD"); // crypto
-    const xmap = {".PT":".LS",".GB":".L",".PL":".WA",".CH":".SW",
-      ".DK":".CO",".SE":".ST",".NO":".OL",".FI":".HE",
-      ".BE":".BR",".IT":".MI",".FR":".PA",".NL":".AS",
-      ".ES":".MC",".AU":".AX",".CA":".TO"};
-    for (const [from, to] of Object.entries(xmap))
-      if (t.endsWith(from)) return t.slice(0,-from.length) + to;
-    return t; // US stocks, .DE, etc. already correct
-  }
+  for (const asset of candidates) {
+    const ticker = asset.name && /^[A-Z0-9.]{2,10}$/.test(asset.name.trim())
+      ? asset.name.trim()
+      : extractTicker(asset);
+    if (!ticker) continue;
 
-  // Build list: {asset, raw, yahoo}
-  const tickerList = candidates.map(asset => {
-    const raw = (asset.name && /^[A-Z0-9.\-]{1,12}$/.test(asset.name.trim()))
-      ? asset.name.trim() : extractTicker(asset);
-    return { asset, raw, yahoo: raw ? toYahooTicker(raw) : null };
-  }).filter(x => x.yahoo);
-
-  // Fetch all quotes in parallel
-  const quoteResults = await Promise.allSettled(
-    tickerList.map(x => fetchQuote(x.yahoo, workerUrl))
-  );
-  const quoteMap = {};
-  quoteResults.forEach((r, i) => {
-    if (r.status === "fulfilled" && r.value) quoteMap[tickerList[i].yahoo] = r.value;
-  });
-
-  // Collect currencies needing FX (crypto always USD, others from quote)
-  const ccysNeeded = new Set();
-  for (const x of tickerList) if (x.yahoo.endsWith("-USD")) ccysNeeded.add("USD");
-  for (const q of Object.values(quoteMap)) {
-    const c = (q.currency||"EUR").toUpperCase();
-    if (c !== "EUR") ccysNeeded.add(c);
-  }
-
-  // Fetch FX rates via Worker (EURUSD=X, EURGBP=X, etc.)
-  const fxRates = {};
-  const FX_FALLBACK = {USD:0.92,GBP:1.17,DKK:0.134,CHF:1.05,PLN:0.23,
-    SEK:0.087,NOK:0.085,CAD:0.68,AUD:0.59,JPY:0.006,HKD:0.118};
-  await Promise.allSettled([...ccysNeeded].map(async ccy => {
     try {
-      const fq = await fetchQuote(`EUR${ccy}=X`, workerUrl);
-      if (fq && fq.price > 0) fxRates[ccy] = 1 / fq.price;
-    } catch(_) {}
-  }));
-  for (const c of ccysNeeded) if (!fxRates[c]) fxRates[c] = FX_FALLBACK[c] || 1;
+      const q = await fetchQuote(ticker, workerUrl);
+      if (q && Number.isFinite(q.price) && q.price > 0) {
+        // Detectar qty das notas (importado via DivTracker)
+        const qtyMatch = (asset.notes || "").match(/Qty=([\d.]+)/);
+        const qty = qtyMatch ? parseFloat(qtyMatch[1]) : null;
+        const newValue = qty ? qty * q.price : q.price;
 
-  const today = new Date().toLocaleDateString("pt-PT");
-  for (const { asset, raw, yahoo } of tickerList) {
-    const q = quoteMap[yahoo];
-    if (!q || !Number.isFinite(q.price) || q.price <= 0) {
-      failed++; errors.push(raw); continue;
+        // Guardar preço unitário e data de actualização nas notas
+        const noteBase = (asset.notes || "").replace(/\s*·?\s*Preço:[^\n·]*/g, "").trim();
+        asset.value = newValue;
+        asset.notes = `${noteBase}${noteBase ? " · " : ""}Preço: ${fmtEUR2(q.price)} (${new Date().toLocaleDateString("pt-PT")})`;
+        updated++;
+      } else {
+        failed++;
+        errors.push(ticker);
+      }
+    } catch (e) {
+      failed++;
+      errors.push(`${ticker} (${e.message})`);
     }
-    const ccy = (q.currency||"EUR").toUpperCase();
-    const fxToEur = ccy === "EUR" ? 1 : (fxRates[ccy] || FX_FALLBACK[ccy] || 1);
-    const priceEur = q.price * fxToEur;
-
-    const qtyMatch = (asset.notes||"").match(/Qty=([\d.]+)/);
-    const qty = qtyMatch ? parseFloat(qtyMatch[1]) : null;
-    const newValue = qty ? qty * priceEur : priceEur;
-
-    const priceLabel = ccy === "EUR"
-      ? fmtEUR2(priceEur)
-      : `${fmtEUR2(priceEur)} (${q.price.toFixed(4)} ${ccy})`;
-
-    const noteBase = (asset.notes||"")
-      .replace(/\s*·?\s*Preço:[^·]*/g,"")
-      .replace(/\s*·?\s*⚠️ Custo histórico[^·]*/g,"").trim();
-    asset.value = newValue;
-    asset.notes = `${noteBase}${noteBase?" · ":""}Preço: ${priceLabel} (${today})`;
-    updated++;
   }
 
   await saveStateAsync(); // await ensures IndexedDB write completes before app can close

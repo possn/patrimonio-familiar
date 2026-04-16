@@ -88,14 +88,10 @@ async function fetchYahooQuote(ticker, ctx) {
     const q = d2?.quoteResponse?.result?.[0];
     if (!q) throw new Error(`Ticker não encontrado: ${ticker}`);
 
-    let _p2 = q.regularMarketPrice;
-    let _c2 = q.currency || "USD";
-    if (_c2 === "GBp" || _c2 === "GBX") { _p2 /= 100; _c2 = "GBP"; }
-
     const result = {
       ticker: ticker.toUpperCase(),
-      price: _p2,
-      currency: _c2,
+      price: q.regularMarketPrice,
+      currency: q.currency || "USD",
       name: q.shortName || q.longName || ticker,
       change_pct: q.regularMarketChangePercent || 0,
       updated: new Date().toISOString(),
@@ -120,15 +116,10 @@ async function fetchYahooQuote(ticker, ctx) {
   const meta = json?.chart?.result?.[0]?.meta;
   if (!meta) throw new Error(`Sem dados para ${ticker}`);
 
-  // Normalise subunit currencies: Yahoo quotes UK stocks in GBp (pence), not GBP
-  let _price = meta.regularMarketPrice || meta.previousClose;
-  let _ccy   = meta.currency || "USD";
-  if (_ccy === "GBp" || _ccy === "GBX") { _price /= 100; _ccy = "GBP"; }
-
   const result = {
     ticker: ticker.toUpperCase(),
-    price: _price,
-    currency: _ccy,
+    price: meta.regularMarketPrice || meta.previousClose,
+    currency: meta.currency || "USD",
     name: meta.shortName || meta.symbol || ticker,
     change_pct:
       meta.regularMarketPrice && meta.previousClose
