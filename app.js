@@ -191,6 +191,42 @@ Com 50% de taxa de poupança, podes reformar-te em ~17 anos (partindo do zero).`
 • <b>Moeda:</b> EUR, USD, GBP<br>
 • <b>Temporal:</b> investir regularmente (DCA)<br><br>
 Um ETF global (ex: VWCE) oferece diversificação em mais de 3.000 empresas de uma vez.`
+  },
+  dividends: {
+    title: "Dividendos YTD",
+    body: `Os <b>dividendos</b> são pagamentos em dinheiro feitos pelas empresas aos seus acionistas, normalmente trimestrais ou anuais.<br><br>
+<b>YTD</b> (Year To Date) = total recebido desde o início do ano corrente.<br><br>
+<b>Como registar:</b><br>
+• Vai ao separador <b>Divid.</b> e usa o botão +<br>
+• Ou importa o extrato da corretora (CSV/Excel)<br><br>
+O valor mostrado aqui é o líquido (já descontada a retenção na fonte).`
+  },
+  divSummary: {
+    title: "Resumo Anual de Dividendos",
+    body: `O <b>resumo anual</b> permite introduzir os totais de dividendos do ano diretamente — útil se tens o extrato anual da corretora.<br><br>
+<b>Campos:</b><br>
+• <b>Bruto:</b> total recebido antes de impostos<br>
+• <b>Retenção:</b> imposto retido na fonte pela corretora<br>
+• <b>Líquido:</b> o que efectivamente recebeste (Bruto − Retenção)<br>
+• <b>Yield:</b> dividendos / valor da carteira × 100<br><br>
+Este valor é usado como fonte principal no cálculo do Rendimento Passivo.`
+  },
+  forecast: {
+    title: "Previsão de Rentabilidade",
+    body: `A <b>previsão</b> estima o valor futuro de cada ativo com base no seu yield configurado.<br><br>
+<b>Como funciona:</b><br>
+• Aplica o yield % de cada ativo ao seu valor actual<br>
+• Projeta para o horizonte temporal escolhido<br>
+• Assume reinvestimento dos rendimentos (juro composto)<br><br>
+<b>Nota:</b> É uma estimativa — os retornos reais dependem das condições de mercado.`
+  },
+  compare: {
+    title: "Comparação de Períodos",
+    body: `Compara a evolução do teu património entre diferentes períodos.<br><br>
+<b>MoM</b> (Month over Month): variação mês a mês<br>
+<b>YoY</b> (Year over Year): variação ano a ano<br><br>
+Os dados são baseados nos <b>snapshots</b> que guardas usando o botão <b>"Registar mês"</b> no Dashboard.<br><br>
+Regista um snapshot no fim de cada mês para teres um historial completo.`
   }
 };
 
@@ -2655,30 +2691,50 @@ function makeLegendRow(label, value, total, color) {
   </div>`;
 }
 
-function buildDonut(canvasId, labels, values, palette) {
-  const el = document.getElementById(canvasId);
-  if (!el) return null;
-  // Reset canvas dimensions so Chart.js recalculates correctly after display:none parent
-  el.style.width = "";
-  el.style.height = "";
-  return new Chart(el.getContext("2d"), {
-    type: "doughnut",
-    data: { labels, datasets: [{ data: values, backgroundColor: palette,
-              borderWidth: 3, borderColor: "#fff", hoverOffset: 8 }] },
-    options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      cutout: "68%",
-      animation: { animateRotate: true, duration: 600 },
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: { label: c => {
-          const total = c.dataset.data.reduce((a,b)=>a+b,0);
-          return ` ${fmtEUR(c.raw)}  (${(c.raw/total*100).toFixed(1)}%)`;
-        }}}
-      }
-    }
+function svgDonut(data, palette, totalLabel) {
+  // data = [{label, value, pct}], returns SVG string
+  const R = 90, cx = 110, cy = 110, stroke = 22;
+  const r = R - stroke / 2;
+  const circ = 2 * Math.PI * r;
+  let offset = -Math.PI / 2; // start at top
+  let paths = '';
+  let total = data.reduce((s, d) => s + d.value, 0);
+
+  data.forEach((d, i) => {
+    const angle = (d.value / total) * 2 * Math.PI;
+    const large = angle > Math.PI ? 1 : 0;
+    const x1 = cx + r * Math.cos(offset);
+    const y1 = cy + r * Math.sin(offset);
+    const x2 = cx + r * Math.cos(offset + angle - 0.01);
+    const y2 = cy + r * Math.sin(offset + angle - 0.01);
+    const color = palette[i % palette.length];
+    paths += `<path d="M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}"
+      fill="none" stroke="${color}" stroke-width="${stroke}"
+      stroke-linecap="butt"/>`;
+    offset += angle;
   });
+
+  return `<svg viewBox="0 0 220 220" style="width:100%;max-width:260px;display:block;margin:0 auto">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#f1f5f9" stroke-width="${stroke}"/>
+    ${paths}
+    <text x="${cx}" y="${cy - 8}" text-anchor="middle" font-size="10" fill="#94a3b8">Total</text>
+    <text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="13" font-weight="800" fill="#0f172a">${totalLabel}</text>
+  </svg>`;
+}
+
+function legendRow(label, value, pct, color) {
+  const bar = Math.round(pct * 1.2); // max ~120px
+  return `<div style="padding:6px 0;border-bottom:1px solid #f1f5f9">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+      <span style="width:11px;height:11px;border-radius:2px;background:${color};flex-shrink:0;display:inline-block"></span>
+      <span style="flex:1;font-size:13px;font-weight:600">${escapeHtml(label)}</span>
+      <span style="font-size:13px;color:#475569">${fmtEUR(value)}</span>
+      <span style="font-size:12px;font-weight:700;min-width:40px;text-align:right">${pct.toFixed(1)}%</span>
+    </div>
+    <div style="height:4px;background:#f1f5f9;border-radius:2px;margin-left:19px">
+      <div style="height:4px;width:${Math.min(100,pct)}%;background:${color};border-radius:2px"></div>
+    </div>
+  </div>`;
 }
 
 function renderPortfolioCharts() {
@@ -2688,57 +2744,63 @@ function renderPortfolioCharts() {
     return EQUITY_CLS.has(c) && parseNum(a.value) > 0;
   });
 
-  // ── SECTOR ────────────────────────────────────────────────
+  const sectorWrap = document.getElementById("sectorChartWrap");
+  const geoWrap    = document.getElementById("geoChartWrap");
+  const sectorND   = document.getElementById("sectorNoData");
+  const geoND      = document.getElementById("geoNoData");
+
+  if (!equityAssets.length) {
+    if (sectorND) sectorND.style.display = "";
+    if (sectorWrap) sectorWrap.style.display = "none";
+    if (geoND) geoND.style.display = "";
+    if (geoWrap) geoWrap.style.display = "none";
+    return;
+  }
+
+  if (sectorND) sectorND.style.display = "none";
+  if (sectorWrap) sectorWrap.style.display = "";
+  if (geoND) geoND.style.display = "none";
+  if (geoWrap) geoWrap.style.display = "";
+
+  // ── SECTOR ──────────────────────────────────────
   const bySector = {};
   for (const a of equityAssets) {
     const { sector } = getTickerMeta(a);
     const key = sector || "Outros";
     bySector[key] = (bySector[key] || 0) + parseNum(a.value);
   }
+  const sEntries = Object.entries(bySector).sort((a,b) => b[1]-a[1]);
+  const sTotal = sEntries.reduce((s,[,v]) => s+v, 0);
+  const sData = sEntries.map(([l,v]) => ({label:l, value:v, pct:v/sTotal*100}));
 
-  const sND = document.getElementById("sectorNoData");
-  const sW  = document.getElementById("sectorChartWrap");
-  const sT  = document.getElementById("sectorTotal");
-  const hasS = equityAssets.length > 0;
-  if (sND) sND.style.display = hasS ? "none" : "";
-  if (sW)  sW.style.display  = hasS ? "" : "none";
-  if (hasS) {
-    const sLabels = Object.keys(bySector).sort((a,b) => bySector[b]-bySector[a]);
-    const sValues = sLabels.map(k => bySector[k]);
-    const sTotal  = sValues.reduce((s,v) => s+v, 0);
-    if (sT) sT.textContent = fmtEUR(sTotal);
-    if (sectorChartInst) { sectorChartInst.destroy(); sectorChartInst = null; }
-    sectorChartInst = buildDonut("sectorChart", sLabels, sValues, SECTOR_PALETTE);
-    const sLeg = document.getElementById("sectorLegend");
-    if (sLeg) sLeg.innerHTML = sLabels.map((l,i) =>
-      makeLegendRow(l, bySector[l], sTotal, SECTOR_PALETTE[i%SECTOR_PALETTE.length])).join("");
+  if (sectorWrap) {
+    sectorWrap.innerHTML =
+      svgDonut(sData, SECTOR_PALETTE, fmtEUR(sTotal)) +
+      '<div style="margin-top:12px">' +
+      sData.map((d,i) => legendRow(d.label, d.value, d.pct, SECTOR_PALETTE[i%SECTOR_PALETTE.length])).join("") +
+      '</div>';
   }
 
-  // ── GEOGRAPHY ─────────────────────────────────────────────
+  // ── GEOGRAPHY ───────────────────────────────────
   const byRegion = {};
   for (const a of equityAssets) {
     const { region } = getTickerMeta(a);
     const key = region || "Outros";
     byRegion[key] = (byRegion[key] || 0) + parseNum(a.value);
   }
+  const gEntries = Object.entries(byRegion).sort((a,b) => b[1]-a[1]);
+  const gTotal = gEntries.reduce((s,[,v]) => s+v, 0);
+  const gData = gEntries.map(([l,v]) => ({label:l, value:v, pct:v/gTotal*100}));
 
-  const gND = document.getElementById("geoNoData");
-  const gW  = document.getElementById("geoChartWrap");
-  const gT  = document.getElementById("geoTotal");
-  if (gND) gND.style.display = equityAssets.length ? "none" : "";
-  if (gW)  gW.style.display  = equityAssets.length ? "" : "none";
-  if (equityAssets.length) {
-    const gLabels = Object.keys(byRegion).sort((a,b) => byRegion[b]-byRegion[a]);
-    const gValues = gLabels.map(k => byRegion[k]);
-    const gTotal  = gValues.reduce((s,v) => s+v, 0);
-    if (gT) gT.textContent = fmtEUR(gTotal);
-    if (geoChartInst) { geoChartInst.destroy(); geoChartInst = null; }
-    geoChartInst = buildDonut("geoChart", gLabels, gValues, GEO_PALETTE);
-    const gLeg = document.getElementById("geoLegend");
-    if (gLeg) gLeg.innerHTML = gLabels.map((l,i) =>
-      makeLegendRow(l, byRegion[l], gTotal, GEO_PALETTE[i%GEO_PALETTE.length])).join("");
+  if (geoWrap) {
+    geoWrap.innerHTML =
+      svgDonut(gData, GEO_PALETTE, fmtEUR(gTotal)) +
+      '<div style="margin-top:12px">' +
+      gData.map((d,i) => legendRow(d.label, d.value, d.pct, GEO_PALETTE[i%GEO_PALETTE.length])).join("") +
+      '</div>';
   }
 }
+
 
 /* ─── ANALYSIS VIEW ───────────────────────────────────────── */
 function renderAnalysis() {
@@ -2746,7 +2808,7 @@ function renderAnalysis() {
   document.querySelectorAll(".analysisPanelTab").forEach(p => { p.style.display = "none"; });
   const panel = document.getElementById("analysisPanelTab_" + tab);
   if (panel) panel.style.display = "";
-  if (tab === "portfolio") setTimeout(renderPortfolioCharts, 50);
+  if (tab === "portfolio") renderPortfolioCharts();
   if (tab === "compound") renderCompoundPanel();
   if (tab === "forecast") renderForecastPanel();
   if (tab === "compare") renderComparePanel();

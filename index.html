@@ -99,7 +99,7 @@
           <div class="pill__v" id="kpiPassiveMonthly" style="font-size:13px;color:#64748b"></div>
         </div>
         <div class="pill pill--aqua">
-          <div class="pill__k">Dividendos YTD (líquido) <button class="info-btn" onclick="openTip('passiveIncome')" title="Saber mais">ℹ️</button></div>
+          <div class="pill__k">Dividendos YTD (líquido) <button class="info-btn" onclick="openTip('dividends')" title="Saber mais">ℹ️</button></div>
           <div class="pill__v" id="kpiDivYTD">0 €</div>
         </div>
       </div>
@@ -317,7 +317,7 @@
             <div class="card__title">Rendimento de dividendos</div>
             <div class="card__muted">Introduz os dados da tua corretora</div>
           </div>
-          <button class="info-btn" onclick="openTip('passiveIncome')" style="font-size:20px">ℹ️</button>
+          <button class="info-btn" onclick="openTip('divSummary')" style="font-size:20px">ℹ️</button>
         </div>
 
         <!-- Ano -->
@@ -549,16 +549,7 @@
           <div style="font-weight:600;margin-bottom:4px">Sem dados de sector</div>
           <div style="font-size:13px">Faz ⟳ Cotações para carregar</div>
         </div>
-        <div id="sectorChartWrap">
-          <div style="position:relative;margin:16px auto;max-width:280px">
-            <canvas id="sectorChart" height="280"></canvas>
-            <div id="sectorCenter" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
-              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px">Total</div>
-              <div id="sectorTotal" style="font-size:18px;font-weight:800;color:#0f172a"></div>
-            </div>
-          </div>
-          <div id="sectorLegend" style="display:flex;flex-direction:column;gap:8px;margin-top:4px"></div>
-        </div>
+        <div id="sectorChartWrap" style="margin-top:12px"></div>
       </div>
       <!-- Geography chart -->
       <div class="card">
@@ -574,16 +565,7 @@
           <div style="font-weight:600;margin-bottom:4px">Sem dados geográficos</div>
           <div style="font-size:13px">Faz ⟳ Cotações para carregar</div>
         </div>
-        <div id="geoChartWrap">
-          <div style="position:relative;margin:16px auto;max-width:280px">
-            <canvas id="geoChart" height="280"></canvas>
-            <div id="geoCenter" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
-              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px">Total</div>
-              <div id="geoTotal" style="font-size:18px;font-weight:800;color:#0f172a"></div>
-            </div>
-          </div>
-          <div id="geoLegend" style="display:flex;flex-direction:column;gap:8px;margin-top:4px"></div>
-        </div>
+        <div id="geoChartWrap" style="margin-top:12px"></div>
       </div>
       <div class="note" style="font-size:12px;text-align:center;color:#94a3b8;padding:8px 16px">
         Inclui Ações/ETFs e Cripto. ETFs sem sector detalhado agrupados em "ETF / Fundo". Actualiza via ⟳ Cotações.
