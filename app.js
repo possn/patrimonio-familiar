@@ -393,8 +393,11 @@ function calcTotals() {
   // Only Ações/ETFs and Cripto use real dividend records as income source.
   // Fundos, Obrigações, PPR, Depósitos use their configured yield% directly.
   function isRealDivClass(a) {
-    const cls = (a.class || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"");
-    return cls.includes("acoes") || cls.includes("acoes/etfs") || cls.includes("cripto");
+    // Simple robust check — avoid fragile unicode normalization
+    const cls = (a.class || "").toLowerCase()
+      .replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o")
+      .replace(/á|à|â|ä/g,"a").replace(/é|è|ê/g,"e").replace(/í/g,"i").replace(/ó|ô/g,"o").replace(/ú/g,"u");
+    return cls === "acoes/etfs" || cls === "cripto";
   }
 
   // Theoretical from NON-dividend-class assets (deposits, PPR, imóveis, etc.)
@@ -416,19 +419,24 @@ function calcTotals() {
     .filter(d => String(d.date || "").slice(0, 4) === String(new Date().getFullYear()))
     .reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
 
-  // Use summary if available (more accurate), else annualise YTD
+  // Determine dividend income source (priority order):
+  // 1. Annual summary (most accurate — user filled in)
+  // 2. Last 12 months actual dividends (rolling, stable)
+  // 3. YTD annualised (only if > 3 months data, to avoid over-projecting)
+  // 4. Yield% configured on ETF/stock assets (fallback)
   let passiveFromDivAssets = 0;
   if (summaryNet > 0) {
     passiveFromDivAssets = summaryNet;
     passiveBreakdown["Dividendos (resumo anual)"] = summaryNet;
-  } else if (realDividendsCurrentYear > 0) {
-    // Annualise: if we're in April (4 months), multiply by 12/4
+  } else if (realDividends12m > 0) {
+    // Use rolling 12-month actuals — most stable estimate
+    passiveFromDivAssets = realDividends12m;
+    passiveBreakdown["Dividendos (últ.12m)"] = realDividends12m;
+  } else if (realDividendsCurrentYear > 0 && monthsElapsed >= 3) {
+    // Annualise YTD only if we have at least 3 months of data
     const annualised = realDividendsCurrentYear * (12 / monthsElapsed);
     passiveFromDivAssets = annualised;
     passiveBreakdown["Dividendos (anualizados)"] = annualised;
-  } else if (realDividends12m > 0) {
-    passiveFromDivAssets = realDividends12m;
-    passiveBreakdown["Dividendos (últ.12m)"] = realDividends12m;
   } else {
     // No real dividend data — fall back to yield% on ETF/stock assets
     for (const a of state.assets) {
@@ -483,7 +491,7 @@ function setView(view) {
   if (view === "dashboard") renderDashboard();
   if (view === "assets") renderItems();
   if (view === "cashflow") renderCashflow();
-  if (view === "analysis") renderAnalysis();
+  if (view === "analysis") { renderAnalysis(); }
   if (view === "dividends") renderDividends();
   if (view === "import") checkDuplicateWarning();
   window.scrollTo({ top: 0, behavior: "instant" });
@@ -502,12 +510,182 @@ function wireModalClosers() {
 }
 
 /* ─── RENDER ALL ──────────────────────────────────────────── */
+
+/* ─── SECTOR & GEOGRAPHY CHARTS ──────────────────────────── */
+
+const SECTOR_MAP = {
+  "Technology":            "Tecnologia",
+  "Financial Services":    "Financials",
+  "Healthcare":            "Saúde",
+  "Real Estate":           "Imobiliário",
+  "Consumer Cyclical":     "Consumo Cíclico",
+  "Consumer Defensive":    "Consumo Defensivo",
+  "Industrials":           "Industriais",
+  "Basic Materials":       "Materiais",
+  "Communication Services":"Comunicação",
+  "Energy":                "Energia",
+  "Utilities":             "Utilities",
+};
+
+const EXCHANGE_TO_GEO = {
+  // USA
+  "NMS":"USA","NYQ":"USA","NGM":"USA","PCX":"USA","ASE":"USA","NCM":"USA","BTS":"USA",
+  // Europe
+  "GER":"Europa","FRA":"Europa","XET":"Europa","HAM":"Europa","BER":"Europa","MUN":"Europa",
+  "LSE":"Europa","IOB":"Europa","ENX":"Europa","PAR":"Europa","AMS":"Europa","BRU":"Europa",
+  "MIL":"Europa","MCE":"Europa","VIE":"Europa","STO":"Europa","OSL":"Europa","HEL":"Europa",
+  "LIS":"Europa","WSE":"Europa","SWX":"Europa",
+  // Asia/Pacific
+  "TKS":"Asia","OSA":"Asia","HKG":"Asia","SHH":"Asia","SHZ":"Asia",
+  "KSC":"Asia","TAI":"Asia","NSI":"Asia","BSE":"Asia",
+  "ASX":"Asia/Pac","NZE":"Asia/Pac",
+  // Americas (ex-USA)
+  "TSX":"Canadá","MEX":"LatAm","SAO":"LatAm","BUE":"LatAm",
+};
+
+const COUNTRY_TO_GEO = {
+  "United States":"USA","Canada":"Canadá",
+  "United Kingdom":"Europa","Germany":"Europa","France":"Europa","Switzerland":"Europa",
+  "Netherlands":"Europa","Spain":"Europa","Italy":"Europa","Belgium":"Europa",
+  "Sweden":"Europa","Norway":"Europa","Denmark":"Europa","Finland":"Europa",
+  "Austria":"Europa","Portugal":"Europa","Poland":"Europa","Ireland":"Europa",
+  "Japan":"Asia","China":"Asia","South Korea":"Asia","Taiwan":"Asia",
+  "Hong Kong":"Asia","India":"Asia","Singapore":"Asia","Australia":"Asia/Pac",
+  "New Zealand":"Asia/Pac","Brazil":"LatAm","Mexico":"LatAm","Argentina":"LatAm",
+};
+
+let sectorChart = null, geoChart = null;
+
+function classifyGeo(asset) {
+  const meta = asset.meta || {};
+  // 1. country field (most reliable)
+  if (meta.country && COUNTRY_TO_GEO[meta.country]) return COUNTRY_TO_GEO[meta.country];
+  // 2. exchange field
+  const exch = (meta.exchange || "").toUpperCase();
+  if (exch && EXCHANGE_TO_GEO[exch]) return EXCHANGE_TO_GEO[exch];
+  // 3. ticker suffix heuristic
+  const name = (asset.name || "").toUpperCase();
+  if (name.endsWith(".L") || name.endsWith(".GB")) return "Europa";
+  if (name.endsWith(".DE") || name.endsWith(".FR") || name.endsWith(".PA") ||
+      name.endsWith(".AS") || name.endsWith(".MC") || name.endsWith(".MI") ||
+      name.endsWith(".LS") || name.endsWith(".PT") || name.endsWith(".WA") ||
+      name.endsWith(".SW") || name.endsWith(".CH") || name.endsWith(".CO") ||
+      name.endsWith(".DK") || name.endsWith(".ST") || name.endsWith(".SE") ||
+      name.endsWith(".OL") || name.endsWith(".HE") || name.endsWith(".BR")) return "Europa";
+  if (name.endsWith(".TO") || name.endsWith(".CA")) return "Canadá";
+  if (name.endsWith(".AX") || name.endsWith(".AU")) return "Asia/Pac";
+  if (name.endsWith("-USD") || name.endsWith(".CC")) return "Cripto";
+  // 4. quoteType
+  if (meta.quoteType === "CRYPTOCURRENCY") return "Cripto";
+  // 5. Default: if no suffix and no data, likely US
+  if (!name.includes(".")) return "USA";
+  return "Outros";
+}
+
+function classifySector(asset) {
+  const meta = asset.meta || {};
+  // Crypto
+  const name = (asset.name || "").toUpperCase();
+  if ((name.endsWith("-USD") && !name.includes(".")) || name.endsWith(".CC") ||
+      meta.quoteType === "CRYPTOCURRENCY") return "Cripto";
+  // ETF — no sector from Yahoo; classify by name/exchange
+  if (meta.quoteType === "ETF" || meta.quoteType === "MUTUALFUND") return "ETF / Fundo";
+  // Mapped sector
+  if (meta.sector && SECTOR_MAP[meta.sector]) return SECTOR_MAP[meta.sector];
+  if (meta.sector) return meta.sector; // unmapped sector, use as-is
+  // No metadata yet — show as "Sem dados (⟳)"
+  return null;
+}
+
+function renderSectorChart() {
+  const ctx = document.getElementById("sectorChart");
+  if (!ctx) return;
+
+  const EQUITY_CLASSES = ["Ações/ETFs","Cripto"];
+  const assets = state.assets.filter(a => EQUITY_CLASSES.includes(a.class) && parseNum(a.value) > 0);
+
+  const by = {};
+  let noData = 0;
+  for (const a of assets) {
+    const s = classifySector(a);
+    if (!s) { noData += parseNum(a.value); continue; }
+    by[s] = (by[s] || 0) + parseNum(a.value);
+  }
+  if (noData > 0) by["Sem dados (⟳)"] = noData;
+
+  const labels = Object.keys(by).sort((a,b) => by[b]-by[a]);
+  const values = labels.map(k => by[k]);
+  const total  = values.reduce((a,b) => a+b, 0);
+
+  const PALETTE = ["#5b5ce6","#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6",
+                   "#ec4899","#06b6d4","#84cc16","#f97316","#64748b","#0ea5e9",
+                   "#a855f7","#14b8a6"];
+
+  if (sectorChart) sectorChart.destroy();
+  sectorChart = new Chart(ctx.getContext("2d"), {
+    type: "doughnut",
+    data: { labels, datasets: [{ data: values, backgroundColor: PALETTE, borderWidth: 2, borderColor: "#fff" }] },
+    options: {
+      cutout: "65%",
+      plugins: {
+        legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 }, padding: 8 } },
+        tooltip: { callbacks: { label: c => `${c.label}: ${fmtEUR(c.raw)} (${fmtPct(total>0?c.raw/total*100:0)})` } }
+      }
+    }
+  });
+
+  // Update count label
+  const lbl = document.getElementById("sectorChartLabel");
+  if (lbl) lbl.textContent = `${assets.length} activos · ${labels.length} sectores`;
+}
+
+function renderGeoChart() {
+  const ctx = document.getElementById("geoChart");
+  if (!ctx) return;
+
+  const EQUITY_CLASSES = ["Ações/ETFs","Cripto"];
+  const assets = state.assets.filter(a => EQUITY_CLASSES.includes(a.class) && parseNum(a.value) > 0);
+
+  const by = {};
+  for (const a of assets) {
+    const g = classifyGeo(a);
+    by[g] = (by[g] || 0) + parseNum(a.value);
+  }
+
+  const GEO_COLORS = {
+    "USA":"#3b82f6","Europa":"#10b981","Asia":"#f59e0b","Asia/Pac":"#f97316",
+    "Canadá":"#8b5cf6","LatAm":"#ef4444","Cripto":"#64748b","Outros":"#94a3b8"
+  };
+
+  const labels = Object.keys(by).sort((a,b) => by[b]-by[a]);
+  const values = labels.map(k => by[k]);
+  const colors = labels.map(k => GEO_COLORS[k] || "#94a3b8");
+  const total  = values.reduce((a,b) => a+b, 0);
+
+  if (geoChart) geoChart.destroy();
+  geoChart = new Chart(ctx.getContext("2d"), {
+    type: "doughnut",
+    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 2, borderColor: "#fff" }] },
+    options: {
+      cutout: "65%",
+      plugins: {
+        legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 }, padding: 8 } },
+        tooltip: { callbacks: { label: c => `${c.label}: ${fmtEUR(c.raw)} (${fmtPct(total>0?c.raw/total*100:0)})` } }
+      }
+    }
+  });
+
+  const lbl = document.getElementById("geoChartLabel");
+  if (lbl) lbl.textContent = `${assets.length} activos · ${labels.length} regiões`;
+}
+
 function renderAll() {
   renderDashboard();
   renderItems();
   renderCashflow();
   renderDividends();
   updatePassiveBar();
+  if (currentView === "analysis") { renderSectorChart(); renderGeoChart(); }
 }
 
 /* ─── DASHBOARD ───────────────────────────────────────────── */
@@ -552,10 +730,14 @@ function renderGoal() {
     const entries = Object.entries(t.passiveBreakdown).sort((a,b) => b[1]-a[1]);
     let html = entries.map(([cls, v]) => `${escapeHtml(cls)}: <b>${fmtEUR(v)}</b>`).join(" &nbsp;·&nbsp; ");
     if (t.realDividends12m > 0) {
-      html += ` &nbsp;·&nbsp; <span style="color:#059669">Divid. reais (12m): <b>${fmtEUR(t.realDividends12m)}</b></span>`;
+      html += ` &nbsp;·&nbsp; <span style="color:#059669">Dividendos: <b>${fmtEUR(t.realDividends12m)}</b>/ano</span>`;
+    }
+    if (html) {
+      const totalShown = entries.reduce((s,[,v])=>s+v,0) + (t.realDividends12m > 0 && !entries.find(([k])=>k.includes("Dividendo")) ? t.realDividends12m : 0);
+      html += ` &nbsp;·&nbsp; <b>Total: ${fmtEUR(t.passiveAnnual)}/ano</b>`;
     }
     breakEl.innerHTML = html;
-    breakEl.style.display = entries.length ? "" : "none";
+    breakEl.style.display = html ? "" : "none";
   }
 
   // update settings input
@@ -821,7 +1003,7 @@ function renderDivYTD() {
 
   if (currentSummary) {
     divYTD = parseNum(currentSummary.gross) - parseNum(currentSummary.tax);
-    label = `Yield ${fmtPct(parseNum(currentSummary.yieldPct))} · Dados ${currentYear}`;
+    label = `Yield ${fmtPct(parseNum(currentSummary.yieldPct))} · Resumo ${currentYear} · ${fmtEUR(divYTD)}/ano líquido`;
   } else if (prevSummary) {
     // Use last year as reference
     divYTD = parseNum(prevSummary.gross) - parseNum(prevSummary.tax);
@@ -2084,12 +2266,205 @@ function renderDivChart(divs) {
   });
 }
 
+
+/* ─── PORTFOLIO ANALYSIS: SECTOR + GEOGRAPHY CHARTS ─────────────────────── */
+
+// Sector name mapping: Yahoo English -> Portuguese label
+const SECTOR_PT = {
+  "Technology": "Tecnologia",
+  "Financial Services": "Financeiros",
+  "Healthcare": "Saúde",
+  "Consumer Cyclical": "Consumo Cíclico",
+  "Consumer Defensive": "Consumo Básico",
+  "Industrials": "Industriais",
+  "Basic Materials": "Mat. Básicos",
+  "Energy": "Energia",
+  "Real Estate": "Imobiliário",
+  "Utilities": "Utilidades",
+  "Communication Services": "Comunicações",
+  "ETF": "ETF",
+  "Cripto": "Cripto",
+  "Outros": "Outros",
+};
+
+// Geography mapping: country/exchange -> region
+function assetToRegion(meta) {
+  if (!meta) return null;
+  const qt = (meta.quoteType || "").toUpperCase();
+  if (qt === "CRYPTOCURRENCY") return "Cripto";
+
+  const country = (meta.country || "").toLowerCase();
+  const exchange = (meta.exchange || "").toUpperCase();
+
+  // By country first
+  if (country.includes("united states") || country === "usa") return "EUA";
+  if (country.includes("united kingdom")) return "Europa";
+  if (["germany","france","italy","spain","netherlands","portugal",
+       "belgium","sweden","norway","denmark","finland","switzerland",
+       "austria","ireland","poland","greece"].some(c => country.includes(c))) return "Europa";
+  if (country.includes("japan")) return "Ásia-Pacífico";
+  if (country.includes("china") || country.includes("hong kong") ||
+      country.includes("south korea") || country.includes("taiwan") ||
+      country.includes("singapore") || country.includes("australia") ||
+      country.includes("india") || country.includes("new zealand")) return "Ásia-Pacífico";
+  if (country.includes("brazil") || country.includes("mexico") ||
+      country.includes("argentina") || country.includes("chile")) return "Lat. América";
+  if (country.includes("canada")) return "EUA"; // often bundled with North America
+  if (country) return "Outros";
+
+  // Fall back to exchange suffix
+  if (["NMS","NYQ","NGM","PCX","ASE","BATS"].some(e => exchange.startsWith(e))) return "EUA";
+  if (["LSE","IOB"].includes(exchange)) return "Europa";
+  if (["GER","FRA","XETRA","EBS","EPA"].some(e => exchange.includes(e))) return "Europa";
+  if (["TYO","HKG","SHG","SES"].some(e => exchange.includes(e))) return "Ásia-Pacífico";
+
+  // By ticker suffix (stored in asset.name)
+  return null;
+}
+
+function assetToSector(asset) {
+  const meta = asset.meta || {};
+  const cls = (asset.class || "").toLowerCase().replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o");
+  if (cls === "cripto") return "Cripto";
+  const qt = (meta.quoteType || "").toUpperCase();
+  if (qt === "CRYPTOCURRENCY") return "Cripto";
+  if (qt === "ETF" || qt === "MUTUALFUND") return "ETF";
+  const s = meta.sector || "";
+  if (!s) return null; // no data yet
+  return SECTOR_PT[s] || s;
+}
+
+let sectorChartInst = null, geoChartInst = null;
+
+function renderPortfolioCharts() {
+  const EQUITY_CLS = new Set(["ações/etfs","acoes/etfs","cripto"]);
+  const equityAssets = state.assets.filter(a => {
+    const c = (a.class||"").toLowerCase().replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o");
+    return EQUITY_CLS.has(c) && parseNum(a.value) > 0;
+  });
+
+  // ── SECTOR CHART ──────────────────────────────────────────
+  const bySector = {};
+  let sectorCovered = 0;
+  for (const a of equityAssets) {
+    const sector = assetToSector(a);
+    if (!sector) continue;
+    sectorCovered++;
+    bySector[sector] = (bySector[sector] || 0) + parseNum(a.value);
+  }
+
+  const sectorNoData = document.getElementById("sectorNoData");
+  const sectorWrap   = document.getElementById("sectorChartWrap");
+  if (sectorCovered === 0) {
+    if (sectorNoData) sectorNoData.style.display = "";
+    if (sectorWrap)   sectorWrap.style.display   = "none";
+    document.getElementById("sectorLegend").innerHTML = "";
+  } else {
+    if (sectorNoData) sectorNoData.style.display = "none";
+    if (sectorWrap)   sectorWrap.style.display   = "";
+    const sLabels = Object.keys(bySector).sort((a,b) => bySector[b]-bySector[a]);
+    const sValues = sLabels.map(k => bySector[k]);
+    const sTotal  = sValues.reduce((a,b) => a+b, 0);
+    const ctx1 = document.getElementById("sectorChart").getContext("2d");
+    if (sectorChartInst) sectorChartInst.destroy();
+    sectorChartInst = new Chart(ctx1, {
+      type: "doughnut",
+      data: {
+        labels: sLabels,
+        datasets: [{ data: sValues, backgroundColor: PALETTE, borderWidth: 2, borderColor: "#fff" }]
+      },
+      options: {
+        cutout: "65%",
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: c => ` ${c.label}: ${fmtEUR(c.raw)} (${(c.raw/sTotal*100).toFixed(1)}%)` } }
+        }
+      }
+    });
+    // Custom legend
+    const sLegend = document.getElementById("sectorLegend");
+    sLegend.innerHTML = sLabels.map((l,i) =>
+      `<div style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">
+        <span style="width:11px;height:11px;border-radius:3px;background:${PALETTE[i%PALETTE.length]};display:inline-block;flex-shrink:0"></span>
+        <span>${escapeHtml(l)}</span>
+        <span style="color:#64748b">${(bySector[l]/sTotal*100).toFixed(1)}%</span>
+      </div>`
+    ).join("");
+  }
+
+  // ── GEOGRAPHY CHART ───────────────────────────────────────
+  const byRegion = {};
+  let geoCovered = 0;
+  for (const a of equityAssets) {
+    // First try meta.country/exchange
+    let region = assetToRegion(a.meta);
+    // If no meta, infer from ticker suffix
+    if (!region) {
+      const name = (a.name || "").toUpperCase();
+      if (name.endsWith("-USD") || (!name.includes(".") && !name.endsWith(".CC"))) region = "EUA";
+      else if (name.endsWith(".LS")) region = "Europa";
+      else if (name.endsWith(".L"))  region = "Europa";
+      else if (name.endsWith(".DE") || name.endsWith(".PA") || name.endsWith(".MI") ||
+               name.endsWith(".AS") || name.endsWith(".MC") || name.endsWith(".BR") ||
+               name.endsWith(".WA") || name.endsWith(".SW") || name.endsWith(".ST") ||
+               name.endsWith(".OL") || name.endsWith(".HE") || name.endsWith(".CO")) region = "Europa";
+      else if (name.endsWith(".TO")) region = "EUA";
+      else if (name.endsWith(".AX")) region = "Ásia-Pacífico";
+      else if (name.endsWith(".T"))  region = "Ásia-Pacífico";
+      else if (name.endsWith("-USD") || name.includes(".CC")) region = "Cripto";
+      else region = "EUA"; // default for plain tickers (AAPL, MSFT etc)
+    }
+    geoCovered++;
+    byRegion[region] = (byRegion[region] || 0) + parseNum(a.value);
+  }
+
+  const GEO_PALETTE = ["#5b5ce6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#84cc16"];
+  const geoNoData = document.getElementById("geoNoData");
+  const geoWrap   = document.getElementById("geoChartWrap");
+  if (geoCovered === 0) {
+    if (geoNoData) geoNoData.style.display = "";
+    if (geoWrap)   geoWrap.style.display   = "none";
+    document.getElementById("geoLegend").innerHTML = "";
+  } else {
+    if (geoNoData) geoNoData.style.display = "none";
+    if (geoWrap)   geoWrap.style.display   = "";
+    const gLabels = Object.keys(byRegion).sort((a,b) => byRegion[b]-byRegion[a]);
+    const gValues = gLabels.map(k => byRegion[k]);
+    const gTotal  = gValues.reduce((a,b) => a+b, 0);
+    const ctx2 = document.getElementById("geoChart").getContext("2d");
+    if (geoChartInst) geoChartInst.destroy();
+    geoChartInst = new Chart(ctx2, {
+      type: "doughnut",
+      data: {
+        labels: gLabels,
+        datasets: [{ data: gValues, backgroundColor: GEO_PALETTE, borderWidth: 2, borderColor: "#fff" }]
+      },
+      options: {
+        cutout: "65%",
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: c => ` ${c.label}: ${fmtEUR(c.raw)} (${(c.raw/gTotal*100).toFixed(1)}%)` } }
+        }
+      }
+    });
+    const gLegend = document.getElementById("geoLegend");
+    gLegend.innerHTML = gLabels.map((l,i) =>
+      `<div style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">
+        <span style="width:11px;height:11px;border-radius:3px;background:${GEO_PALETTE[i%GEO_PALETTE.length]};display:inline-block;flex-shrink:0"></span>
+        <span>${escapeHtml(l)}</span>
+        <span style="color:#64748b">${(byRegion[l]/gTotal*100).toFixed(1)}%</span>
+      </div>`
+    ).join("");
+  }
+}
+
 /* ─── ANALYSIS VIEW ───────────────────────────────────────── */
 function renderAnalysis() {
-  const tab = ($("analysisTab") && $("analysisTab").value) || "compound";
+  const tab = ($("analysisTab") && $("analysisTab").value) || "portfolio";
   document.querySelectorAll(".analysisPanelTab").forEach(p => { p.style.display = "none"; });
   const panel = document.getElementById("analysisPanelTab_" + tab);
   if (panel) panel.style.display = "";
+  if (tab === "portfolio") renderPortfolioCharts();
   if (tab === "compound") renderCompoundPanel();
   if (tab === "forecast") renderForecastPanel();
   if (tab === "compare") renderComparePanel();
@@ -4182,8 +4557,13 @@ function extractTicker(asset) {
 async function fetchQuote(ticker, workerUrl) {
   // Chama o Cloudflare Worker que proxifica Yahoo Finance
   const url = `${workerUrl.replace(/\/$/, "")}/quote?ticker=${encodeURIComponent(ticker)}`;
-  const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  let resp;
+  try {
+    resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  } catch (e) {
+    throw new Error(`Worker inacessível: ${e.message || "timeout"}`);
+  }
+  if (!resp.ok) throw new Error(`Worker HTTP ${resp.status}`);
   const data = await resp.json();
   if (data.error) throw new Error(data.error);
   return data; // { ticker, price, currency, name, change_pct }
@@ -4227,8 +4607,12 @@ async function refreshLiveQuotes() {
   const errors = [];
 
   // Convert DivTracker ticker format to Yahoo Finance format
+  // Known tickers not on Yahoo Finance — skip them gracefully
+  const SKIP_TICKERS = new Set(["WBA","14","DN3.DE","OD7F.DE","U9UA.DE"]);
+
   function toYahooTicker(raw) {
     const t = (raw||"").trim().toUpperCase();
+    if (SKIP_TICKERS.has(t)) return null; // known unavailable
     if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD"); // crypto
     const xmap = {".PT":".LS",".GB":".L",".PL":".WA",".CH":".SW",
       ".DK":".CO",".SE":".ST",".NO":".OL",".FI":".HE",
@@ -4243,8 +4627,9 @@ async function refreshLiveQuotes() {
   const tickerList = candidates.map(asset => {
     const raw = (asset.name && /^[A-Z0-9.\-]{1,12}$/.test(asset.name.trim()))
       ? asset.name.trim() : extractTicker(asset);
-    return { asset, raw, yahoo: raw ? toYahooTicker(raw) : null };
-  }).filter(x => x.yahoo);
+    const yahoo = raw ? toYahooTicker(raw) : null;
+    return { asset, raw, yahoo };
+  }).filter(x => x.yahoo); // null = known skip tickers
 
   // Fetch all quotes in parallel
   const quoteResults = await Promise.allSettled(
@@ -4298,6 +4683,16 @@ async function refreshLiveQuotes() {
       .replace(/\s*·?\s*⚠️ Custo histórico[^·]*/g,"").trim();
     asset.value = newValue;
     asset.notes = `${noteBase}${noteBase?" · ":""}Preço: ${priceLabel} (${today})`;
+    // Save sector/geography metadata for charts
+    if (q.sector || q.country || q.exchange) {
+      asset.meta = {
+        sector:    q.sector    || "",
+        industry:  q.industry  || "",
+        country:   q.country   || "",
+        exchange:  q.exchange  || "",
+        quoteType: q.quote_type || "",
+      };
+    }
     updated++;
   }
 

@@ -522,15 +522,67 @@
 
   <!-- ANÁLISE -->
   <section class="view" data-view="analysis" id="viewAnalysis" hidden>
+
+    <!-- Sector Chart -->
+    <div class="card">
+      <div class="card__head">
+        <div>
+          <div class="card__title">📊 Distribuição por Sector</div>
+          <div class="card__muted" id="sectorChartLabel">Actualiza com ⟳ Cotações</div>
+        </div>
+      </div>
+      <div style="position:relative;height:280px;margin-top:8px">
+        <canvas id="sectorChart"></canvas>
+      </div>
+      <div class="note" style="margin-top:8px">Inclui Ações/ETFs e Cripto. ETFs sem sector detalhado agrupados em "ETF / Fundo". Actualiza via ⟳ Cotações.</div>
+    </div>
+
+    <!-- Geography Chart -->
+    <div class="card">
+      <div class="card__head">
+        <div>
+          <div class="card__title">🌍 Distribuição Geográfica</div>
+          <div class="card__muted" id="geoChartLabel">Actualiza com ⟳ Cotações</div>
+        </div>
+      </div>
+      <div style="position:relative;height:280px;margin-top:8px">
+        <canvas id="geoChart"></canvas>
+      </div>
+      <div class="note" style="margin-top:8px">Baseado no país de cotação e exchange. Cripto agrupado em categoria própria.</div>
+    </div>
+
     <div class="card">
       <div class="card__head"><div><div class="card__title">Análise</div><div class="card__muted">Juro composto · Previsão · Comparação · FIRE</div></div></div>
       <select class="input" id="analysisTab">
+        <option value="portfolio">📊 Portfólio</option>
         <option value="compound">Juro Composto</option>
         <option value="forecast">Previsão de Rentabilidade</option>
         <option value="compare">Comparação de Períodos</option>
         <option value="fire">Projeção FIRE</option>
       </select>
     </div>
+    <!-- Portfolio Analysis: Sector + Geography charts -->
+    <div class="analysisPanelTab" id="analysisPanelTab_portfolio" style="display:none">
+      <div class="card">
+        <div class="card__title" style="margin-bottom:4px">Distribuição por Sector</div>
+        <div class="card__muted" style="margin-bottom:12px">Ações e ETFs · baseado nas cotações actualizadas</div>
+        <div id="sectorNoData" class="note" style="display:none">Sem dados de sector. Faz ⟳ Cotações primeiro.</div>
+        <div class="chartWrap" id="sectorChartWrap"><canvas id="sectorChart" height="260"></canvas></div>
+        <div id="sectorLegend" style="margin-top:14px;display:flex;flex-wrap:wrap;gap:6px"></div>
+      </div>
+      <div class="card">
+        <div class="card__title" style="margin-bottom:4px">Distribuição Geográfica</div>
+        <div class="card__muted" style="margin-bottom:12px">Por mercado de cotação</div>
+        <div id="geoNoData" class="note" style="display:none">Sem dados geográficos. Faz ⟳ Cotações primeiro.</div>
+        <div class="chartWrap" id="geoChartWrap"><canvas id="geoChart" height="260"></canvas></div>
+        <div id="geoLegend" style="margin-top:14px;display:flex;flex-wrap:wrap;gap:6px"></div>
+      </div>
+      <div class="card" style="font-size:13px;color:#64748b">
+        ℹ️ Apenas activos com cotação actualizada (⟳ Cotações) têm dados de sector e geografia.<br>
+        ETFs de acumulação não têm sector individual — aparecem como "ETF".
+      </div>
+    </div>
+
     <div class="analysisPanelTab" id="analysisPanelTab_compound">
       <div class="card">
         <div class="card__title" style="margin-bottom:12px">Simulador de Juro Composto <button class="info-btn" onclick="openTip('compound')" title="O que é o juro composto?">ℹ️</button></div>
