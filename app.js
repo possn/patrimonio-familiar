@@ -3805,14 +3805,19 @@ async function importJSON(file) {
   toast("Backup importado com sucesso.");
 }
 
+let _resetPending = false;
 function resetAll() {
-  const answer = prompt(
-    "⚠️ RESET TOTAL\n\nEste botão apaga TUDO: ativos, passivos, movimentos, dividendos.\n\nEscreve APAGAR para confirmar:"
-  );
-  if ((answer || "").trim().toUpperCase() !== "APAGAR") {
-    if (answer !== null) toast("Reset cancelado. Tens de escrever APAGAR.");
+  const btn = document.getElementById("btnReset");
+  if (!_resetPending) {
+    _resetPending = true;
+    if (btn) { btn.textContent = "⚠️ Toca outra vez — apaga TUDO!"; btn.style.background="#7f1d1d"; }
+    setTimeout(() => {
+      _resetPending = false;
+      if (btn) { btn.textContent = "🗑️ Reset total — apaga TUDO incluindo ativos"; btn.style.background=""; }
+    }, 4000);
     return;
   }
+  _resetPending = false;
   void storageClear();
   state = safeClone(DEFAULT_STATE);
   saveState();
@@ -4002,32 +4007,63 @@ function wire() {
   $("btnReset").addEventListener("click", resetAll);
 
   // Clear only transactions (keep assets/liabilities)
-  function clearTransactions() {
+  function makeTwoTap(btnId, label, action) {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    let pending = false;
+    btn.addEventListener("click", () => {
+      if (!pending) {
+        pending = true;
+        const orig = btn.textContent;
+        btn.textContent = "⚠️ Toca outra vez para confirmar";
+        btn.style.background = "#fbbf24"; btn.style.color = "#000";
+        setTimeout(() => { pending = false; btn.textContent = orig; btn.style.background=""; btn.style.color=""; }, 4000);
+        return;
+      }
+      pending = false;
+      btn.textContent = label; btn.style.background=""; btn.style.color="";
+      action(btn);
+    });
+  }
+
+  makeTwoTap("btnClearTransactions", "🗑️ Limpar movimentos (mantém ativos)", () => {
     const n = state.transactions.length;
     if (!n) { toast("Sem movimentos para limpar."); return; }
-    if (!confirm(`⚠️ Apagar TODOS os ${n} movimentos?\n\nOs teus ativos e passivos são mantidos.\nPodes reimportar os ficheiros do banco a seguir.`)) return;
     state.transactions = [];
-    saveState();
-    renderAll();
-    checkDuplicateWarning();
+    saveState(); renderAll(); checkDuplicateWarning();
     toast(`🗑️ ${n} movimentos apagados. Reimporta os ficheiros do banco.`, 4000);
-  }
-  const btnClearTx = document.getElementById("btnClearTransactions");
-  if (btnClearTx) btnClearTx.addEventListener("click", clearTransactions);
-  const btnClearTx2 = document.getElementById("btnClearTransactions2");
-  if (btnClearTx2) btnClearTx2.addEventListener("click", clearTransactions);
+  });
+  makeTwoTap("btnClearTransactions2", "🗑️ Limpar movimentos e reimportar", () => {
+    const n = state.transactions.length;
+    if (!n) { toast("Sem movimentos para limpar."); return; }
+    state.transactions = [];
+    saveState(); renderAll(); checkDuplicateWarning();
+    toast(`🗑️ ${n} movimentos apagados. Reimporta os ficheiros do banco.`, 4000);
+  });
 
   // Limpar só Ações/ETFs/Cripto (mantém depósitos, PPR, fundos, movimentos)
   const btnClearEq = document.getElementById("btnClearEquities");
-  if (btnClearEq) btnClearEq.addEventListener("click", () => {
-    const EQ = ["Ações/ETFs", "Cripto"];
-    const toRemove = state.assets.filter(a => EQ.includes(a.class));
-    if (!toRemove.length) { toast("Sem Ações/ETFs/Cripto para limpar."); return; }
-    if (!confirm(`Apagar ${toRemove.length} activos de Ações/ETFs/Cripto?\n\nDepósitos, PPR, Fundos e movimentos são mantidos.`)) return;
-    state.assets = state.assets.filter(a => !EQ.includes(a.class));
-    saveState(); renderAll();
-    toast(`🗑️ ${toRemove.length} activos removidos. Reimporta o CSV do DivTracker.`, 4000);
-  });
+  if (btnClearEq) {
+    let _eqPending = false;
+    btnClearEq.addEventListener("click", () => {
+      const EQ = ["Ações/ETFs", "Cripto"];
+      const toRemove = state.assets.filter(a => EQ.includes(a.class));
+      if (!toRemove.length) { toast("Sem Ações/ETFs/Cripto para limpar."); return; }
+      if (!_eqPending) {
+        _eqPending = true;
+        btnClearEq.textContent = `⚠️ Confirmar? Apaga ${toRemove.length} activos`;
+        btnClearEq.style.background = "#fbbf24"; btnClearEq.style.color = "#000";
+        setTimeout(() => { _eqPending = false; btnClearEq.textContent = "🗑️ Limpar Ações / ETFs / Cripto"; btnClearEq.style.background=""; btnClearEq.style.color=""; }, 4000);
+        return;
+      }
+      _eqPending = false;
+      state.assets = state.assets.filter(a => !EQ.includes(a.class));
+      saveState(); renderAll();
+      btnClearEq.textContent = "🗑️ Limpar Ações / ETFs / Cripto";
+      btnClearEq.style.background=""; btnClearEq.style.color="";
+      toast(`🗑️ ${toRemove.length} activos removidos. Reimporta o CSV do DivTracker.`, 4000);
+    });
+  }
 
   // Check on import view open
   checkDuplicateWarning();
@@ -4273,10 +4309,61 @@ async function refreshLiveQuotes() {
   if (updated > 0 && !failed) {
     toast(`✅ ${updated} ativo${updated !== 1 ? "s" : ""} actualizado${updated !== 1 ? "s" : ""}`, 3000);
   } else if (updated > 0) {
-    toast(`✅ ${updated} actualizado${updated !== 1 ? "s" : ""} · ⚠️ ${failed} erro${failed !== 1 ? "s" : ""}: ${errors.slice(0,3).join(", ")}`, 5000);
+    // Show clickable toast — tapping opens full error list modal
+    showQuoteErrors(updated, failed, errors, updated, failed);
+    toastClickable(
+      `✅ ${updated} actualizado${updated !== 1 ? "s" : ""} · ⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver`,
+      () => openModal("modalQuoteErrors"), 8000
+    );
   } else {
-    toast(`⚠️ Falha a actualizar: ${errors.slice(0,3).join(", ")}. Verifica o Worker.`, 5000);
+    showQuoteErrors(0, failed, errors, 0, failed);
+    toastClickable(
+      `⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver detalhes`,
+      () => openModal("modalQuoteErrors"), 8000
+    );
   }
+}
+
+// Populate the quote errors modal
+function showQuoteErrors(updated, failed, errors, updatedCount, failedCount) {
+  const summary = document.getElementById("quoteErrorsSummary");
+  const list = document.getElementById("quoteErrorsList");
+  if (!summary || !list) return;
+  summary.textContent = `${updatedCount} actualizado${updatedCount !== 1 ? "s" : ""} com sucesso · ${failedCount} erro${failedCount !== 1 ? "s" : ""}`;
+  list.innerHTML = errors.map(e => {
+    // Try to find asset name for this ticker
+    const asset = state.assets.find(a => (a.name||"").toUpperCase() === e.toUpperCase());
+    const name = asset ? ` — ${escapeHtml(asset.name)}` : "";
+    return `<div class="item" style="cursor:default">
+      <div class="item__l">
+        <div class="item__t" style="font-family:monospace">${escapeHtml(e)}</div>
+        <div class="item__s">Não encontrado no Yahoo Finance${name}</div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+// Toast that can be tapped to trigger an action
+function toastClickable(msg, onClick, duration = 5000) {
+  let el = document.getElementById("toastEl");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toastEl";
+    el.style.cssText = "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;padding:10px 20px;border-radius:20px;font-weight:700;font-size:14px;z-index:999;max-width:90vw;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,.2);transition:opacity .3s;cursor:pointer";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.opacity = "1";
+  el.style.cursor = "pointer";
+  // Remove old listener and add new
+  const newEl = el.cloneNode(true);
+  el.parentNode.replaceChild(newEl, el);
+  newEl.textContent = msg;
+  newEl.style.opacity = "1";
+  newEl.style.cursor = "pointer";
+  if (onClick) newEl.addEventListener("click", onClick);
+  clearTimeout(newEl._t);
+  newEl._t = setTimeout(() => { newEl.style.opacity = "0"; }, duration);
 }
 
 
