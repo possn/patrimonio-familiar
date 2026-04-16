@@ -357,85 +357,93 @@ function passiveFromItem(it) {
 
 function calcTotals() {
   const assetsTotal = state.assets.reduce((a, x) => a + parseNum(x.value), 0);
-  const liabsTotal  = state.liabilities.reduce((a, x) => a + parseNum(x.value), 0);
+  const liabsTotal = state.liabilities.reduce((a, x) => a + parseNum(x.value), 0);
   const net = assetsTotal - liabsTotal;
+  const theoreticalPassive = state.assets.reduce((a, x) => a + passiveFromItem(x), 0);
 
   const now = new Date();
   const currentYear = now.getFullYear();
-  const cutoff12m = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
+  const cutoff12m = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0,10);
 
-  // Real dividends — last 12 months (net of tax)
-  const realDividends12m = (state.dividends || [])
-    .filter(d => d.date >= cutoff12m)
-    .reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
-
-  // Annual summary (most reliable if user filled it in)
+  // From annual summaries (net = gross - tax) — prefer most recent year
   const latestSummary = (state.divSummaries || [])
-    .filter(s => Number(s.year) >= currentYear - 1)
-    .sort((a, b) => Number(b.year) - Number(a.year))[0];
+    .filter(s => s.year >= currentYear - 1)
+    .sort((a, b) => b.year - a.year)[0];
   const summaryNet = latestSummary
     ? parseNum(latestSummary.gross) - parseNum(latestSummary.tax)
     : 0;
 
-  // ── Passive income: clean additive logic ─────────────────────────────────
+  // From individual dividends (last 12 months)
+  const realDividends12m = (state.dividends || [])
+    .filter(d => d.date >= cutoff12m)
+    .reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
+
+  // ── Passive income calculation ────────────────────────────────────────────
+  // Strategy: ADDITIVE, not MAX. Each source is counted once, no double-counting.
   //
-  // Rule: for EACH asset, use EXACTLY ONE source of passive income:
-  //   a) If asset has yield% configured by user  -> use yield% × value  (authoritative)
-  //   b) If asset has NO yield% but dividends recorded -> use real dividends (allocated proportionally)
-  //   c) If neither -> 0
+  // 1. Deposits / PPR / Imóveis / Obrigações: use yield% configured on each asset
+  //    (these never have dividend records — safe to use theoretical)
   //
-  // Real dividends (portfolio-level) are added ONCE for assets without yield%.
-  // This avoids double-counting when user configures yield% on ETFs.
+  // 2. ETFs / Stocks / Funds: use REAL dividends if registered, else yield% if set
+  //    (avoids double-counting: if user registered dividends AND set yield%, prefer real)
+  //
+  // 3. Result = sum of (1) + sum of (2)
   // ─────────────────────────────────────────────────────────────────────────
 
-  const passiveBreakdown = {};
+  // Only Ações/ETFs and Cripto use real dividend records as income source.
+  // Fundos, Obrigações, PPR, Depósitos use their configured yield% directly.
+  function isRealDivClass(a) {
+    const cls = (a.class || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"");
+    return cls.includes("acoes") || cls.includes("acoes/etfs") || cls.includes("cripto");
+  }
 
-  // Step 1: Sum yield% income from ALL assets that have it configured
-  let yieldPassive = 0;
-  let yieldAssetValue = 0;
+  // Theoretical from NON-dividend-class assets (deposits, PPR, imóveis, etc.)
+  const passiveBreakdown = {};
+  let passiveFromNonDiv = 0;
   for (const a of state.assets) {
+    if (isRealDivClass(a)) continue; // will be covered by real dividends below
     const p = passiveFromItem(a);
     if (p <= 0) continue;
-    yieldPassive += p;
-    yieldAssetValue += parseNum(a.value);
+    passiveFromNonDiv += p;
     const cls = a.class || "Outros";
     passiveBreakdown[cls] = (passiveBreakdown[cls] || 0) + p;
   }
 
-  // Step 2: Add real dividends ONLY for the portion NOT covered by yield%
-  // If ALL ETF assets have yield% set, real dividends are already counted -> don't add again
-  // If NO ETF assets have yield% set, add real dividends as the income source
-  // Heuristic: if yieldPassive covers most assets, trust it; else supplement with real divs
-  const totalAssetValue = assetsTotal;
-  const yieldCoverageRatio = totalAssetValue > 0 ? yieldAssetValue / totalAssetValue : 0;
+  // From ETF/stock assets: prefer real dividends (annualised) if available, else yield%
+  // Annualise real dividends based on months elapsed in current year
+  const monthsElapsed = Math.max(1, new Date().getMonth() + 1); // Jan=1 … Dec=12
+  const realDividendsCurrentYear = (state.dividends || [])
+    .filter(d => String(d.date || "").slice(0, 4) === String(new Date().getFullYear()))
+    .reduce((a, d) => a + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
 
-  // Real dividend income (net): use 12-month rolling OR annual summary
-  const realDivNet = summaryNet > 0 ? summaryNet : realDividends12m;
-
-  // Only add real dividends if they're NOT already captured by yield% on assets
-  // Simple rule: if yield% assets cover <30% of portfolio, assume dividends are uncovered
-  let dividendSupplement = 0;
-  if (realDivNet > 0 && yieldCoverageRatio < 0.30) {
-    // No yield% configured on most assets -> use real dividends as primary source
-    dividendSupplement = realDivNet;
-    passiveBreakdown["Dividendos reais"] = realDivNet;
-  } else if (realDivNet > yieldPassive * 0.5 && yieldCoverageRatio < 0.80) {
-    // Real dividends are significantly more than what yield% predicts for partial coverage
-    // Add the difference to avoid under-counting
-    const uncoveredDiv = Math.max(0, realDivNet - yieldPassive);
-    dividendSupplement = uncoveredDiv;
-    if (uncoveredDiv > 10) passiveBreakdown["Dividendos adicionais"] = uncoveredDiv;
+  // Use summary if available (more accurate), else annualise YTD
+  let passiveFromDivAssets = 0;
+  if (summaryNet > 0) {
+    passiveFromDivAssets = summaryNet;
+    passiveBreakdown["Dividendos (resumo anual)"] = summaryNet;
+  } else if (realDividendsCurrentYear > 0) {
+    // Annualise: if we're in April (4 months), multiply by 12/4
+    const annualised = realDividendsCurrentYear * (12 / monthsElapsed);
+    passiveFromDivAssets = annualised;
+    passiveBreakdown["Dividendos (anualizados)"] = annualised;
+  } else if (realDividends12m > 0) {
+    passiveFromDivAssets = realDividends12m;
+    passiveBreakdown["Dividendos (últ.12m)"] = realDividends12m;
+  } else {
+    // No real dividend data — fall back to yield% on ETF/stock assets
+    for (const a of state.assets) {
+      if (!isRealDivClass(a)) continue;
+      const p = passiveFromItem(a);
+      if (p <= 0) continue;
+      passiveFromDivAssets += p;
+      const cls = a.class || "Outros";
+      passiveBreakdown[cls] = (passiveBreakdown[cls] || 0) + p;
+    }
   }
 
-  const passiveAnnual = yieldPassive + dividendSupplement;
-  const theoreticalPassive = yieldPassive; // what yield% alone predicts
+  const passiveAnnual = passiveFromNonDiv + passiveFromDivAssets;
 
-  return {
-    assetsTotal, liabsTotal, net,
-    passiveAnnual, theoreticalPassive,
-    realDividends12m, summaryNet,
-    passiveBreakdown
-  };
+  return { assetsTotal, liabsTotal, net, passiveAnnual, theoreticalPassive: passiveAnnual, realDividends12m, summaryNet, passiveBreakdown };
 }
 
 /* ─── COMPOUND INTEREST ENGINE ────────────────────────────── */
@@ -2152,23 +2160,15 @@ function calcDividendYield() {
 // Rendimento passivo total de TODOS os ativos (dividendos + rendas + depósitos + PPR + obrigações)
 // Usado no simulador de Juro Composto
 function calcPortfolioYield() {
-  // Only count assets that actually generate yield (have it configured)
-  // Including zero-yield assets like raw crypto dilutes the weighted average
   let totalValue = 0, totalPassive = 0;
-  let totalValueAll = 0;
   for (const a of state.assets) {
     const v = parseNum(a.value);
     const p = passiveFromItem(a);
-    totalValueAll += v;
-    if (p > 0) {
-      totalValue += v;
-      totalPassive += p;
-    }
+    totalValue += v;
+    totalPassive += p;
   }
   const weightedYield = totalValue > 0 ? (totalPassive / totalValue) * 100 : 0;
-  // Also provide portfolio-wide yield (diluted by non-yield assets)
-  const portfolioYield = totalValueAll > 0 ? (totalPassive / totalValueAll) * 100 : 0;
-  return { totalValue: totalValueAll, totalPassive, weightedYield: portfolioYield };
+  return { totalValue, totalPassive, weightedYield };
 }
 
 // Estima contribuição mensal média dos últimos 6 meses de cashflow
@@ -2867,15 +2867,17 @@ function importRows(rows) {
   }
 
   // Convert trades to assets
-  // Step 1: Merge multi-currency positions for same ticker into one
-  // (e.g. ABR|EUR + ABR|USD → single "ABR" asset with combined qty/cost)
-  const mergedPos = new Map(); // key = ticker (no currency)
+  // Step 1: merge multi-currency positions for same ticker into one asset
+  const FX_TO_EUR = {
+    EUR:1, USD:0.92, GBP:1.17, DKK:0.134, CHF:1.05, PLN:0.23,
+    SEK:0.087, NOK:0.085, CAD:0.68, AUD:0.59, JPY:0.006,
+    HKD:0.118, SGD:0.68, BRL:0.17, MXN:0.046, ZAR:0.052
+  };
+  const mergedPos = new Map();
   for (const p of posMap.values()) {
     if (!(p.qty > 0) || !(p.cost > 0)) continue;
     const t = p.ticker;
-    if (!mergedPos.has(t)) {
-      mergedPos.set(t, { ticker: t, qty: 0, cost: 0, comm: 0, ccys: [] });
-    }
+    if (!mergedPos.has(t)) mergedPos.set(t, { ticker:t, qty:0, cost:0, comm:0, ccys:[] });
     const m = mergedPos.get(t);
     m.qty  += p.qty;
     m.cost += p.cost;
@@ -2883,60 +2885,31 @@ function importRows(rows) {
     if (!m.ccys.includes(p.ccy)) m.ccys.push(p.ccy);
   }
 
-  // Approximate FX rates to EUR (used only for cost-basis estimation)
-  // These are rough — user should update actual value via ⟳ Cotações or manually
-  const FX_TO_EUR = {
-    EUR:1, USD:0.92, GBP:1.17, DKK:0.134, CHF:1.05, PLN:0.23,
-    SEK:0.087, NOK:0.085, CAD:0.68, AUD:0.59, JPY:0.006,
-    HKD:0.118, SGD:0.68, BRL:0.17, MXN:0.046, CZK:0.04
-  };
-
-  // Step 2: Create or UPDATE one asset per ticker
+  // Step 2: create or update one asset per ticker with FX-converted cost
   for (const p of mergedPos.values()) {
     const upper = String(p.ticker).toUpperCase();
     const isCrypto = upper.endsWith(".CC") || ["BTC","ETH","SOL","ADA","XRP","DOT","BNB"].includes(upper.replace(/\.CC$/, ""));
     const cls = isCrypto ? "Cripto" : "Ações/ETFs";
     const ccyLabel = p.ccys.join("/");
 
-    // Convert cost to EUR using FX rates
-    // If all purchases are in EUR, no conversion needed (exact)
-    // If mixed/foreign currency, apply FX and flag for user review
-    const allEUR = p.ccys.length === 1 && p.ccys[0] === "EUR";
-    let estValue;
-    let fxNote = "";
-    if (allEUR) {
-      estValue = p.cost + (p.comm || 0);
-    } else {
-      // For merged positions: re-compute with FX per original posMap entry
-      let costEUR = 0;
-      for (const [key, pos] of posMap.entries()) {
-        if (pos.ticker !== p.ticker || pos.qty <= 0) continue;
-        const fx = FX_TO_EUR[pos.ccy] || 1;
-        costEUR += pos.cost * fx;
-      }
-      costEUR += (p.comm || 0);
-      estValue = costEUR;
-      const isApprox = p.ccys.some(c => c !== "EUR");
-      fxNote = isApprox ? " · ⚠️ Valor estimado (FX aprox.) — actualiza via ⟳ Cotações" : "";
+    // Convert cost to EUR — re-iterate posMap to apply per-currency FX
+    let costEUR = 0;
+    for (const [, pos] of posMap.entries()) {
+      if (pos.ticker !== p.ticker || pos.qty <= 0) continue;
+      costEUR += pos.cost * (FX_TO_EUR[pos.ccy] || 1);
     }
+    costEUR += p.comm || 0;
 
-    const avg = p.cost > 0 ? fmt(p.cost / p.qty, 4) : "—";
-    const notes = `Importado trades. Qty=${fmt(p.qty)} · PM=${avg} ${ccyLabel}${fxNote}`;
+    const fxNote = p.ccys.some(c => c !== "EUR")
+      ? " · ⚠️ Custo histórico (FX aprox.) — actualiza via ⟳ Cotações" : "";
+    const notes = `Importado trades. Qty=${fmt(p.qty)} · PM=${p.cost > 0 ? fmt(p.cost/p.qty,4) : "—"} ${ccyLabel}${fxNote}`;
 
-    // Find existing asset by ticker name (case-insensitive, same class)
-    const existingIx = state.assets.findIndex(a =>
-      (a.name || "").toUpperCase() === upper && a.class === cls
-    );
-
+    const existingIx = state.assets.findIndex(a => (a.name||"").toUpperCase() === upper && a.class === cls);
     if (existingIx >= 0) {
-      // UPDATE: preserve id, yieldType, yieldValue set by user
-      state.assets[existingIx] = {
-        ...state.assets[existingIx],
-        value: estValue,
-        notes
-      };
+      state.assets[existingIx] = { ...state.assets[existingIx], value: costEUR, notes };
     } else {
-      state.assets.push({ id: uid(), class: cls, name: p.ticker, value: estValue, yieldType: "none", yieldValue: 0, compoundFreq: 12, notes });
+      state.assets.push({ id: uid(), class: cls, name: p.ticker, value: costEUR,
+        yieldType: "none", yieldValue: 0, compoundFreq: 12, notes });
       addedA++;
     }
   }
@@ -4044,16 +4017,15 @@ function wire() {
   const btnClearTx2 = document.getElementById("btnClearTransactions2");
   if (btnClearTx2) btnClearTx2.addEventListener("click", clearTransactions);
 
-  // Clear only Ações/ETFs/Cripto assets (keep deposits, PPR, funds, transactions)
+  // Limpar só Ações/ETFs/Cripto (mantém depósitos, PPR, fundos, movimentos)
   const btnClearEq = document.getElementById("btnClearEquities");
   if (btnClearEq) btnClearEq.addEventListener("click", () => {
-    const EQUITY_CLASSES = ["Ações/ETFs", "Cripto"];
-    const toRemove = state.assets.filter(a => EQUITY_CLASSES.includes(a.class));
+    const EQ = ["Ações/ETFs", "Cripto"];
+    const toRemove = state.assets.filter(a => EQ.includes(a.class));
     if (!toRemove.length) { toast("Sem Ações/ETFs/Cripto para limpar."); return; }
     if (!confirm(`Apagar ${toRemove.length} activos de Ações/ETFs/Cripto?\n\nDepósitos, PPR, Fundos e movimentos são mantidos.`)) return;
-    state.assets = state.assets.filter(a => !EQUITY_CLASSES.includes(a.class));
-    saveState();
-    renderAll();
+    state.assets = state.assets.filter(a => !EQ.includes(a.class));
+    saveState(); renderAll();
     toast(`🗑️ ${toRemove.length} activos removidos. Reimporta o CSV do DivTracker.`, 4000);
   });
 
@@ -4218,131 +4190,82 @@ async function refreshLiveQuotes() {
   let updated = 0, failed = 0;
   const errors = [];
 
-  // Step 1: Convert DivTracker tickers to Yahoo Finance format
-  // DivTracker uses .CC for crypto, .PT/.GB/.PL/.CH/.DK etc. for exchanges
-  // Yahoo Finance uses -USD for crypto, .LS/.L/.WA/.SW/.CO etc. for exchanges
-  function toYahooTicker(rawTicker) {
-    const t = (rawTicker || "").trim().toUpperCase();
-    // Crypto: strip .CC and add -USD
-    if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD");
-    // Exchange suffixes mapping
-    const exchangeMap = {
-      ".PT": ".LS",   // Portugal -> Euronext Lisbon
-      ".GB": ".L",    // UK -> London Stock Exchange
-      ".PL": ".WA",   // Poland -> Warsaw
-      ".CH": ".SW",   // Switzerland -> SIX Swiss
-      ".DK": ".CO",   // Denmark -> Copenhagen
-      ".SE": ".ST",   // Sweden -> Stockholm
-      ".NO": ".OL",   // Norway -> Oslo
-      ".FI": ".HE",   // Finland -> Helsinki
-      ".BE": ".BR",   // Belgium -> Brussels
-      ".IT": ".MI",   // Italy -> Milan
-      ".FR": ".PA",   // France -> Paris
-      ".NL": ".AS",   // Netherlands -> Amsterdam
-      ".ES": ".MC",   // Spain -> Madrid
-      ".AU": ".AX",   // Australia -> ASX
-      ".CA": ".TO",   // Canada -> Toronto (most common)
-      ".HK": ".HK",   // Hong Kong (same)
-    };
-    for (const [from, to] of Object.entries(exchangeMap)) {
-      if (t.endsWith(from)) return t.slice(0, -from.length) + to;
-    }
-    return t; // Already in Yahoo format (US stocks, .DE, .PA already correct)
+  // Convert DivTracker ticker format to Yahoo Finance format
+  function toYahooTicker(raw) {
+    const t = (raw||"").trim().toUpperCase();
+    if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD"); // crypto
+    const xmap = {".PT":".LS",".GB":".L",".PL":".WA",".CH":".SW",
+      ".DK":".CO",".SE":".ST",".NO":".OL",".FI":".HE",
+      ".BE":".BR",".IT":".MI",".FR":".PA",".NL":".AS",
+      ".ES":".MC",".AU":".AX",".CA":".TO"};
+    for (const [from, to] of Object.entries(xmap))
+      if (t.endsWith(from)) return t.slice(0,-from.length) + to;
+    return t; // US stocks, .DE, etc. already correct
   }
 
-  // Build ticker list: asset -> yahoo ticker (for fetch) + keep original name
+  // Build list: {asset, raw, yahoo}
   const tickerList = candidates.map(asset => {
     const raw = (asset.name && /^[A-Z0-9.\-]{1,12}$/.test(asset.name.trim()))
       ? asset.name.trim() : extractTicker(asset);
     return { asset, raw, yahoo: raw ? toYahooTicker(raw) : null };
   }).filter(x => x.yahoo);
 
-  const tickers = tickerList.map(x => x.yahoo);
-
+  // Fetch all quotes in parallel
   const quoteResults = await Promise.allSettled(
-    tickers.map(t => fetchQuote(t, workerUrl))
+    tickerList.map(x => fetchQuote(x.yahoo, workerUrl))
   );
-
-  // Build quote map: yahoo ticker -> quote
   const quoteMap = {};
   quoteResults.forEach((r, i) => {
-    if (r.status === "fulfilled" && r.value) quoteMap[tickers[i]] = r.value;
+    if (r.status === "fulfilled" && r.value) quoteMap[tickerList[i].yahoo] = r.value;
   });
 
-  // Step 2: collect unique non-EUR currencies that need FX rates
+  // Collect currencies needing FX (crypto always USD, others from quote)
   const ccysNeeded = new Set();
-  // Crypto fetched as -USD always needs USD->EUR conversion
-  for (const { yahoo } of tickerList) {
-    if (yahoo && yahoo.endsWith("-USD")) ccysNeeded.add("USD");
-  }
+  for (const x of tickerList) if (x.yahoo.endsWith("-USD")) ccysNeeded.add("USD");
   for (const q of Object.values(quoteMap)) {
-    const ccy = (q.currency || "EUR").toUpperCase();
-    if (ccy !== "EUR") ccysNeeded.add(ccy);
+    const c = (q.currency||"EUR").toUpperCase();
+    if (c !== "EUR") ccysNeeded.add(c);
   }
 
-  // Step 3: fetch FX rates from Yahoo Finance via Worker
-  // Yahoo Finance FX tickers: EURUSD=X gives EUR/USD rate (how many USD per 1 EUR)
-  // We want price_in_EUR = price_in_CCY / (EUR per CCY) = price_in_CCY * (CCY per EUR)
-  // Yahoo EURCCY=X = how many CCY per 1 EUR -> divide price by this rate
-  const fxRates = {}; // ccy -> EUR per 1 CCY (multiply price by this)
-  await Promise.allSettled(
-    [...ccysNeeded].map(async ccy => {
-      try {
-        // e.g. EURDKK=X = how many DKK per 1 EUR
-        const fxTicker = `EUR${ccy}=X`;
-        const fxQuote = await fetchQuote(fxTicker, workerUrl);
-        if (fxQuote && Number.isFinite(fxQuote.price) && fxQuote.price > 0) {
-          fxRates[ccy] = 1 / fxQuote.price; // EUR per 1 CCY
-        }
-      } catch (_) { /* use fallback */ }
-    })
-  );
+  // Fetch FX rates via Worker (EURUSD=X, EURGBP=X, etc.)
+  const fxRates = {};
+  const FX_FALLBACK = {USD:0.92,GBP:1.17,DKK:0.134,CHF:1.05,PLN:0.23,
+    SEK:0.087,NOK:0.085,CAD:0.68,AUD:0.59,JPY:0.006,HKD:0.118};
+  await Promise.allSettled([...ccysNeeded].map(async ccy => {
+    try {
+      const fq = await fetchQuote(`EUR${ccy}=X`, workerUrl);
+      if (fq && fq.price > 0) fxRates[ccy] = 1 / fq.price;
+    } catch(_) {}
+  }));
+  for (const c of ccysNeeded) if (!fxRates[c]) fxRates[c] = FX_FALLBACK[c] || 1;
 
-  // Fallback static rates if Yahoo FX fails
-  const FX_FALLBACK = {
-    USD:0.92, GBP:1.17, DKK:0.134, CHF:1.05, PLN:0.23,
-    SEK:0.087, NOK:0.085, CAD:0.68, AUD:0.59, JPY:0.006,
-    HKD:0.118, SGD:0.68, BRL:0.17
-  };
-  for (const ccy of ccysNeeded) {
-    if (!fxRates[ccy] && FX_FALLBACK[ccy]) fxRates[ccy] = FX_FALLBACK[ccy];
-  }
-
-  // Step 4: update each asset with FX-converted price
   const today = new Date().toLocaleDateString("pt-PT");
-  for (let i = 0; i < tickerList.length; i++) {
-    const { asset, raw, yahoo } = tickerList[i];
-    if (!yahoo) continue;
-
+  for (const { asset, raw, yahoo } of tickerList) {
     const q = quoteMap[yahoo];
     if (!q || !Number.isFinite(q.price) || q.price <= 0) {
-      failed++;
-      errors.push(raw);
-      continue;
+      failed++; errors.push(raw); continue;
     }
-
-    // Convert price to EUR
-    const ccy = (q.currency || "EUR").toUpperCase();
+    const ccy = (q.currency||"EUR").toUpperCase();
     const fxToEur = ccy === "EUR" ? 1 : (fxRates[ccy] || FX_FALLBACK[ccy] || 1);
     const priceEur = q.price * fxToEur;
 
-    // Detect qty from notes
-    const qtyMatch = (asset.notes || "").match(/Qty=([\d.]+)/);
+    const qtyMatch = (asset.notes||"").match(/Qty=([\d.]+)/);
     const qty = qtyMatch ? parseFloat(qtyMatch[1]) : null;
     const newValue = qty ? qty * priceEur : priceEur;
 
-    // Build price label showing original currency if not EUR
     const priceLabel = ccy === "EUR"
       ? fmtEUR2(priceEur)
       : `${fmtEUR2(priceEur)} (${q.price.toFixed(4)} ${ccy})`;
 
-    const noteBase = (asset.notes || "").replace(/\s*·?\s*Preço:[^·]*/g, "").replace(/\s*·?\s*⚠️ Valor estimado[^·]*/g, "").trim();
+    const noteBase = (asset.notes||"")
+      .replace(/\s*·?\s*Preço:[^·]*/g,"")
+      .replace(/\s*·?\s*⚠️ Custo histórico[^·]*/g,"").trim();
     asset.value = newValue;
-    asset.notes = `${noteBase}${noteBase ? " · " : ""}Preço: ${priceLabel} (${today})`;
+    asset.notes = `${noteBase}${noteBase?" · ":""}Preço: ${priceLabel} (${today})`;
     updated++;
   }
 
-  await saveStateAsync();
+  await saveStateAsync(); // await ensures IndexedDB write completes before app can close
   renderAll();
 
   if (btn) { btn.disabled = false; btn.textContent = "⟳ Cotações"; }
@@ -4375,15 +4298,17 @@ function checkDuplicateWarning() {
   card.style.display = hasDups ? "" : "none";
 }
 
-// Save when app goes to background or is closed (critical for iOS PWA)
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") saveStateAsync();
-});
-window.addEventListener("pagehide", () => saveStateAsync());
-
 document.addEventListener("DOMContentLoaded", async () => {
   await requestPersistentStorage();
   state = await loadStateAsync();
   wire();
   renderAll();
 });
+
+// Guarantee state is saved when app goes to background or is closed
+// Critical for iOS PWA where the process can be killed without warning
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") saveStateAsync();
+});
+window.addEventListener("pagehide", () => saveStateAsync());
+window.addEventListener("beforeunload", () => saveStateAsync());
