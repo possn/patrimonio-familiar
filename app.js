@@ -4012,6 +4012,19 @@ function wire() {
   const btnClearTx2 = document.getElementById("btnClearTransactions2");
   if (btnClearTx2) btnClearTx2.addEventListener("click", clearTransactions);
 
+  // Clear only Ações/ETFs/Cripto assets (keep deposits, PPR, funds, transactions)
+  const btnClearEq = document.getElementById("btnClearEquities");
+  if (btnClearEq) btnClearEq.addEventListener("click", () => {
+    const EQUITY_CLASSES = ["Ações/ETFs", "Cripto"];
+    const toRemove = state.assets.filter(a => EQUITY_CLASSES.includes(a.class));
+    if (!toRemove.length) { toast("Sem Ações/ETFs/Cripto para limpar."); return; }
+    if (!confirm(`Apagar ${toRemove.length} activos de Ações/ETFs/Cripto?\n\nDepósitos, PPR, Fundos e movimentos são mantidos.`)) return;
+    state.assets = state.assets.filter(a => !EQUITY_CLASSES.includes(a.class));
+    saveState();
+    renderAll();
+    toast(`🗑️ ${toRemove.length} activos removidos. Reimporta o CSV do DivTracker.`, 4000);
+  });
+
   // Check on import view open
   checkDuplicateWarning();
 
