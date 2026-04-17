@@ -663,19 +663,32 @@
   <!-- ANÁLISE -->
   <section class="view" data-view="analysis" id="viewAnalysis" hidden>
 
-    <div class="card">
-      <div class="card__head"><div><div class="card__title">Análise</div><div class="card__muted">Juro composto · Previsão · Comparação · FIRE</div></div></div>
-      <select class="input" id="analysisTab">
-        <option value="compound" selected>Juro Composto</option>
-        <option value="forecast">Previsão de Rentabilidade</option>
-        <option value="compare">Comparação de Períodos</option>
-        <option value="fire">Projeção FIRE</option>
-        <option value="portfolio">📊 Sector &amp; Geografia</option>
-        <option value="fiscal">🧾 Resumo Fiscal</option>
-        <option value="performance">📊 Performance</option>
-        <option value="drawdown">📉 Simulação Reforma</option>
-      </select>
+    <!-- Tabs de análise — scroll horizontal -->
+    <div class="analysis-tabs-wrap">
+      <div class="analysis-tabs" id="analysisTabs">
+        <button class="analysis-tab analysis-tab--active" data-tab="compound">📐 Juro Composto</button>
+        <button class="analysis-tab" data-tab="forecast">📈 Previsão</button>
+        <button class="analysis-tab" data-tab="fire">🔥 FIRE</button>
+        <button class="analysis-tab analysis-tab--ai" data-tab="ai">🤖 Análise IA</button>
+        <button class="analysis-tab" data-tab="performance">⚖️ Performance</button>
+        <button class="analysis-tab" data-tab="drawdown">📉 Reforma</button>
+        <button class="analysis-tab" data-tab="compare">📊 Comparar</button>
+        <button class="analysis-tab" data-tab="portfolio">🌍 Sector</button>
+        <button class="analysis-tab" data-tab="fiscal">🧾 Fiscal</button>
+      </div>
     </div>
+    <!-- Hidden select kept for JS compatibility -->
+    <select id="analysisTab" style="display:none">
+      <option value="compound" selected>Juro Composto</option>
+      <option value="forecast">Previsão</option>
+      <option value="compare">Comparação</option>
+      <option value="fire">FIRE</option>
+      <option value="portfolio">Sector</option>
+      <option value="fiscal">Fiscal</option>
+      <option value="performance">Performance</option>
+      <option value="drawdown">Reforma</option>
+      <option value="ai">Análise IA</option>
+    </select>
     <!-- Portfolio Analysis: Sector + Geography charts -->
     <div class="analysisPanelTab" id="analysisPanelTab_portfolio" style="display:none">
       <!-- Sector chart -->
@@ -944,6 +957,83 @@
         <div id="fiscalContent"></div>
       </div>
     </div>
+    <!-- IA: Painel de Análise por Inteligência Artificial -->
+    <div class="analysisPanelTab" id="analysisPanelTab_ai" style="display:none">
+
+      <div class="card ai-intro-card">
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
+          <div class="ai-avatar">🤖</div>
+          <div>
+            <div class="card__title">Análise por IA</div>
+            <div class="card__muted">Claude analisa o teu portfólio e gera sugestões personalizadas</div>
+          </div>
+        </div>
+
+        <!-- Selector de modo de análise -->
+        <div class="ai-modes">
+          <label class="ai-mode-btn">
+            <input type="radio" name="aiMode" value="geral" checked>
+            <span>🔍 Geral</span>
+          </label>
+          <label class="ai-mode-btn">
+            <input type="radio" name="aiMode" value="risco">
+            <span>⚠️ Risco</span>
+          </label>
+          <label class="ai-mode-btn">
+            <input type="radio" name="aiMode" value="fiscal">
+            <span>🧾 Fiscal</span>
+          </label>
+          <label class="ai-mode-btn">
+            <input type="radio" name="aiMode" value="fire">
+            <span>🔥 FIRE</span>
+          </label>
+          <label class="ai-mode-btn">
+            <input type="radio" name="aiMode" value="rebalancing">
+            <span>⚖️ Rebalancing</span>
+          </label>
+        </div>
+
+        <!-- Pergunta livre opcional -->
+        <div style="margin-top:12px">
+          <label class="lbl">Pergunta específica (opcional)</label>
+          <textarea class="input" id="aiQuestion" rows="2"
+            placeholder="Ex: Devo aumentar a exposição a acções? Como reduzir o risco de concentração nos depósitos?"></textarea>
+        </div>
+
+        <button class="btn btn--primary" id="btnAiAnalyse" style="width:100%;margin-top:12px;font-size:15px">
+          ✨ Analisar portfólio
+        </button>
+      </div>
+
+      <!-- Resultado da análise -->
+      <div id="aiResultCard" style="display:none">
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="card__title" id="aiResultTitle">Análise</div>
+              <div class="card__muted" id="aiResultMeta"></div>
+            </div>
+            <button class="btn btn--ghost btn--sm" id="btnAiCopy">📋 Copiar</button>
+          </div>
+          <div id="aiResultContent" class="ai-result-body"></div>
+        </div>
+      </div>
+
+      <!-- Loading state -->
+      <div id="aiLoadingCard" style="display:none">
+        <div class="card" style="text-align:center;padding:32px 16px">
+          <div class="ai-spinner"></div>
+          <div style="margin-top:14px;font-weight:700;color:var(--muted)" id="aiLoadingMsg">A analisar o teu portfólio…</div>
+        </div>
+      </div>
+
+      <!-- Histórico de análises -->
+      <div id="aiHistorySection" style="display:none">
+        <div class="section-label">Análises anteriores</div>
+        <div id="aiHistory" class="list"></div>
+      </div>
+
+    </div>
   </section>
 
   <!-- SETTINGS -->
@@ -982,6 +1072,18 @@
         <div class="card__title" style="margin-bottom:8px">Importar / Exportar</div>
         <button class="btn btn--primary" id="btnGoImport">⇅ Ir para Importar</button>
       </div>
+      <div class="card">
+        <div class="card__title" style="margin-bottom:8px">🤖 Análise por IA</div>
+        <div class="card__muted" style="margin-bottom:12px">A API key fica guardada localmente. Nunca sai do dispositivo sem a tua acção.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn--primary btn--sm" onclick="document.getElementById('analysisTab').value='ai'; setView('analysis'); renderAnalysis();">✨ Abrir análise IA</button>
+          <button class="btn btn--ghost btn--sm" onclick="clearAIKey()">🗑 Remover API key</button>
+        </div>
+        <div class="note" style="margin-top:10px;font-size:12px">
+          Necessita de uma API key da <a href="https://console.anthropic.com" target="_blank" style="color:var(--vio)">Anthropic Console</a> (conta gratuita disponível). Os dados do portfólio são enviados à API apenas quando carregas "Analisar" — nunca de forma automática.
+        </div>
+      </div>
+
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Sobre</div>
         <div class="card__muted">Património Familiar <b>v15</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>

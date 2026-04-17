@@ -647,3 +647,175 @@ select.input   { cursor: pointer; }
 @media (max-width: 380px) {
   .kpi-quick__v { font-size: 16px; }
 }
+
+/* ═══════════════════════════════════════════════════════
+   ANÁLISE IA — Estilos
+   ═══════════════════════════════════════════════════════ */
+
+/* Avatar IA */
+.ai-avatar {
+  width: 48px; height: 48px; border-radius: 16px;
+  background: linear-gradient(135deg, var(--vio) 0%, #9b6fef 100%);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; flex-shrink: 0;
+  box-shadow: 0 4px 14px rgba(91,92,230,.3);
+}
+
+/* Intro card */
+.ai-intro-card {
+  background: linear-gradient(135deg, rgba(91,92,230,.04) 0%, rgba(155,111,239,.04) 100%);
+  border-color: rgba(91,92,230,.2) !important;
+}
+
+/* Modos de análise */
+.ai-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 7px;
+  margin-top: 2px;
+}
+.ai-mode-btn {
+  position: relative;
+  cursor: pointer;
+}
+.ai-mode-btn input[type="radio"] {
+  position: absolute; opacity: 0; width: 0; height: 0;
+}
+.ai-mode-btn span {
+  display: flex; align-items: center; justify-content: center;
+  padding: 9px 6px; border-radius: var(--r-sm);
+  border: 1.5px solid var(--line);
+  font-size: 12px; font-weight: 700; color: var(--muted);
+  background: var(--card2);
+  transition: all .15s; cursor: pointer;
+  text-align: center; gap: 4px;
+}
+.ai-mode-btn input:checked + span {
+  border-color: var(--vio);
+  background: var(--vio-glow);
+  color: var(--vio);
+  box-shadow: 0 0 0 3px var(--vio-glow);
+}
+.ai-mode-btn span:hover {
+  border-color: var(--vio);
+  color: var(--vio);
+}
+
+/* Spinner */
+.ai-spinner {
+  width: 44px; height: 44px;
+  border: 4px solid var(--line);
+  border-top-color: var(--vio);
+  border-radius: 50%;
+  animation: ai-spin 0.9s linear infinite;
+  margin: 0 auto;
+}
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+
+/* Resultado da análise */
+.ai-result-body {
+  font-size: 14px; line-height: 1.75; color: var(--text2);
+}
+.ai-result-body .ai-section-head {
+  font-size: 16px; font-weight: 900; color: var(--text);
+  margin: 18px 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--vio-glow);
+  letter-spacing: -.2px;
+}
+.ai-result-body .ai-section-head:first-child { margin-top: 4px; }
+.ai-result-body p { margin-bottom: 8px; }
+.ai-result-body ul {
+  margin: 6px 0 10px 0;
+  padding-left: 20px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.ai-result-body li { font-weight: 600; }
+.ai-result-body strong { color: var(--text); font-weight: 900; }
+
+/* Dark mode IA */
+@media (prefers-color-scheme: dark) {
+  .ai-intro-card { background: rgba(124,127,239,.06) !important; }
+  .ai-mode-btn span { background: var(--card2); }
+  .ai-result-body { color: var(--text2); }
+  .ai-result-body .ai-section-head { color: var(--text); }
+}
+
+@media (max-width: 420px) {
+  .ai-modes { grid-template-columns: 1fr 1fr; }
+}
+
+/* ═══════════════════════════════════════════════════════
+   ANÁLISE — Tabs horizontais com scroll
+   ═══════════════════════════════════════════════════════ */
+
+.analysis-tabs-wrap {
+  /* Sticky logo abaixo da topbar */
+  position: sticky;
+  top: 68px;
+  z-index: 40;
+  margin: 0 -12px 12px;
+  padding: 0 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.analysis-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 10px 0 10px;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.analysis-tabs::-webkit-scrollbar { display: none; }
+
+.analysis-tab {
+  flex-shrink: 0;
+  scroll-snap-align: start;
+  border: 1.5px solid var(--line);
+  background: var(--card);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: all .15s;
+}
+.analysis-tab:hover {
+  border-color: var(--vio);
+  color: var(--vio);
+  background: var(--pill-bg);
+}
+.analysis-tab--active {
+  background: var(--vio);
+  border-color: var(--vio);
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(91,92,230,.3);
+}
+
+/* Tab IA com destaque especial */
+.analysis-tab--ai {
+  background: linear-gradient(135deg, var(--vio), #9b6fef);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 3px 12px rgba(91,92,230,.25);
+}
+.analysis-tab--ai:hover {
+  background: linear-gradient(135deg, var(--vio2), #a77cf8);
+  color: #fff;
+}
+.analysis-tab--active.analysis-tab--ai {
+  box-shadow: 0 4px 16px rgba(91,92,230,.4);
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  .analysis-tabs-wrap { background: var(--bg); border-bottom-color: var(--line); }
+  .analysis-tab { background: var(--card2); border-color: var(--line); }
+  .analysis-tab--active { background: var(--vio); color: #fff; }
+}

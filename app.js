@@ -3163,6 +3163,7 @@ function renderAnalysis() {
   if (tab === "fiscal") renderFiscalPanel();
   if (tab === "performance") { renderBenchmarkComparison(); renderRebalancing(); }
   if (tab === "drawdown") renderDrawdownPanel();
+  if (tab === "ai") renderAIHistory();
 }
 
 /* ── Compound Interest Panel ── */
@@ -5073,8 +5074,30 @@ function wire() {
   if (btnCalcComp) btnCalcComp.addEventListener("click", calcAndRenderCompound);
 
   // Analysis tabs
+  // Wire das tabs de análise (botões com scroll horizontal)
+  document.querySelectorAll(".analysis-tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const tab = btn.dataset.tab;
+      // Actualizar hidden select (compatibilidade)
+      const sel = document.getElementById("analysisTab");
+      if (sel) sel.value = tab;
+      // Actualizar estado visual dos botões
+      document.querySelectorAll(".analysis-tab").forEach(b => b.classList.remove("analysis-tab--active"));
+      btn.classList.add("analysis-tab--active");
+      // Scroll para o botão activo
+      btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+      renderAnalysis();
+    });
+  });
+  // Manter compatibilidade com select hidden
   const analysisTabs = document.getElementById("analysisTab");
-  if (analysisTabs) analysisTabs.addEventListener("change", () => renderAnalysis());
+  if (analysisTabs) analysisTabs.addEventListener("change", () => {
+    const tab = analysisTabs.value;
+    document.querySelectorAll(".analysis-tab").forEach(b => {
+      b.classList.toggle("analysis-tab--active", b.dataset.tab === tab);
+    });
+    renderAnalysis();
+  });
 
   // Forecast years
   const fyears = document.getElementById("forecastYears");
@@ -6765,6 +6788,464 @@ function renderDrawdownPanel() {
     });
     // Verificar alertas de preço após actualização de cotações
     document.addEventListener("quotesUpdated", checkPriceAlerts);
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();
+
+/* ═══════════════════════════════════════════════════════════════
+   PATRIMÓNIO FAMILIAR — ANÁLISE POR IA (Claude API)
+   Arquitectura: app → Anthropic API /v1/messages (browser fetch)
+   O utilizador precisa de introduzir a sua API key uma vez.
+   Dados ficam SEMPRE locais — só o resumo vai à API.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── PREPARAR CONTEXTO DO PORTFÓLIO PARA A IA ──────────────── */
+function buildPortfolioContext() {
+  const t = calcTotals();
+  const div = calcDiversificationScore();
+  const twr = calcTWR();
+  const irs = (() => {
+    try {
+      const now = new Date();
+      const yearStart = now.getFullYear() + "-01-01";
+      const divYTD = (state.dividends||[]).filter(d=>d.date>=yearStart).reduce((s,d)=>s+parseNum(d.amount),0);
+      const rendasYTD = state.assets.filter(a=>a.yieldType==="rent_month").reduce((s,a)=>s+parseNum(a.yieldValue)*now.getMonth(),0);
+      return { divYTD, rendasYTD, total: (divYTD+rendasYTD)*0.28 };
+    } catch { return { divYTD:0, rendasYTD:0, total:0 }; }
+  })();
+
+  // Distribuição por classe
+  const byClass = {};
+  for (const a of state.assets) {
+    const k = a.class || "Outros";
+    byClass[k] = (byClass[k]||0) + parseNum(a.value);
+  }
+  const classBreakdown = Object.entries(byClass)
+    .sort((a,b)=>b[1]-a[1])
+    .map(([k,v]) => `${k}: ${fmtEUR(v)} (${fmt(v/t.assetsTotal*100,1)}%)`)
+    .join(", ");
+
+  // Top 5 activos
+  const top5 = [...state.assets]
+    .sort((a,b)=>parseNum(b.value)-parseNum(a.value))
+    .slice(0,5)
+    .map(a => {
+      const gl = calcGainLoss(a);
+      const glStr = gl ? ` | PL: ${gl.gain>=0?"+":""}${fmtEUR(gl.gain)} (${fmt(gl.gainPct,1)}%)` : "";
+      return `${a.name} [${a.class}]: ${fmtEUR(parseNum(a.value))}${glStr}`;
+    })
+    .join("\n    ");
+
+  // Passivos
+  const liabsStr = state.liabilities.length > 0
+    ? state.liabilities.map(l=>`${l.name}: ${fmtEUR(parseNum(l.value))}`).join(", ")
+    : "Sem passivos";
+
+  // Cashflow últimos 3 meses
+  const byMonth = new Map();
+  for (const tx of state.transactions) {
+    if (isInterAccountTransfer(tx)) continue;
+    const d = (tx.date||"").slice(0,7); if (!d) continue;
+    const cur = byMonth.get(d)||{in:0,out:0};
+    if (tx.type==="in") cur.in+=parseNum(tx.amount); else cur.out+=parseNum(tx.amount);
+    byMonth.set(d,cur);
+  }
+  const last3 = [...byMonth.keys()].sort().slice(-3);
+  const avgIn  = last3.length ? last3.reduce((s,k)=>s+byMonth.get(k).in,0)/last3.length : 0;
+  const avgOut = last3.length ? last3.reduce((s,k)=>s+byMonth.get(k).out,0)/last3.length : 0;
+  const savingsRate = avgIn > 0 ? (avgIn-avgOut)/avgIn*100 : 0;
+
+  // FIRE status
+  const baseFireNum = avgOut*12 > 0 ? avgOut*12/0.0375 : 0;
+  const firePct = baseFireNum > 0 ? Math.min(100,t.net/baseFireNum*100) : 0;
+
+  // Vencimentos próximos
+  const today = isoToday();
+  const in90 = new Date(); in90.setDate(in90.getDate()+90);
+  const in90ISO = in90.toISOString().slice(0,10);
+  const maturities = state.assets
+    .filter(a=>a.maturityDate && a.maturityDate>=today && a.maturityDate<=in90ISO)
+    .map(a=>`${a.name} (${a.maturityDate}): ${fmtEUR(parseNum(a.value))}`)
+    .join(", ") || "Nenhum";
+
+  // Alertas de concentração
+  const riskAlerts = [];
+  for (const [cls, val] of Object.entries(byClass)) {
+    const pct = val/t.assetsTotal*100;
+    if (pct>=50) riskAlerts.push(`${cls}: ${fmt(pct,1)}% do portfólio (concentração elevada)`);
+  }
+
+  return `PORTFÓLIO FAMILIAR — DADOS REAIS (${isoToday()})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BALANÇO GLOBAL
+  Activos totais:    ${fmtEUR(t.assetsTotal)}
+  Passivos totais:   ${fmtEUR(t.liabsTotal)}
+  Património líquido: ${fmtEUR(t.net)}
+
+RENDIMENTO PASSIVO
+  Anual estimado:    ${fmtEUR(t.passiveAnnual)}
+  Mensal estimado:   ${fmtEUR(t.passiveAnnual/12)}
+  Yield médio:       ${fmt(t.assetsTotal>0?t.passiveAnnual/t.assetsTotal*100:0,2)}%
+
+DISTRIBUIÇÃO POR CLASSE
+  ${classBreakdown}
+
+SCORE DE DIVERSIFICAÇÃO: ${div.score}/100 (${div.label})
+
+TOP 5 ACTIVOS
+    ${top5}
+
+PASSIVOS
+  ${liabsStr}
+
+CASHFLOW (média 3 meses)
+  Entradas médias:   ${fmtEUR(avgIn)}/mês
+  Saídas médias:     ${fmtEUR(avgOut)}/mês
+  Taxa de poupança:  ${fmt(savingsRate,1)}%
+
+MÉTRICAS CHAVE
+  Rácio dívida/activos: ${fmt(t.assetsTotal>0?t.liabsTotal/t.assetsTotal*100:0,1)}%
+  Progresso FIRE (base): ${fmt(firePct,1)}%
+  ${twr ? `TWR anualizado: ${fmt(twr.annualised,2)}% (${twr.years} anos)` : "TWR: sem histórico suficiente"}
+
+FISCAL (${new Date().getFullYear()} YTD)
+  Dividendos brutos:  ${fmtEUR(irs.divYTD)}
+  IRS estimado:       ${fmtEUR(irs.total)}
+
+VENCIMENTOS (90 dias)
+  ${maturities}
+
+ALERTAS DE RISCO
+  ${riskAlerts.length ? riskAlerts.join("\n  ") : "Sem alertas de concentração"}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+}
+
+/* ─── PROMPTS POR MODO DE ANÁLISE ───────────────────────────── */
+const AI_PROMPTS = {
+  geral: `És um consultor de gestão de patrimônio pessoal experiente, especializado no mercado português.
+Analisa o portfólio abaixo e fornece uma análise completa e honesta em português de Portugal.
+
+Estrutura a tua resposta EXACTAMENTE assim (usa estes emojis e títulos):
+
+## 💪 Pontos Fortes
+(2-3 pontos concretos sobre o que está bem no portfólio)
+
+## ⚠️ Riscos & Vulnerabilidades
+(2-3 riscos reais identificados com base nos dados)
+
+## 🎯 Sugestões Prioritárias
+(3-4 acções concretas e realistas, ordenadas por impacto)
+
+## 📊 Benchmarking
+(Comparar métricas chave com referências — ex: yield vs média mercado PT, taxa de poupança, etc.)
+
+## 🔭 Perspectiva a 5 Anos
+(Projecção qualitativa com base na trajectória actual)
+
+Sê directo, usa números concretos do portfólio, evita generalidades. Máximo 600 palavras.`,
+
+  risco: `És um gestor de risco especializado em portfólios de particulares portugueses.
+Analisa os riscos do portfólio abaixo com rigor.
+
+Estrutura assim:
+
+## 🔴 Riscos Críticos
+(Riscos que precisam de acção imediata)
+
+## 🟡 Riscos Moderados
+(Riscos a monitorizar)
+
+## 🟢 Pontos de Resiliência
+(O que protege o portfólio)
+
+## 🛡️ Plano de Mitigação
+(Acções concretas para reduzir os riscos identificados, por ordem de prioridade)
+
+Foca em: concentração, liquidez, risco de taxa de juro, risco cambial, risco de crédito, risco imobiliário.
+Máximo 500 palavras.`,
+
+  fiscal: `És um consultor fiscal especializado em Portugal (IRS, mais-valias, dividendos).
+Analisa a situação fiscal do portfólio abaixo.
+
+Estrutura assim:
+
+## 🧾 Situação Fiscal Actual
+(Resumo do que está sujeito a tributação)
+
+## 💡 Oportunidades de Optimização Fiscal
+(Estratégias legais para reduzir carga fiscal — PPR, mais-valias, timing, etc.)
+
+## ⚠️ Alertas Fiscais
+(O que pode causar problemas com o Fisco)
+
+## 📋 Acções Recomendadas para ${new Date().getFullYear()}
+(Específico para este ano fiscal)
+
+IMPORTANTE: Inclui sempre a nota "Consulta sempre um TOC antes de tomar decisões fiscais."
+Máximo 500 palavras.`,
+
+  fire: `És um especialista em FIRE (Financial Independence, Retire Early) com foco em Portugal.
+Analisa o progresso FIRE do portfólio abaixo.
+
+Estrutura assim:
+
+## 🔥 Estado FIRE Actual
+(Onde está em relação ao objectivo)
+
+## 📈 Trajectória & Prazo Estimado
+(Com a taxa de poupança e rendimento actuais, quando atingirá FIRE?)
+
+## 🚀 Aceleradores
+(O que pode fazer para atingir FIRE mais cedo)
+
+## ⚡ Riscos para o Plano FIRE
+(O que pode atrasar ou comprometer)
+
+## 🌤️ FIRE Parcial / Coast FIRE
+(Análise de independência parcial já possível)
+
+Usa os dados reais de cashflow e activos. Máximo 500 palavras.`,
+
+  rebalancing: `És um gestor de carteiras especializado em alocação de activos para investidores portugueses.
+Analisa o portfólio e sugere uma estratégia de rebalancing.
+
+Estrutura assim:
+
+## 📊 Alocação Actual vs Ideal
+(Para o perfil deste investidor, qual seria a alocação ideal? Compara com a actual)
+
+## ⚖️ Rebalancing Sugerido
+(Exactamente o que comprar/vender/reforçar, com valores aproximados)
+
+## 🌍 Diversificação Geográfica & Sectorial
+(Como melhorar a exposição geográfica e sectorial)
+
+## 📅 Plano de Execução
+(Como e quando executar o rebalancing de forma eficiente)
+
+Considera o contexto português: fiscalidade de ETFs, PPR, depósitos, imobiliário. Máximo 500 palavras.`
+};
+
+/* ─── ENGINE DE ANÁLISE IA ───────────────────────────────────── */
+let aiHistory = [];
+
+async function runAIAnalysis() {
+  const btn = document.getElementById("btnAiAnalyse");
+  const loading = document.getElementById("aiLoadingCard");
+  const resultCard = document.getElementById("aiResultCard");
+  const loadingMsg = document.getElementById("aiLoadingMsg");
+
+  // Obter modo e pergunta
+  const modeEl = document.querySelector('input[name="aiMode"]:checked');
+  const mode = modeEl ? modeEl.value : "geral";
+  const question = (document.getElementById("aiQuestion") || {}).value || "";
+
+  // Obter API key (guardada em settings ou pedir)
+  let apiKey = (state.settings && state.settings.anthropicKey) || "";
+  if (!apiKey) {
+    apiKey = prompt(
+      "🤖 Análise por IA — Claude (Anthropic)\n\n" +
+      "Introduz a tua API key da Anthropic para activar a análise IA.\n" +
+      "Obtém em: console.anthropic.com\n\n" +
+      "A key fica guardada localmente no dispositivo.\n" +
+      "Os teus dados NUNCA são guardados pela Anthropic — só o resumo do portfólio é enviado."
+    );
+    if (!apiKey || !apiKey.trim().startsWith("sk-")) {
+      toast("API key inválida. Começa com 'sk-ant-...'");
+      return;
+    }
+    apiKey = apiKey.trim();
+    if (!state.settings) state.settings = {};
+    state.settings.anthropicKey = apiKey;
+    saveState();
+  }
+
+  // UI: loading
+  if (btn) btn.disabled = true;
+  if (resultCard) resultCard.style.display = "none";
+  if (loading) loading.style.display = "";
+
+  const modeLabels = { geral:"Análise Geral", risco:"Análise de Risco", fiscal:"Análise Fiscal", fire:"Plano FIRE", rebalancing:"Rebalancing" };
+
+  const loadingMsgs = [
+    "A ler o teu portfólio…",
+    "A calcular métricas…",
+    "A identificar riscos…",
+    "A gerar sugestões personalizadas…",
+    "A finalizar análise…"
+  ];
+  let msgIdx = 0;
+  const msgInterval = setInterval(() => {
+    if (loadingMsg) loadingMsg.textContent = loadingMsgs[Math.min(msgIdx++, loadingMsgs.length-1)];
+  }, 1800);
+
+  try {
+    const context = buildPortfolioContext();
+    const systemPrompt = AI_PROMPTS[mode] || AI_PROMPTS.geral;
+    const userMsg = question.trim()
+      ? `Dados do portfólio:\n\n${context}\n\nPergunta específica: ${question}`
+      : `Dados do portfólio:\n\n${context}`;
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1500,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userMsg }]
+      })
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      if (response.status === 401) throw new Error("API key inválida. Verifica em console.anthropic.com");
+      if (response.status === 429) throw new Error("Limite de pedidos atingido. Tenta em alguns segundos.");
+      throw new Error(err.error?.message || `Erro HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const text = data.content?.[0]?.text || "";
+    if (!text) throw new Error("Resposta vazia da IA.");
+
+    clearInterval(msgInterval);
+    if (loading) loading.style.display = "none";
+
+    // Renderizar resultado
+    renderAIResult(text, modeLabels[mode] || "Análise IA", mode, question);
+
+    // Guardar no histórico (máx 5)
+    const histEntry = {
+      id: uid(),
+      date: isoToday(),
+      mode,
+      modeLabel: modeLabels[mode],
+      question: question.slice(0, 80),
+      text,
+      netWorth: calcTotals().net
+    };
+    aiHistory.unshift(histEntry);
+    if (aiHistory.length > 5) aiHistory.length = 5;
+    renderAIHistory();
+
+  } catch (err) {
+    clearInterval(msgInterval);
+    if (loading) loading.style.display = "none";
+    if (resultCard) resultCard.style.display = "";
+
+    const errEl = document.getElementById("aiResultContent");
+    const titleEl = document.getElementById("aiResultTitle");
+    if (titleEl) titleEl.textContent = "❌ Erro";
+    if (errEl) errEl.innerHTML = `
+      <div style="padding:14px;background:#fef2f2;border-radius:12px;color:#dc2626">
+        <b>${escapeHtml(err.message)}</b>
+        <div style="margin-top:8px;font-size:13px;color:#64748b">
+          Verifica: (1) API key correcta em Definições → IA, (2) tens créditos na conta Anthropic.
+        </div>
+      </div>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderAIResult(text, title, mode, question) {
+  const resultCard = document.getElementById("aiResultCard");
+  const titleEl = document.getElementById("aiResultTitle");
+  const metaEl = document.getElementById("aiResultMeta");
+  const contentEl = document.getElementById("aiResultContent");
+
+  if (resultCard) resultCard.style.display = "";
+  if (titleEl) titleEl.textContent = title;
+  if (metaEl) metaEl.textContent = `${isoToday()} · Portfólio ${fmtEUR(calcTotals().net)}${question ? ` · "${question.slice(0,40)}…"` : ""}`;
+
+  // Converter Markdown simples para HTML seguro
+  if (contentEl) contentEl.innerHTML = markdownToHTML(text);
+
+  // Scroll ao resultado
+  if (resultCard) resultCard.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function markdownToHTML(md) {
+  if (!md) return "";
+  return md
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    // Headers ## → styled div
+    .replace(/^## (.+)$/gm, (_, t) => `<div class="ai-section-head">${t}</div>`)
+    // **bold**
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    // *italic*
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    // Listas - item
+    .replace(/^[\-\*] (.+)$/gm, "<li>$1</li>")
+    // Agrupar <li> em <ul>
+    .replace(/(<li>[\s\S]+?<\/li>)(?!\s*<li>)/g, "<ul>$1</ul>")
+    // Parágrafos
+    .replace(/\n\n/g, "</p><p>")
+    .replace(/^(?!<)(.+)$/gm, (m, t) => t.trim() ? `<p>${t}</p>` : "")
+    // Limpar duplicados
+    .replace(/<p><\/p>/g, "")
+    .replace(/<p>(<div|<ul)/g, "$1")
+    .replace(/(<\/div>|<\/ul>)<\/p>/g, "$1");
+}
+
+function renderAIHistory() {
+  const section = document.getElementById("aiHistorySection");
+  const container = document.getElementById("aiHistory");
+  if (!section || !container || !aiHistory.length) {
+    if (section) section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  container.innerHTML = aiHistory.map(h => `
+    <div class="item" onclick="showAIHistoryEntry('${h.id}')">
+      <div class="item__l">
+        <div class="item__t">${escapeHtml(h.modeLabel)}</div>
+        <div class="item__s">${h.date} · Net worth: ${fmtEUR(h.netWorth)}${h.question ? ` · ${escapeHtml(h.question)}` : ""}</div>
+      </div>
+      <div class="item__v" style="font-size:14px">Ver →</div>
+    </div>`).join("");
+}
+
+function showAIHistoryEntry(id) {
+  const entry = aiHistory.find(h => h.id === id);
+  if (!entry) return;
+  renderAIResult(entry.text, entry.modeLabel, entry.mode, entry.question);
+}
+
+/* ─── LIMPAR API KEY NAS SETTINGS ───────────────────────────── */
+function clearAIKey() {
+  if (!confirm("Apagar a API key guardada?")) return;
+  if (state.settings) delete state.settings.anthropicKey;
+  saveState();
+  toast("API key removida.");
+}
+
+/* ─── WIRE IA ────────────────────────────────────────────────── */
+(function wireAI() {
+  const init = () => {
+    const btn = document.getElementById("btnAiAnalyse");
+    if (btn) btn.addEventListener("click", runAIAnalysis);
+
+    const btnCopy = document.getElementById("btnAiCopy");
+    if (btnCopy) btnCopy.addEventListener("click", () => {
+      const text = document.getElementById("aiResultContent");
+      if (!text) return;
+      navigator.clipboard.writeText(text.innerText || text.textContent || "")
+        .then(() => toast("✅ Copiado para a área de transferência."))
+        .catch(() => toast("Não foi possível copiar."));
+    });
+
+    // Renderizar análise quando entra na tab
+    const tab = document.getElementById("analysisTab");
+    if (tab) tab.addEventListener("change", () => {
+      if (tab.value === "ai") renderAIHistory();
+    });
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();
