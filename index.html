@@ -969,6 +969,24 @@
           </div>
         </div>
 
+        <!-- Selector de provider -->
+        <div class="ai-providers">
+          <label class="ai-provider-btn">
+            <input type="radio" name="aiProvider" value="groq" checked>
+            <span>
+              <strong>⚡ Groq</strong>
+              <small>Gratuito · Llama 3.3 70B</small>
+            </span>
+          </label>
+          <label class="ai-provider-btn">
+            <input type="radio" name="aiProvider" value="anthropic">
+            <span>
+              <strong>🤖 Claude</strong>
+              <small>Pago · Mais preciso</small>
+            </span>
+          </label>
+        </div>
+
         <!-- Selector de modo de análise -->
         <div class="ai-modes">
           <label class="ai-mode-btn">
@@ -1075,12 +1093,26 @@
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">🤖 Análise por IA</div>
         <div class="card__muted" style="margin-bottom:12px">A API key fica guardada localmente. Nunca sai do dispositivo sem a tua acção.</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn--primary btn--sm" onclick="document.getElementById('analysisTab').value='ai'; setView('analysis'); renderAnalysis();">✨ Abrir análise IA</button>
-          <button class="btn btn--ghost btn--sm" onclick="clearAIKey()">🗑 Remover API key</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          <button class="btn btn--primary btn--sm" onclick="document.querySelector('.analysis-tab[data-tab=ai]').click(); setView('analysis');">✨ Abrir análise IA</button>
         </div>
-        <div class="note" style="margin-top:10px;font-size:12px">
-          Necessita de uma API key da <a href="https://console.anthropic.com" target="_blank" style="color:var(--vio)">Anthropic Console</a> (conta gratuita disponível). Os dados do portfólio são enviados à API apenas quando carregas "Analisar" — nunca de forma automática.
+        <!-- Groq -->
+        <div style="background:var(--card2);border-radius:14px;padding:12px;margin-bottom:8px;border:1px solid var(--line)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="font-weight:800">⚡ Groq <span style="font-size:11px;background:#d1fae5;color:#065f46;border-radius:999px;padding:2px 8px;font-weight:700">GRATUITO</span></span>
+            <button class="btn btn--ghost btn--sm" onclick="clearAIKey('groq')" style="font-size:11px">🗑</button>
+          </div>
+          <div style="font-size:12px;color:var(--muted)">Llama 3.3 70B · console.groq.com</div>
+          <div id="groqKeyStatus" style="font-size:11px;margin-top:4px;color:var(--green)"></div>
+        </div>
+        <!-- Claude -->
+        <div style="background:var(--card2);border-radius:14px;padding:12px;border:1px solid var(--line)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="font-weight:800">🤖 Claude <span style="font-size:11px;background:#ede9fe;color:#5b21b6;border-radius:999px;padding:2px 8px;font-weight:700">PAGO</span></span>
+            <button class="btn btn--ghost btn--sm" onclick="clearAIKey('anthropic')" style="font-size:11px">🗑</button>
+          </div>
+          <div style="font-size:12px;color:var(--muted)">Claude Sonnet · console.anthropic.com</div>
+          <div id="anthropicKeyStatus" style="font-size:11px;margin-top:4px;color:var(--green)"></div>
         </div>
       </div>
 

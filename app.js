@@ -7030,34 +7030,116 @@ Considera o contexto português: fiscalidade de ETFs, PPR, depósitos, imobiliá
 /* ─── ENGINE DE ANÁLISE IA ───────────────────────────────────── */
 let aiHistory = [];
 
+/* ─── CONFIGURAÇÕES DOS PROVIDERS DE IA ─────────────────────── */
+const AI_PROVIDERS = {
+  groq: {
+    name: "Groq (Gratuito)",
+    emoji: "⚡",
+    url: "https://api.groq.com/openai/v1/chat/completions",
+    model: "llama-3.3-70b-versatile",   // melhor modelo gratuito Groq
+    keyHint: "Obtém grátis em console.groq.com",
+    keyPrefix: "gsk_",
+    settingKey: "groqKey",
+    format: "openai"   // protocolo OpenAI-compat
+  },
+  anthropic: {
+    name: "Claude (Anthropic)",
+    emoji: "🤖",
+    url: "https://api.anthropic.com/v1/messages",
+    model: "claude-sonnet-4-20250514",
+    keyHint: "Obtém em console.anthropic.com (pago, mais preciso)",
+    keyPrefix: "sk-",
+    settingKey: "anthropicKey",
+    format: "anthropic"
+  }
+};
+
+async function callAIProvider(provider, apiKey, systemPrompt, userMsg) {
+  if (provider.format === "openai") {
+    // Groq / OpenAI-compatible
+    const resp = await fetch(provider.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        max_tokens: 1500,
+        temperature: 0.7,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user",   content: userMsg }
+        ]
+      })
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      if (resp.status === 401) throw new Error("API key Groq inválida. Verifica em console.groq.com");
+      if (resp.status === 429) throw new Error("Limite Groq atingido. Tenta em alguns segundos.");
+      throw new Error(err.error?.message || `Erro HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    return data.choices?.[0]?.message?.content || "";
+
+  } else {
+    // Anthropic nativo
+    const resp = await fetch(provider.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        max_tokens: 1500,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userMsg }]
+      })
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      if (resp.status === 401) throw new Error("API key Claude inválida. Verifica em console.anthropic.com");
+      if (resp.status === 429) throw new Error("Limite Claude atingido. Tenta em alguns segundos.");
+      throw new Error(err.error?.message || `Erro HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    return data.content?.[0]?.text || "";
+  }
+}
+
 async function runAIAnalysis() {
   const btn = document.getElementById("btnAiAnalyse");
   const loading = document.getElementById("aiLoadingCard");
   const resultCard = document.getElementById("aiResultCard");
   const loadingMsg = document.getElementById("aiLoadingMsg");
 
-  // Obter modo e pergunta
+  // Obter modo, provider e pergunta
   const modeEl = document.querySelector('input[name="aiMode"]:checked');
   const mode = modeEl ? modeEl.value : "geral";
   const question = (document.getElementById("aiQuestion") || {}).value || "";
+  const providerKey = (document.querySelector('input[name="aiProvider"]:checked') || {}).value || "groq";
+  const provider = AI_PROVIDERS[providerKey] || AI_PROVIDERS.groq;
 
-  // Obter API key (guardada em settings ou pedir)
-  let apiKey = (state.settings && state.settings.anthropicKey) || "";
+  // Obter API key do provider seleccionado
+  let apiKey = (state.settings && state.settings[provider.settingKey]) || "";
   if (!apiKey) {
     apiKey = prompt(
-      "🤖 Análise por IA — Claude (Anthropic)\n\n" +
-      "Introduz a tua API key da Anthropic para activar a análise IA.\n" +
-      "Obtém em: console.anthropic.com\n\n" +
-      "A key fica guardada localmente no dispositivo.\n" +
-      "Os teus dados NUNCA são guardados pela Anthropic — só o resumo do portfólio é enviado."
+      `${provider.emoji} Análise IA — ${provider.name}
+
+` +
+      `Introduz a tua API key.
+${provider.keyHint}
+
+` +
+      `A key fica guardada localmente. Os dados do portfólio só são enviados quando carregas "Analisar".`
     );
-    if (!apiKey || !apiKey.trim().startsWith("sk-")) {
-      toast("API key inválida. Começa com 'sk-ant-...'");
-      return;
-    }
+    if (!apiKey || !apiKey.trim()) { toast("API key não introduzida."); return; }
     apiKey = apiKey.trim();
     if (!state.settings) state.settings = {};
-    state.settings.anthropicKey = apiKey;
+    state.settings[provider.settingKey] = apiKey;
     saveState();
   }
 
@@ -7069,10 +7151,10 @@ async function runAIAnalysis() {
   const modeLabels = { geral:"Análise Geral", risco:"Análise de Risco", fiscal:"Análise Fiscal", fire:"Plano FIRE", rebalancing:"Rebalancing" };
 
   const loadingMsgs = [
-    "A ler o teu portfólio…",
-    "A calcular métricas…",
+    `A usar ${provider.name}…`,
+    "A ler o portfólio…",
     "A identificar riscos…",
-    "A gerar sugestões personalizadas…",
+    "A gerar sugestões…",
     "A finalizar análise…"
   ];
   let msgIdx = 0;
@@ -7084,34 +7166,16 @@ async function runAIAnalysis() {
     const context = buildPortfolioContext();
     const systemPrompt = AI_PROMPTS[mode] || AI_PROMPTS.geral;
     const userMsg = question.trim()
-      ? `Dados do portfólio:\n\n${context}\n\nPergunta específica: ${question}`
-      : `Dados do portfólio:\n\n${context}`;
+      ? `Dados do portfólio:
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1500,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userMsg }]
-      })
-    });
+${context}
 
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      if (response.status === 401) throw new Error("API key inválida. Verifica em console.anthropic.com");
-      if (response.status === 429) throw new Error("Limite de pedidos atingido. Tenta em alguns segundos.");
-      throw new Error(err.error?.message || `Erro HTTP ${response.status}`);
-    }
+Pergunta específica: ${question}`
+      : `Dados do portfólio:
 
-    const data = await response.json();
-    const text = data.content?.[0]?.text || "";
+${context}`;
+
+    const text = await callAIProvider(provider, apiKey, systemPrompt, userMsg);
     if (!text) throw new Error("Resposta vazia da IA.");
 
     clearInterval(msgInterval);
@@ -7194,6 +7258,15 @@ function markdownToHTML(md) {
     .replace(/(<\/div>|<\/ul>)<\/p>/g, "$1");
 }
 
+function updateAIKeyStatus() {
+  const groqEl = document.getElementById("groqKeyStatus");
+  const anthropicEl = document.getElementById("anthropicKeyStatus");
+  const groqKey = state.settings && state.settings.groqKey;
+  const anthropicKey = state.settings && state.settings.anthropicKey;
+  if (groqEl) groqEl.textContent = groqKey ? "✅ Key configurada" : "Sem key — será pedida ao usar";
+  if (anthropicEl) anthropicEl.textContent = anthropicKey ? "✅ Key configurada" : "Sem key — será pedida ao usar";
+}
+
 function renderAIHistory() {
   const section = document.getElementById("aiHistorySection");
   const container = document.getElementById("aiHistory");
@@ -7219,11 +7292,13 @@ function showAIHistoryEntry(id) {
 }
 
 /* ─── LIMPAR API KEY NAS SETTINGS ───────────────────────────── */
-function clearAIKey() {
-  if (!confirm("Apagar a API key guardada?")) return;
-  if (state.settings) delete state.settings.anthropicKey;
+function clearAIKey(provider) {
+  const key = provider === "anthropic" ? "anthropicKey" : "groqKey";
+  const name = provider === "anthropic" ? "Claude (Anthropic)" : "Groq";
+  if (!confirm(`Apagar a API key de ${name}?`)) return;
+  if (state.settings) delete state.settings[key];
   saveState();
-  toast("API key removida.");
+  toast(`API key de ${name} removida.`);
 }
 
 /* ─── WIRE IA ────────────────────────────────────────────────── */
@@ -7244,7 +7319,11 @@ function clearAIKey() {
     // Renderizar análise quando entra na tab
     const tab = document.getElementById("analysisTab");
     if (tab) tab.addEventListener("change", () => {
-      if (tab.value === "ai") renderAIHistory();
+      if (tab.value === "ai") { renderAIHistory(); updateAIKeyStatus(); }
+    });
+    // Actualizar status quando entra nas Definições
+    document.querySelectorAll(".navbtn").forEach(b => {
+      if (b.dataset.view === "settings") b.addEventListener("click", () => setTimeout(updateAIKeyStatus, 100));
     });
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

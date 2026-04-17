@@ -819,3 +819,32 @@ select.input   { cursor: pointer; }
   .analysis-tab { background: var(--card2); border-color: var(--line); }
   .analysis-tab--active { background: var(--vio); color: #fff; }
 }
+
+/* ─── Provider selector ─── */
+.ai-providers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.ai-provider-btn {
+  position: relative; cursor: pointer;
+}
+.ai-provider-btn input[type="radio"] {
+  position: absolute; opacity: 0; width: 0; height: 0;
+}
+.ai-provider-btn span {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 11px 8px; border-radius: var(--r-sm);
+  border: 1.5px solid var(--line);
+  background: var(--card2);
+  transition: all .15s; cursor: pointer; text-align: center; gap: 2px;
+}
+.ai-provider-btn span strong { font-size: 14px; color: var(--text); }
+.ai-provider-btn span small  { font-size: 10px; color: var(--muted); font-weight: 600; }
+.ai-provider-btn input:checked + span {
+  border-color: var(--vio);
+  background: var(--vio-glow);
+  box-shadow: 0 0 0 3px var(--vio-glow);
+}
+.ai-provider-btn input:checked + span strong { color: var(--vio); }
