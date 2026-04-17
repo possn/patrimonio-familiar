@@ -1143,6 +1143,9 @@ function renderDashboard() {
   renderSummary();
   renderDistChart();
   renderTrendChart();
+  // v15
+  renderSnapshotTable();
+  renderIRSCard();
 }
 
 function renderSummary() {
@@ -1318,8 +1321,9 @@ function renderItems() {
     const row = document.createElement("div");
     row.className = "item";
     const badge = !showingLiabs ? yieldBadge(it) : "";
+    const gainBadge = !showingLiabs ? renderGainLossBadge(it) : "";
     row.innerHTML = `<div class="item__l">
-      <div class="item__t">${escapeHtml(it.name || "—")}</div>
+      <div class="item__t">${escapeHtml(it.name || "—")}${gainBadge}</div>
       <div class="item__s">${escapeHtml(it.class || "")}${badge}</div>
     </div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
     row.addEventListener("click", () => editItem(it.id));
@@ -1350,6 +1354,8 @@ function openItemModal(kind) {
   $("mMaturity").value = "";
   $("mCompound").value = "12";
   $("mNotes").value = "";
+  const _cbEl = document.getElementById("mCostBasis");
+  if (_cbEl) _cbEl.value = "";
   toggleYieldFields(kind);
   $("btnSaveItem").dataset.kind = kind;
   openModal("modalItem");
@@ -1393,6 +1399,9 @@ function editItem(id) {
     $("mYieldValue").value = it.yieldValue != null ? String(it.yieldValue) : "";
     $("mMaturity").value = it.maturityDate || "";
     $("mCompound").value = String(it.compoundFreq || 12);
+    // v15: custo de aquisição
+    const cbEl = document.getElementById("mCostBasis");
+    if (cbEl) cbEl.value = it.costBasis ? String(it.costBasis) : "";
   } else {
     $("mYieldType").value = "none";
     $("mYieldValue").value = "";
@@ -1419,6 +1428,9 @@ function saveItemFromModal() {
     obj.yieldValue = parseNum($("mYieldValue").value);
     obj.maturityDate = $("mMaturity").value || "";
     obj.compoundFreq = parseInt($("mCompound").value) || 12;
+    // v15: custo de aquisição para mais-valias
+    const cb = parseNum((document.getElementById("mCostBasis") || {}).value || "");
+    if (cb > 0) obj.costBasis = cb; else delete obj.costBasis;
   }
   if (isLiab) {
     const ix = state.liabilities.findIndex(x => x.id === obj.id);
@@ -4181,28 +4193,33 @@ async function importBankFile(file) {
 
   if (name.endsWith(".pdf")) {
     text = await extractTextFromPDF(file);
-    if (!parsed.length) parsed = parseSantanderTabular(text);
-    if (!parsed.length) parsed = parseSantanderPDF(text);
-    if (!parsed.length) parsed = parseBankCsvLikeText(text);
-    if (!parsed.length) parsed = parseBankCsvGeneric(text);
   } else if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-    // XLSX: usa parser estruturado directo (mais fiável que texto)
     parsed = await parseXLSXBankRows(file);
-    // Fallback para texto
-    if (!parsed.length) {
-      text = await extractTextFromXLSX(file);
-      if (text.trim()) {
-        if (!parsed.length) parsed = parseSantanderTabular(text);
-        if (!parsed.length) parsed = parseBankCsvGeneric(text);
-      }
-    }
+    if (!parsed.length) { text = await extractTextFromXLSX(file); }
   } else {
-    // CSV, TXT, ou qualquer outro texto
     text = await fileToText(file);
-    if (!parsed.length) parsed = parseSantanderTabular(text);
-    if (!parsed.length) parsed = parseBankCsvLikeText(text);
-    if (!parsed.length) parsed = parseBankCsvGeneric(text);
   }
+
+  // v15: detectar banco automaticamente pelo conteúdo
+  const bankFmt = detectBankFormat(text || "");
+  const bankNames = { cgd:"CGD", millennium:"Millennium BCP", novobanco:"Novo Banco",
+    montepio:"Montepio", bpi:"BPI", santander:"Santander", generic:"Genérico" };
+  const bankLabel = bankNames[bankFmt] || "Genérico";
+
+  // Parsers específicos por banco detectado
+  if (!parsed.length && bankFmt === "millennium")  parsed = parseMillenniumCSV(text);
+  if (!parsed.length && bankFmt === "cgd")         parsed = parseCGDCSV(text);
+  if (!parsed.length && bankFmt === "novobanco")   parsed = parseNovoBancoCSV(text);
+  if (!parsed.length && (bankFmt === "montepio" || bankFmt === "bpi")) parsed = parseMontepioBPI(text);
+  // Parsers universais em cascata
+  if (!parsed.length) parsed = parseSantanderTabular(text || "");
+  if (!parsed.length) parsed = parseSantanderPDF(text || "");
+  if (!parsed.length) parsed = parseMillenniumCSV(text || "");
+  if (!parsed.length) parsed = parseCGDCSV(text || "");
+  if (!parsed.length) parsed = parseNovoBancoCSV(text || "");
+  if (!parsed.length) parsed = parseMontepioBPI(text || "");
+  if (!parsed.length) parsed = parseBankCsvLikeText(text || "");
+  if (!parsed.length) parsed = parseBankCsvGeneric(text || "");
 
   if (!parsed.length && !text.trim()) {
     showBankResult("error", "Não foi possível extrair texto do ficheiro.");
@@ -4210,8 +4227,8 @@ async function importBankFile(file) {
   }
 
   if (!parsed.length) {
-    const firstLines = text.split("\n").slice(0, 3).join(" | ").slice(0, 300);
-    showBankResult("warn", `0 movimentos reconhecidos.<br><small>Primeiras linhas: ${escapeHtml(firstLines)}</small>`);
+    const firstLines = (text||"").split("\n").slice(0, 3).join(" | ").slice(0, 300);
+    showBankResult("warn", `0 movimentos reconhecidos.<br><small>Banco detectado: <b>${typeof bankLabel !== "undefined" ? bankLabel : "Genérico"}</b><br>Primeiras linhas: ${escapeHtml(firstLines)}</small>`);
     return { added: 0, dup: 0, read: 0 };
   }
 
@@ -5555,6 +5572,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   state = await loadStateAsync();
   wire();
   renderAll();
+  // v15: auto-snapshot mensal silencioso
+  autoSnapshotIfNeeded();
+  // v15: verificar vencimentos com notificação
+  setTimeout(() => checkAndNotifyMaturities(), 2000);
 });
 
 // Guarantee state is saved when app goes to background or is closed
@@ -5564,3 +5585,270 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pagehide", () => saveStateAsync());
 window.addEventListener("beforeunload", () => saveStateAsync());
+
+/* ═══════════════════════════════════════════════════════════════
+   PATRIMÓNIO FAMILIAR — v15 ADDITIONS
+   Aplicadas sobre v14 real (5566 linhas)
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── EXPORT CSV / XLSX ────────────────────────────────────── */
+function downloadText(content, filename, mimeType) {
+  const BOM = mimeType.includes("csv") ? "\uFEFF" : "";
+  const blob = new Blob([BOM + content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.style.display = "none";
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+}
+
+function exportCashflowCSV() {
+  const gran = ($("cfGranularity") && $("cfGranularity").value) || "month";
+  const y = ($("cfYear") && $("cfYear").value) || String(new Date().getFullYear());
+  const m = $("cfMonth") ? String($("cfMonth").value).padStart(2,"0") : "01";
+  let txs;
+  if (gran === "all") txs = state.transactions.slice();
+  else if (gran === "year") txs = expandRecurring(state.transactions).filter(t => String(t.date||"").slice(0,4) === y);
+  else { const key = `${y}-${m}`; txs = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === key); }
+  txs = txs.sort((a,b) => String(a.date).localeCompare(String(b.date)));
+  const header = ["Data","Tipo","Categoria","Valor (EUR)","Recorrente","Notas"];
+  const rows = txs.map(t => [t.date||"", t.type==="in"?"Entrada":"Saída", t.category||"", parseNum(t.amount).toFixed(2), t.recurring||"none", (t.notes||"").replace(/"/g,"'")]);
+  const csv = [header,...rows].map(r => r.map(c => `"${c}"`).join(";")).join("\n");
+  const label = gran==="all" ? "completo" : gran==="year" ? y : `${y}_${m}`;
+  downloadText(csv, `balanco_${label}.csv`, "text/csv;charset=utf-8;");
+  toast("CSV exportado.");
+}
+
+function exportPortfolioCSV() {
+  const header = ["Tipo","Classe","Nome","Valor (EUR)","Tipo Yield","Yield Valor","Capitalização","Vencimento","Custo Aquis.","Notas"];
+  const rows = [
+    ...state.assets.map(a => ["Ativo", a.class||"", a.name||"", parseNum(a.value).toFixed(2), a.yieldType||"none", parseNum(a.yieldValue).toFixed(4), a.compoundFreq||"", a.maturityDate||"", parseNum(a.costBasis||0).toFixed(2), (a.notes||"").replace(/"/g,"'")]),
+    ...state.liabilities.map(l => ["Passivo", l.class||"", l.name||"", parseNum(l.value).toFixed(2), "","","","","", (l.notes||"").replace(/"/g,"'")])
+  ];
+  const csv = [header,...rows].map(r => r.map(c => `"${c}"`).join(";")).join("\n");
+  downloadText(csv, `portfolio_${isoToday()}.csv`, "text/csv;charset=utf-8;");
+  toast("Portfólio CSV exportado.");
+}
+
+function exportPortfolioXLSX() {
+  if (typeof XLSX === "undefined") { toast("XLSX não disponível."); return; }
+  const t = calcTotals();
+  const assetRows = state.assets.map(a => ({ Tipo:"Ativo", Classe:a.class||"", Nome:a.name||"", "Valor EUR":parseNum(a.value), "Tipo Yield":a.yieldType||"none", "Yield Valor":parseNum(a.yieldValue), "Capitalização":a.compoundFreq||"", Vencimento:a.maturityDate||"", "Custo Aquis.":parseNum(a.costBasis||0), "Rend. Anual EUR":passiveFromItem(a), Notas:a.notes||"" }));
+  const liabRows = state.liabilities.map(l => ({ Tipo:"Passivo", Classe:l.class||"", Nome:l.name||"", "Valor EUR":parseNum(l.value), "Tipo Yield":"","Yield Valor":"","Capitalização":"",Vencimento:"","Custo Aquis.":0,"Rend. Anual EUR":0, Notas:l.notes||"" }));
+  const txRows = state.transactions.map(tx => ({ Data:tx.date||"", Tipo:tx.type==="in"?"Entrada":"Saída", Categoria:tx.category||"", "Valor EUR":parseNum(tx.amount), Recorrente:tx.recurring||"none", Notas:tx.notes||"" }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([...assetRows,...liabRows]), "Portfólio");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(txRows), "Movimentos");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([
+    { Métrica:"Ativos Total", Valor:t.assetsTotal },
+    { Métrica:"Passivos Total", Valor:t.liabsTotal },
+    { Métrica:"Património Líquido", Valor:t.net },
+    { Métrica:"Rendimento Passivo Anual", Valor:t.passiveAnnual },
+    { Métrica:"Data Exportação", Valor:isoToday() }
+  ]), "Resumo");
+  XLSX.writeFile(wb, `patrimonio_${isoToday()}.xlsx`);
+  toast("Excel exportado.");
+}
+
+/* ─── AUTO-SNAPSHOT MENSAL ─────────────────────────────────── */
+function autoSnapshotIfNeeded() {
+  const thisMonth = isoToday().slice(0,7);
+  const last = state.history.slice().sort((a,b) => String(b.dateISO).localeCompare(String(a.dateISO)))[0];
+  if (last && String(last.dateISO||"").slice(0,7) === thisMonth) return;
+  if (!state.assets.length) return;
+  const t = calcTotals();
+  state.history.push({ dateISO:isoToday(), net:t.net, assets:t.assetsTotal, liabilities:t.liabsTotal, passiveAnnual:t.passiveAnnual, auto:true });
+  saveState();
+}
+
+/* ─── NOTIFICAÇÕES PUSH ─────────────────────────────────────── */
+async function requestNotifications() {
+  if (!("Notification" in window)) { toast("Notificações não suportadas."); return; }
+  const p = await Notification.requestPermission();
+  if (p === "granted") { toast("✅ Notificações ativadas."); checkAndNotifyMaturities(); }
+  else toast("❌ Notificações bloqueadas.");
+}
+
+function checkAndNotifyMaturities() {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  const today = isoToday();
+  const in7 = new Date(); in7.setDate(in7.getDate() + 7);
+  const in7ISO = in7.toISOString().slice(0,10);
+  state.assets.filter(a => a.maturityDate && a.maturityDate >= today && a.maturityDate <= in7ISO).forEach(a => {
+    const days = Math.round((new Date(a.maturityDate) - new Date()) / 86400000);
+    new Notification("⏰ Vencimento — Património Familiar", { body:`${a.name}: vence em ${days} dia${days!==1?"s":""} (${a.maturityDate}) · ${fmtEUR(parseNum(a.value))}`, icon:"icon192.png", tag:`mat_${a.id}` });
+  });
+}
+
+/* ─── PARSERS BANCÁRIOS ADICIONAIS ─────────────────────────── */
+function detectBankFormat(text) {
+  const h = String(text||"").slice(0,800).toLowerCase();
+  if (h.includes("caixa geral") || h.includes("cgd") || h.includes("caixadirecta")) return "cgd";
+  if (h.includes("millennium") || h.includes("millenniumbcp")) return "millennium";
+  if (h.includes("novo banco") || h.includes("novobanco")) return "novobanco";
+  if (h.includes("montepio")) return "montepio";
+  if (/\bbpi\b/.test(h)) return "bpi";
+  if (h.includes("santander")) return "santander";
+  return "generic";
+}
+
+function parseMillenniumCSV(text) {
+  const out = [];
+  for (const raw of String(text||"").split(/\r?\n/)) {
+    const parts = raw.trim().split(/[;\t]/);
+    if (parts.length < 4) continue;
+    const dm = String(parts[0]).match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
+    if (!dm) continue;
+    const iso = `${dm[3]}-${String(dm[2]).padStart(2,"0")}-${String(dm[1]).padStart(2,"0")}`;
+    const desc = String(parts[1]||"").trim();
+    const debit = parseNum(String(parts[2]||"").replace(/\s/g,""));
+    const credit = parseNum(String(parts[3]||"").replace(/\s/g,""));
+    if (debit > 0) out.push({date:iso, desc, amount:-debit});
+    else if (credit > 0) out.push({date:iso, desc, amount:credit});
+  }
+  return out;
+}
+
+function parseCGDCSV(text) {
+  const out = [];
+  for (const raw of String(text||"").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const parts = line.split(/[;\t]/);
+    if (parts.length < 3) continue;
+    const dm = String(parts[0]).match(/(\d{2})[\/\-\.](\d{2})[\/\-\.](\d{4})/);
+    if (!dm) continue;
+    const iso = `${dm[3]}-${dm[2]}-${dm[1]}`;
+    const desc = String(parts[1]||"").trim();
+    const val = parseNum(String(parts[2]||"").replace(/\s/g,""));
+    if (val !== 0) out.push({date:iso, desc, amount:val});
+  }
+  return out;
+}
+
+function parseNovoBancoCSV(text) {
+  const out = [];
+  for (const raw of String(text||"").split(/\r?\n/)) {
+    const parts = raw.trim().split(";");
+    if (parts.length < 3) continue;
+    const dm = String(parts[0]).match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
+    if (!dm) continue;
+    const iso = `${dm[3]}-${String(dm[2]).padStart(2,"0")}-${String(dm[1]).padStart(2,"0")}`;
+    const desc = String(parts[1]||"").trim();
+    const val = parseNum(String(parts[2]||"").replace(/\s|\u00A0/g,""));
+    if (val !== 0) out.push({date:iso, desc, amount:val});
+  }
+  return out;
+}
+
+function parseMontepioBPI(text) {
+  const out = [];
+  for (const raw of String(text||"").split(/\r?\n/)) {
+    if (!/\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}/.test(raw)) continue;
+    const parts = raw.trim().split(/[;\t]/);
+    if (parts.length < 4) continue;
+    const dm = String(parts[0]).match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
+    if (!dm) continue;
+    const iso = `${dm[3]}-${String(dm[2]).padStart(2,"0")}-${String(dm[1]).padStart(2,"0")}`;
+    const desc = String(parts[1]||"").trim();
+    const debit = parseNum(String(parts[2]||"").replace(/\s/g,""));
+    const credit = parseNum(String(parts[3]||"").replace(/\s/g,""));
+    if (debit > 0) out.push({date:iso, desc, amount:-debit});
+    else if (credit > 0) out.push({date:iso, desc, amount:credit});
+  }
+  return out;
+}
+
+/* ─── CUSTO DE AQUISIÇÃO & MAIS-VALIA ───────────────────────── */
+function calcGainLoss(asset) {
+  const cb = parseNum(asset.costBasis);
+  const cur = parseNum(asset.value);
+  if (!cb || cb <= 0) return null;
+  const gain = cur - cb;
+  return { costBasis:cb, currentVal:cur, gain, gainPct:(gain/cb)*100, irsEst:gain>0?gain*0.28:0 };
+}
+
+function renderGainLossBadge(asset) {
+  const gl = calcGainLoss(asset);
+  if (!gl) return "";
+  const sign = gl.gain >= 0 ? "+" : "";
+  const col = gl.gain >= 0 ? "#059669" : "#dc2626";
+  return ` <span style="color:${col};font-size:11px;font-weight:700">${sign}${fmtPct(gl.gainPct)}</span>`;
+}
+
+/* ─── IRS ESTIMADO ───────────────────────────────────────────── */
+function renderIRSCard() {
+  const el = document.getElementById("irsEstCard");
+  if (!el) return;
+  const now = new Date();
+  const yearStart = now.getFullYear() + "-01-01";
+  const divYTD = (state.dividends||[]).filter(d=>d.date>=yearStart).reduce((s,d)=>s+parseNum(d.amount),0);
+  const rendasYTD = state.assets.filter(a=>a.yieldType==="rent_month").reduce((s,a)=>s+parseNum(a.yieldValue)*now.getMonth(),0);
+  const latentGains = state.assets.map(a=>calcGainLoss(a)).filter(Boolean).filter(g=>g.gain>0).reduce((s,g)=>s+g.gain,0);
+  const taxDiv = divYTD*0.28, taxRendas = rendasYTD*0.28, taxGains = latentGains*0.28;
+  const total = taxDiv + taxRendas;
+  if (total < 1 && taxGains < 1) { el.style.display="none"; return; }
+  el.style.display="";
+  const s = id => { const e=document.getElementById(id); return { set: v => { if(e) e.textContent=v; } }; };
+  s("irsEstDiv").set(fmtEUR(taxDiv));
+  s("irsEstRendas").set(fmtEUR(taxRendas));
+  s("irsEstGains").set(fmtEUR(taxGains));
+  s("irsEstTotal").set(fmtEUR(total));
+}
+
+/* ─── SNAPSHOT: APAGAR INDIVIDUALMENTE ─────────────────────── */
+function deleteSnapshot(dateISO) {
+  if (!confirm(`Apagar snapshot de ${dateISO}?`)) return;
+  state.history = state.history.filter(h => h.dateISO !== dateISO);
+  saveState();
+  renderDashboard();
+  toast("Snapshot apagado.");
+}
+
+function renderSnapshotTable() {
+  const el = document.getElementById("snapshotTable");
+  if (!el) return;
+  const h = state.history.slice().sort((a,b) => String(b.dateISO).localeCompare(String(a.dateISO)));
+  if (!h.length) { el.innerHTML=`<div class="item" style="cursor:default"><div class="item__l"><div class="item__t">Sem snapshots</div><div class="item__s">Usa "Registar mês" para criar.</div></div></div>`; return; }
+  el.innerHTML = h.slice(0,24).map(s => {
+    const auto = s.auto ? `<span class="badge badge--blue" style="font-size:10px">auto</span>` : "";
+    return `<div class="item" style="cursor:default">
+      <div class="item__l">
+        <div class="item__t">${escapeHtml(s.dateISO)} ${auto}</div>
+        <div class="item__s">Ativos ${fmtEUR(parseNum(s.assets))} · Passivos ${fmtEUR(parseNum(s.liabilities||0))} · Rend. ${fmtEUR(parseNum(s.passiveAnnual||0))}/ano</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="item__v">${fmtEUR(parseNum(s.net))}</div>
+        <button onclick="deleteSnapshot('${escapeHtml(s.dateISO)}')" style="border:0;background:#fee2e2;color:#dc2626;border-radius:8px;padding:4px 8px;cursor:pointer;font-size:13px;font-weight:700" title="Apagar snapshot">✕</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+/* ─── TAXA DE JURO REAL (Fisher) ────────────────────────────── */
+function realRate(nominalPct, inflationPct) {
+  return ((1 + nominalPct/100) / (1 + inflationPct/100) - 1) * 100;
+}
+
+/* ─── PRINT / PDF ────────────────────────────────────────────── */
+function printDashboard() { window.print(); }
+
+/* ─── WIRE V15: botões extra ────────────────────────────────── */
+(function wireV15() {
+  // Aguardar DOM pronto
+  const init = () => {
+    const b = id => document.getElementById(id);
+    if (b("btnExportCashflowCSV")) b("btnExportCashflowCSV").addEventListener("click", exportCashflowCSV);
+    if (b("btnExportPortfolioCSV")) b("btnExportPortfolioCSV").addEventListener("click", exportPortfolioCSV);
+    if (b("btnExportPortfolioXLSX")) b("btnExportPortfolioXLSX").addEventListener("click", exportPortfolioXLSX);
+    if (b("btnEnableNotifications")) b("btnEnableNotifications").addEventListener("click", requestNotifications);
+    if (b("btnPrintDashboard")) b("btnPrintDashboard").addEventListener("click", printDashboard);
+    // Actualizar estado botão notificações
+    if (b("btnEnableNotifications") && typeof Notification !== "undefined" && Notification.permission === "granted") {
+      b("btnEnableNotifications").textContent = "🔔 Notificações ativas";
+      b("btnEnableNotifications").disabled = true;
+    }
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();

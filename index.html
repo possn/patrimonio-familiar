@@ -138,6 +138,7 @@
         <button class="btn btn--primary" id="btnSnapshot">📸 Registar mês</button>
         <button class="btn btn--primary" id="btnAddDiv">💰 Dividendo</button>
         <button class="btn" id="btnClearHistory">Limpar histórico</button>
+        <button class="btn btn--ghost" id="btnPrintDashboard" title="Imprimir / PDF">🖨️</button>
       </div>
     </div>
 
@@ -172,6 +173,29 @@
       <div class="hint" id="historyHint" style="display:none">Sem histórico. Usa "📸 Registar mês".</div>
       <!-- Mini tabela de snapshots recentes -->
       <div id="snapshotTable" style="margin-top:10px"></div>
+    </div>
+
+    <!-- v15: IRS estimado -->
+    <div class="card" id="irsEstCard" style="display:none;border-left:4px solid #f59e0b;background:#fffbeb">
+      <div class="card__head">
+        <div><div class="card__title" style="color:#92400e">🧾 IRS estimado (28% PT)</div>
+        <div class="card__muted" style="font-size:12px">Estimativa simplificada · consulta sempre um TOC</div></div>
+      </div>
+      <div class="kpiRow">
+        <div class="kpi kpi--out"><div class="kpi__k">Dividendos YTD</div><div class="kpi__v" id="irsEstDiv">—</div></div>
+        <div class="kpi kpi--out"><div class="kpi__k">Rendas YTD</div><div class="kpi__v" id="irsEstRendas">—</div></div>
+        <div class="kpi kpi--out"><div class="kpi__k">Mais-valias latentes</div><div class="kpi__v" id="irsEstGains">—</div></div>
+      </div>
+      <div style="margin-top:10px;font-size:15px;font-weight:700;color:#92400e">Total retido estimado: <span id="irsEstTotal">—</span></div>
+    </div>
+
+    <!-- v15: Notificações push -->
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">🔔 Alertas de vencimentos</div>
+        <div class="card__muted">Notificação 7 dias antes do vencimento de depósitos, PPR, obrigações</div></div>
+      </div>
+      <button class="btn btn--primary" id="btnEnableNotifications" style="width:100%">🔔 Ativar notificações push</button>
     </div>
 
   </section>
@@ -310,6 +334,18 @@
       <div id="txList" class="list"></div>
     </div>
 
+    <!-- v15: Exportar balanço -->
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">📤 Exportar</div><div class="card__muted">Descarrega os teus dados</div></div>
+      </div>
+      <div class="row row--wrap" style="gap:8px">
+        <button class="btn btn--ghost" id="btnExportCashflowCSV">📥 Balanço CSV</button>
+        <button class="btn btn--ghost" id="btnExportPortfolioCSV">📥 Portfólio CSV</button>
+        <button class="btn btn--ghost" id="btnExportPortfolioXLSX">📊 Excel completo</button>
+      </div>
+    </div>
+
     <!-- IMPORTAR EXTRACTO DO BANCO -->
     <div class="card">
       <div class="card__head">
@@ -329,8 +365,8 @@
       </div>
       <div id="bankImportResult" style="margin-top:10px;display:none"></div>
       <div class="card__muted" style="margin-top:12px;font-size:12px;line-height:1.7">
-        <b>Bancos testados:</b> CGD · Millennium BCP · BPI · Santander · Novobanco · Activobank<br>
-        <b>Formatos:</b> CSV/TXT (homebanking) · Excel .xlsx · PDF (extracto)
+        <b>Bancos suportados (v15):</b> CGD · Millennium BCP · BPI · Santander · Novo Banco · Montepio · ActivoBank · Caixa Agrícola<br>
+        <b>Formatos:</b> CSV/TXT · Excel .xlsx · PDF — detecção automática do banco
       </div>
     </div>
   </section>
@@ -804,7 +840,7 @@
       </div>
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Sobre</div>
-        <div class="card__muted">Património Familiar v8 · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.</div>
+        <div class="card__muted">Património Familiar <b>v15</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
       </div>
     </div>
     <div id="paneFire" style="display:none">
@@ -884,6 +920,9 @@
         </select>
         <label class="lbl">Maturidade / Vencimento</label>
         <input class="input" id="mMaturity" type="date">
+        <!-- v15: custo de aquisição -->
+        <label class="lbl">Custo de aquisição (€) <span style="font-size:11px;color:#94a3b8;font-weight:500">— para calcular mais-valias latentes</span></label>
+        <input class="input" id="mCostBasis" inputmode="decimal" placeholder="opcional · ex: 10000">
       </div>
       <label class="lbl">Notas</label><textarea class="input" id="mNotes" rows="2" placeholder="opcional"></textarea>
       <div class="row row--wrap" style="margin-top:14px">

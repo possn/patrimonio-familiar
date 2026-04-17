@@ -401,3 +401,58 @@ select.input { cursor: pointer; }
   .hero__value { font-size: 36px; }
   .kpi__v { font-size: 16px; }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   PATRIMÓNIO FAMILIAR — v15 CSS ADDITIONS
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Botão ghost (export) */
+.btn--ghost {
+  background: var(--card);
+  border: 1.5px solid var(--line);
+  color: var(--text);
+  font-weight: 700;
+  border-radius: 14px;
+  padding: 9px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background .15s, border-color .15s;
+}
+.btn--ghost:hover { background: #f0f4ff; border-color: var(--vio); }
+
+/* IRS card */
+#irsEstCard { border-left: 4px solid #f59e0b !important; }
+
+/* Snapshot table — botão apagar */
+#snapshotTable button { flex-shrink: 0; }
+
+/* Mais-valia inline no nome do ativo */
+.item__t span[style*="059669"],
+.item__t span[style*="dc2626"] { font-size: 11px; }
+
+/* Print / PDF */
+@media print {
+  .topbar, .bottomnav, .passivebar, .fab,
+  #viewAssets, #viewImport, #viewCashflow,
+  #viewDividends, #viewAnalysis, #viewSettings,
+  .modal, button, .btn, .seg, select, input, textarea { display: none !important; }
+  body { background: #fff !important; }
+  .main { padding: 0 !important; max-width: 100% !important; }
+  .card { box-shadow: none !important; border: 1px solid #ddd !important;
+          page-break-inside: avoid; margin-bottom: 10px !important; }
+  .hero__value { font-size: 36px !important; }
+  #viewDashboard { display: block !important; }
+  @page { margin: 15mm; size: A4 portrait; }
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  .btn--ghost { background: #1e293b; border-color: #334155; color: #e2e8f0; }
+  .btn--ghost:hover { background: #273548; border-color: var(--vio); }
+  #irsEstCard { background: #422006 !important; }
+  #irsEstCard .card__title { color: #fcd34d !important; }
+}
+
+@media (max-width: 380px) {
+  .btn--ghost { font-size: 11px; padding: 7px 10px; }
+}
