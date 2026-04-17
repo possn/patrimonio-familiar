@@ -1297,6 +1297,8 @@ function rebuildClassFilter() {
   sel.value = current;
 }
 
+let itemsExpanded = false;
+
 function renderItems() {
   rebuildClassFilter();
   const list = $("itemsList");
@@ -1304,6 +1306,7 @@ function renderItems() {
   const q = ($("qSearch").value || "").trim().toLowerCase();
   const cfilter = $("qClass").value || "";
   const sort = $("qSort").value;
+  const isSearching = q.length > 0 || cfilter.length > 0;
 
   let src = showingLiabs ? [...state.liabilities] : [...state.assets];
   src = src.filter(it => {
@@ -1319,10 +1322,16 @@ function renderItems() {
 
   if (!src.length) {
     list.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem ${showingLiabs ? "passivos" : "ativos"}</div><div class="item__s">Usa "Adicionar".</div></div><div class="item__v">—</div></div>`;
+    const tog = document.getElementById("btnItemsToggle");
+    if (tog) tog.style.display = "none";
     return;
   }
 
-  for (const it of src) {
+  // Mostrar 10 por defeito, excepto se está a pesquisar
+  const LIMIT = 10;
+  const shown = (itemsExpanded || isSearching) ? src : src.slice(0, LIMIT);
+
+  for (const it of shown) {
     const row = document.createElement("div");
     row.className = "item";
     const badge = !showingLiabs ? yieldBadge(it) : "";
@@ -1333,6 +1342,19 @@ function renderItems() {
     </div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
     row.addEventListener("click", () => editItem(it.id));
     list.appendChild(row);
+  }
+
+  // Botão Ver todos / Ver menos
+  const tog = document.getElementById("btnItemsToggle");
+  if (tog) {
+    if (src.length > LIMIT && !isSearching) {
+      tog.style.display = "";
+      tog.textContent = itemsExpanded
+        ? "Ver menos"
+        : `Ver todos (${src.length})`;
+    } else {
+      tog.style.display = "none";
+    }
   }
 }
 
@@ -7357,45 +7379,53 @@ function clearAIKey(provider) {
 function parsePositionFromAsset(asset) {
   const notes = asset.notes || "";
 
-  // Extrair Qty
-  const qtyMatch = notes.match(/Qty=([\d.,]+)/);
-  const qty = qtyMatch ? parseNum(qtyMatch[1]) : null;
-
-  // Extrair PM (preço médio de custo)
-  const pmMatch = notes.match(/PM=([\d.,]+)/);
-  const pm = pmMatch ? parseNum(pmMatch[1]) : null;
-
-  // Extrair moeda do PM
-  const ccyMatch = notes.match(/PM=[\d.,]+\s+([A-Z]{3})/);
-  const ccy = ccyMatch ? ccyMatch[1] : "EUR";
-
-  // Extrair preço actual das notas (inserido pelo refreshLiveQuotes)
-  const priceMatch = notes.match(/Preço:\s*([\d.,]+)/);
-  const currentPrice = priceMatch ? parseNum(priceMatch[1]) : null;
-
-  // Valor actual do ativo (= qty × preço_actual em EUR)
-  const currentValue = parseNum(asset.value);
-
-  // Custo total em EUR
-  // Prioridade: costBasis (campo dedicado) > qty × PM
-  let costBasis = parseNum(asset.costBasis || 0);
-  if (!costBasis && qty && pm) {
-    // PM está na moeda original — usar FX aproximado
-    const FX = { EUR:1, USD:0.92, GBP:1.17, CHF:1.05, DKK:0.134,
-                 SEK:0.087, NOK:0.085, CAD:0.68, AUD:0.59, JPY:0.006 };
-    costBasis = qty * pm * (FX[ccy] || 1);
+  // 1. Qty — campo dedicado (guardado no import) ou das notas
+  let qty = parseNum(asset.qty || 0);
+  if (!qty) {
+    const m = notes.match(/Qty=([\d.,]+)/);
+    qty = m ? parseNum(m[1]) : 0;
   }
+  if (!qty || qty <= 0) return null;
 
-  if (!qty || !costBasis || costBasis <= 0 || currentValue <= 0) return null;
+  // 2. Custo total em EUR — campo dedicado (mais fiável)
+  let costBasis = parseNum(asset.costBasis || 0);
+
+  // Fallback: qty × PM das notas
+  if (!costBasis) {
+    const pmMatch  = notes.match(/PM=([\d.,]+)/);
+    const ccyMatch = notes.match(/PM=[\d.,]+\s+([A-Z]{3})/);
+    const pm  = pmMatch  ? parseNum(pmMatch[1])  : 0;
+    const ccy = ccyMatch ? ccyMatch[1] : "EUR";
+    if (pm > 0) {
+      const FX = { EUR:1, USD:0.92, GBP:1.17, CHF:1.05, DKK:0.134,
+                   SEK:0.087, NOK:0.085, CAD:0.68, AUD:0.59, JPY:0.006 };
+      costBasis = qty * pm * (FX[ccy] || 0.92); // default USD se não reconhecer
+    }
+  }
+  if (!costBasis || costBasis <= 0) return null;
+
+  // 3. Valor actual — campo value actualizado pelas cotações
+  // Se value for 0 ou muito baixo (cotação não actualizada), estimar pelo custo
+  let currentValue = parseNum(asset.value);
+  const hasLivePrice = asset.lastUpdated && currentValue > 0;
+
+  // Se não há cotação ao vivo ainda, usar o custo como valor actual (P&L = 0)
+  if (!currentValue || currentValue <= 0) currentValue = costBasis;
 
   const gain = currentValue - costBasis;
   const gainPct = (gain / costBasis) * 100;
   const currentPricePerUnit = currentValue / qty;
   const costPricePerUnit = costBasis / qty;
 
+  // Extrair PM original para mostrar
+  const pmMatch2  = notes.match(/PM=([\d.,]+)/);
+  const ccyMatch2 = notes.match(/PM=[\d.,]+\s+([A-Z]{3})/);
+  const pm  = pmMatch2  ? parseNum(pmMatch2[1])  : costPricePerUnit;
+  const ccy = ccyMatch2 ? ccyMatch2[1] : "EUR";
+
   return {
     qty, pm, ccy, costBasis, currentValue,
-    gain, gainPct,
+    gain, gainPct, hasLivePrice,
     currentPricePerUnit, costPricePerUnit,
     priceChange: currentPricePerUnit - costPricePerUnit,
     priceChangePct: costPricePerUnit > 0 ? (currentPricePerUnit - costPricePerUnit) / costPricePerUnit * 100 : 0
@@ -7454,41 +7484,53 @@ function renderEquityPnL() {
   const totalCol = totalGain >= 0 ? "var(--green)" : "var(--red)";
   const totalSign = totalGain >= 0 ? "+" : "";
 
+  // Calcular média ponderada de rendimento (weighted avg return)
+  const withLive = positions.filter(p => p.pos.hasLivePrice);
+  const avgReturn = withLive.length > 0
+    ? withLive.reduce((s, p) => s + p.pos.gainPct, 0) / withLive.length
+    : totalGainPct;
+
   el.innerHTML = `
-    <!-- KPI global -->
-    <div style="background:${totalGain >= 0 ? "var(--kpi-in)" : "var(--kpi-out)"};
-      border-radius:var(--r-sm);padding:16px;margin-bottom:14px;
-      border:1px solid ${totalGain >= 0 ? "rgba(16,185,129,.2)" : "rgba(239,68,68,.2)"}">
-      <div style="font-size:12px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">
-        Portfólio de Acções/ETFs — P&L total
+    <!-- KPI global — hero card P&L -->
+    <div style="background:linear-gradient(135deg,${totalGain >= 0 ? "#059669,#10b981" : "#dc2626,#ef4444"});
+      border-radius:var(--r-sm);padding:16px 16px 14px;margin-bottom:14px;color:#fff">
+      <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;opacity:.75;margin-bottom:10px">
+        Portfólio Acções &amp; ETFs — P&L
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-        <div>
-          <div style="font-size:11px;color:var(--muted);font-weight:700">Custo total</div>
-          <div style="font-size:18px;font-weight:900">${fmtEUR(totalCost)}</div>
+      <!-- Valor principal: ganho/perda total -->
+      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
+        <div style="font-size:38px;font-weight:900;letter-spacing:-1px;line-height:1">
+          ${totalSign}${fmtPct(totalGainPct)}
         </div>
         <div>
-          <div style="font-size:11px;color:var(--muted);font-weight:700">Valor actual</div>
-          <div style="font-size:18px;font-weight:900">${fmtEUR(totalCurrent)}</div>
-        </div>
-        <div>
-          <div style="font-size:11px;color:var(--muted);font-weight:700">Ganho/Perda</div>
-          <div style="font-size:18px;font-weight:900;color:${totalCol}">
-            ${totalSign}${fmtPct(totalGainPct)}
-          </div>
-          <div style="font-size:12px;color:${totalCol};font-weight:700">
-            ${totalSign}${fmtEUR(totalGain)}
-          </div>
+          <div style="font-size:16px;font-weight:800">${totalSign}${fmtEUR(totalGain)}</div>
+          <div style="font-size:11px;opacity:.7">ganho / perda total</div>
         </div>
       </div>
-      <div style="margin-top:10px;height:6px;background:rgba(0,0,0,.08);border-radius:3px;overflow:hidden">
-        <div style="height:6px;background:${totalCol};
-          width:${Math.min(100, Math.max(0, (totalCurrent/Math.max(totalCost,1))*100))}%;
-          border-radius:3px;transition:width .6s"></div>
+      <!-- Barra progresso -->
+      <div style="height:5px;background:rgba(255,255,255,.25);border-radius:3px;overflow:hidden;margin-bottom:12px">
+        <div style="height:5px;background:#fff;border-radius:3px;
+          width:${Math.min(100, Math.max(2, (totalCurrent/Math.max(totalCost,1))*100))}%;
+          transition:width .8s cubic-bezier(.4,0,.2,1)"></div>
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px">
-        ${posPos} posição${posPos!==1?"s":""} positiva${posPos!==1?"s":""} · 
-        ${posNeg} negativa${posNeg!==1?"s":""}
+      <!-- 3 métricas secundárias -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:8px 10px">
+          <div style="font-size:10px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Investido</div>
+          <div style="font-size:14px;font-weight:900;margin-top:2px">${fmtEUR(totalCost)}</div>
+        </div>
+        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:8px 10px">
+          <div style="font-size:10px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Actual</div>
+          <div style="font-size:14px;font-weight:900;margin-top:2px">${fmtEUR(totalCurrent)}</div>
+        </div>
+        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:8px 10px">
+          <div style="font-size:10px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Média ret.</div>
+          <div style="font-size:14px;font-weight:900;margin-top:2px">${avgReturn>=0?"+":""}${fmtPct(avgReturn)}</div>
+        </div>
+      </div>
+      <div style="margin-top:8px;font-size:11px;opacity:.65">
+        ${posPos} positiva${posPos!==1?"s":""} · ${posNeg} negativa${posNeg!==1?"s":""} · ${positions.length} total
+        ${!withLive.length ? " · ⚡ Actualiza ⟳ Cotações para P&L real" : ""}
       </div>
     </div>
 
@@ -7521,7 +7563,9 @@ function renderEquityPnL() {
           </div>
           <div style="text-align:right">
             <div style="font-size:11px;color:var(--muted)">${fmtEUR2(pos.costPricePerUnit)}</div>
-            <div style="font-size:13px;font-weight:800">${fmtEUR2(pos.currentPricePerUnit)}</div>
+            <div style="font-size:13px;font-weight:800;color:${pos.hasLivePrice?"var(--text)":"var(--muted)"}">
+              ${pos.hasLivePrice ? fmtEUR2(pos.currentPricePerUnit) : "—"}
+            </div>
           </div>
           <div style="text-align:right">
             <div style="font-size:14px;font-weight:900;color:${col}">${sign}${fmtPct(pos.gainPct)}</div>

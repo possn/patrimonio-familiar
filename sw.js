@@ -1,5 +1,5 @@
 /* Património Familiar — Service Worker v7 — network-first para garantir updates */
-const CACHE_NAME = "pf-cache-20260416b";
+const CACHE_NAME = "pf-cache-20260417c";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest"];
 
 self.addEventListener("install", event => {
