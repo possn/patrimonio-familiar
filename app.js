@@ -3359,6 +3359,72 @@ function syncCompoundFromAsset(portfolioData, avgSavings) {
   $("compContrib").value = "0";
 }
 
+/* ─── INTEGRAÇÃO P&L → COMPOUND + FIRE ─────────────────────── */
+function usePnLInCompound() {
+  const pnl = calcEquityPortfolioPnL();
+  const t   = calcTotals();
+
+  // Capital = net worth total (não só equity)
+  $("compPrincipal").value = String(Math.round(t.net));
+
+  // Taxa = média de retorno das posições com P&L real
+  // Fallback: yield médio ponderado da carteira
+  const withLive = pnl.positions.filter(p => p.pos.hasLivePrice);
+  let rate;
+  if (withLive.length >= 3) {
+    // Média ponderada por custo
+    const totalCost = withLive.reduce((s, p) => s + p.pos.costBasis, 0);
+    rate = totalCost > 0
+      ? withLive.reduce((s, p) => s + p.pos.gainPct * (p.pos.costBasis / totalCost), 0)
+      : withLive.reduce((s, p) => s + p.pos.gainPct, 0) / withLive.length;
+  } else {
+    // Fallback: yield ponderado de todos os activos
+    const py = calcPortfolioYield();
+    rate = py.weightedYield;
+  }
+  $("compRate").value = fmt(Math.max(0, rate), 2);
+
+  // Contribuição = poupança média últimos 6 meses
+  const savings = calcAvgMonthlySavings(6);
+  $("compContrib").value = String(Math.round(savings));
+
+  // Seleccionar "carteira completa"
+  const sel = $("compAsset");
+  if (sel) sel.value = "__portfolio__";
+
+  toast("✅ Preenchido com dados reais do portfólio");
+  calcAndRenderCompound();
+}
+
+function usePnLInFIRE() {
+  const pnl = calcEquityPortfolioPnL();
+  const withLive = pnl.positions.filter(p => p.pos.hasLivePrice);
+
+  if (withLive.length >= 3) {
+    // Taxa de retorno real do portfólio de equity
+    const totalCost = withLive.reduce((s, p) => s + p.pos.costBasis, 0);
+    const weightedReturn = totalCost > 0
+      ? withLive.reduce((s, p) => s + p.pos.gainPct * (p.pos.costBasis / totalCost), 0)
+      : withLive.reduce((s, p) => s + p.pos.gainPct, 0) / withLive.length;
+
+    const retEl = document.getElementById("fireCustomReturn");
+    if (retEl && weightedReturn > 0) {
+      retEl.value = fmt(Math.min(weightedReturn, 30), 2); // cap 30% para segurança
+      toast(`✅ Retorno FIRE definido para ${fmt(Math.min(weightedReturn,30),2)}% (P&L real)`);
+    }
+  } else {
+    toast("⚡ Actualiza cotações primeiro para usar o P&L real no FIRE.");
+    return;
+  }
+
+  // Investimento mensal programado → poupança mensal
+  const monthlyEl = document.getElementById("fireSaveInput");
+  const savings = calcAvgMonthlySavings(6);
+  if (monthlyEl && savings > 0) monthlyEl.value = String(Math.round(savings));
+
+  renderFire();
+}
+
 function calcAndRenderCompound() {
   const principal = parseNum($("compPrincipal").value);
   const rate = parseNum($("compRate").value);
@@ -3681,10 +3747,12 @@ function renderFire() {
   const avg = k => mKeys.length ? mKeys.reduce((s,m) => s + (byMonth.get(m)?.[k]||0), 0) / mKeys.length : 0;
 
   // Allow manual override
-  const expInputVal = parseNum($("fireExpInput").value);
-  const saveInputVal = parseNum($("fireSaveInput").value);
+  const expInputVal    = parseNum($("fireExpInput").value);
+  const saveInputVal   = parseNum($("fireSaveInput").value);
+  const monthlyInvest  = parseNum((document.getElementById("fireMonthlyInvest")||{}).value || 0);
   const outM  = expInputVal  > 0 ? expInputVal  : avg("out");
-  const saveM = saveInputVal > 0 ? saveInputVal : Math.max(0, avg("inc") - avg("out"));
+  // Poupança = campo manual OR automático do balanço + investimento mensal programado
+  const saveM = (saveInputVal > 0 ? saveInputVal : Math.max(0, avg("inc") - avg("out"))) + monthlyInvest;
 
   // Auto-fill inputs if empty
   if (!$("fireExpInput").value  && outM  > 0) $("fireExpInput").placeholder  = fmtEUR(outM).replace("€","").trim() + " (auto)";
@@ -3699,7 +3767,7 @@ function renderFire() {
   $("fireCap").textContent  = fmtEUR(cap0);
   $("fireExp").textContent  = fmtEUR(exp0);
   $("firePass").textContent = fmtEUR(passiveAnnual);
-  $("fireSave").textContent = fmtEUR(saveM) + "/mês";
+  $("fireSave").textContent = fmtEUR(saveM) + "/mês" + (monthlyInvest > 0 ? ` (incl. ${fmtEUR(monthlyInvest)} DCA)` : "");
 
   // Progress bars (base scenario FIRE number = exp0 / 0.0375)
   const baseFireNum = exp0 > 0 ? exp0 / 0.0375 : 0;
@@ -5146,7 +5214,7 @@ function wire() {
   }
   const recalc = document.getElementById("btnRecalcFire");
   if (recalc) recalc.addEventListener("click", renderFire);
-  ["fireWindow","fireHorizon","fireCustomReturn","fireCustomInflation"].forEach(id => {
+  ["fireWindow","fireHorizon","fireCustomReturn","fireCustomInflation","fireMonthlyInvest"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener("change", renderFire);
   });
@@ -7534,7 +7602,7 @@ function renderEquityPnL() {
       </div>
     </div>
 
-    <!-- Lista de posições -->
+    <!-- Lista de posições — máx 10, toggle para ver todas -->
     <div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;
       letter-spacing:.5px;margin-bottom:8px;display:grid;
       grid-template-columns:1fr 60px 70px 80px;gap:4px;padding:0 4px">
@@ -7543,7 +7611,7 @@ function renderEquityPnL() {
       <span style="text-align:right">P&L</span>
     </div>
 
-    ${sorted.map(({ asset, pos }) => {
+    ${(window._pnlExpanded ? sorted : sorted.slice(0, 10)).map(({ asset, pos }) => {
       const col   = pos.gain >= 0 ? "var(--green)" : "var(--red)";
       const sign  = pos.gain >= 0 ? "+" : "";
       const arrow = pos.gain >= 0 ? "▲" : "▼";
@@ -7579,9 +7647,14 @@ function renderEquityPnL() {
       </div>`;
     }).join("")}
 
+    ${sorted.length > 10 ? `
+    <div style="text-align:center;margin-top:10px">
+      <button class="btn btn--ghost btn--sm" onclick="window._pnlExpanded=!window._pnlExpanded;renderEquityPnL()" style="font-size:13px">
+        ${window._pnlExpanded ? "Ver menos" : "Ver todas (" + sorted.length + ")"}
+      </button>
+    </div>` : ""}
     <div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:center">
-      Actualiza cotações (⟳) para P&L em tempo real · 
-      ${positions.length} posição${positions.length!==1?"s":""} com dados de custo
+      ${!withLive.length ? "⚡ Actualiza ⟳ Cotações para P&L real · " : ""}${positions.length} posição${positions.length!==1?"s":""} com dados de custo
     </div>`;
 }
 

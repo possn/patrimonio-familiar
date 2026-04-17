@@ -768,7 +768,10 @@
           <div style="display:flex;align-items:flex-end"><button class="btn btn--primary" id="btnCalcCompound" style="width:100%">Calcular</button></div>
         </div>
         <div class="note" style="margin-top:10px;font-size:13px">
-          💡 Em modo <b>Carteira completa</b> os campos são preenchidos automaticamente com o teu capital investido, yield médio ponderado e poupança mensal estimada. Podes editar qualquer valor antes de calcular.
+          💡 Em modo <b>Carteira completa</b> os campos são preenchidos com o capital investido e yield ponderado.<br>
+          <button class="btn btn--primary btn--sm" onclick="usePnLInCompound()" style="margin-top:8px;width:100%">
+            📊 Usar retorno real do P&L de acções
+          </button>
         </div>
       </div>
       <div id="compoundTable" class="card" style="padding:16px"></div>
@@ -825,6 +828,10 @@
             <label class="lbl">Poupança mensal (€) <span style="font-size:11px;color:#94a3b8">auto</span></label>
             <input class="input" id="fireSaveInput" inputmode="decimal" placeholder="automático do Balanço">
           </div>
+          <div>
+            <label class="lbl">Investimento mensal programado (€) <span style="font-size:11px;color:#94a3b8">ex: DCA</span></label>
+            <input class="input" id="fireMonthlyInvest" inputmode="decimal" placeholder="ex: 500 (adicional à poupança)">
+          </div>
         </div>
         <!-- v15: parâmetros custom -->
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0">
@@ -837,7 +844,10 @@
             <input class="input" id="fireCustomInflation" inputmode="decimal" placeholder="ex: 2.5">
           </div>
         </div>
-        <button class="btn btn--primary" id="btnRecalcFire" style="width:100%">🔄 Calcular</button>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <button class="btn btn--primary" id="btnRecalcFire">🔄 Calcular</button>
+          <button class="btn btn--outline" onclick="usePnLInFIRE()" title="Preenche o retorno com o P&L real do portfólio de acções">📊 Usar P&L real</button>
+        </div>
       </div>
 
       <!-- Estado actual -->
