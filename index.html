@@ -281,6 +281,19 @@
       </div>
     </div>
     <div id="itemsList" class="list"></div>
+
+    <!-- P&L: Portfólio de Acções/ETFs -->
+    <div class="card" id="equityPnLCard" style="margin-top:14px">
+      <div class="card__head">
+        <div>
+          <div class="card__title">📊 P&L — Acções &amp; ETFs</div>
+          <div class="card__muted">Ganho/Perda por posição vs. preço médio de custo</div>
+        </div>
+        <button class="btn btn--ghost btn--sm" onclick="renderEquityPnL()" title="Recalcular">↻</button>
+      </div>
+      <div id="equityPnLContent"></div>
+    </div>
+
   </section>
 
   <!-- IMPORT -->

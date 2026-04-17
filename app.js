@@ -525,7 +525,7 @@ function setView(view) {
   document.querySelectorAll(".view").forEach(s => { s.hidden = s.dataset.view !== view; });
   document.querySelectorAll(".navbtn").forEach(b => { b.classList.toggle("navbtn--active", b.dataset.view === view); });
   if (view === "dashboard") renderDashboard();
-  if (view === "assets") renderItems();
+  if (view === "assets") { renderItems(); renderEquityPnL(); }
   if (view === "cashflow") renderCashflow();
   if (view === "analysis") { renderAnalysis(); }
   if (view === "dividends") renderDividends();
@@ -4077,11 +4077,20 @@ function importRows(rows) {
     const notes = `Importado trades. Qty=${String(Math.round(p.qty*1e6)/1e6)} · PM=${p.cost > 0 ? String(Math.round(p.cost/p.qty*1e4)/1e4) : "—"} ${ccyLabel}${fxNote}`;
 
     const existingIx = state.assets.findIndex(a => (a.name||"").toUpperCase() === upper && a.class === cls);
+    const assetObj = {
+      id: existingIx >= 0 ? state.assets[existingIx].id : uid(),
+      class: cls, name: p.ticker, value: costEUR,
+      yieldType: "none", yieldValue: 0, compoundFreq: 12, notes,
+      // Campos dedicados para P&L
+      qty: p.qty,
+      costBasis: costEUR,
+      pmOriginal: p.qty > 0 ? p.cost / p.qty : 0,
+      pmCcy: p.ccys[0] || "EUR"
+    };
     if (existingIx >= 0) {
-      state.assets[existingIx] = { ...state.assets[existingIx], value: costEUR, notes };
+      state.assets[existingIx] = { ...state.assets[existingIx], ...assetObj };
     } else {
-      state.assets.push({ id: uid(), class: cls, name: p.ticker, value: costEUR,
-        yieldType: "none", yieldValue: 0, compoundFreq: 12, notes });
+      state.assets.push(assetObj);
       addedA++;
     }
   }
@@ -5509,6 +5518,12 @@ async function refreshLiveQuotes() {
       .replace(/\s*·?\s*⚠️ Custo histórico[^·]*/g,"").trim();
     asset.value = newValue;
     asset.notes = `${noteBase}${noteBase?" · ":""}Preço: ${priceLabel} (${today})`;
+    // Guardar qty e pm como campos dedicados para P&L
+    if (qty) asset.qty = qty;
+    const pmFromNotes = (asset.notes||"").match(/PM=([\d.,]+)/);
+    if (pmFromNotes) asset.pmOriginal = parseNum(pmFromNotes[1]);
+    asset.lastPriceEur = priceEur;
+    asset.lastUpdated  = today;
     // Save sector/geography metadata for charts
     if (q.sector || q.country || q.exchange) {
       asset.meta = {
@@ -5522,8 +5537,11 @@ async function refreshLiveQuotes() {
     updated++;
   }
 
-  await saveStateAsync(); // await ensures IndexedDB write completes before app can close
+  await saveStateAsync();
   renderAll();
+  renderEquityPnL();
+  // Disparar evento para outros listeners (P&L, price alerts)
+  document.dispatchEvent(new CustomEvent("quotesUpdated"));
 
   if (btn) { btn.disabled = false; btn.textContent = "⟳ Cotações"; }
 
@@ -7325,6 +7343,209 @@ function clearAIKey(provider) {
     document.querySelectorAll(".navbtn").forEach(b => {
       if (b.dataset.view === "settings") b.addEventListener("click", () => setTimeout(updateAIKeyStatus, 100));
     });
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();
+
+/* ═══════════════════════════════════════════════════════════════
+   PORTFOLIO DE ACÇÕES/ETFs — P&L por posição + resumo global
+   Lê Qty e PM das notas do import, compara com valor actual
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── EXTRAIR DADOS DE POSIÇÃO DAS NOTAS ────────────────────── */
+function parsePositionFromAsset(asset) {
+  const notes = asset.notes || "";
+
+  // Extrair Qty
+  const qtyMatch = notes.match(/Qty=([\d.,]+)/);
+  const qty = qtyMatch ? parseNum(qtyMatch[1]) : null;
+
+  // Extrair PM (preço médio de custo)
+  const pmMatch = notes.match(/PM=([\d.,]+)/);
+  const pm = pmMatch ? parseNum(pmMatch[1]) : null;
+
+  // Extrair moeda do PM
+  const ccyMatch = notes.match(/PM=[\d.,]+\s+([A-Z]{3})/);
+  const ccy = ccyMatch ? ccyMatch[1] : "EUR";
+
+  // Extrair preço actual das notas (inserido pelo refreshLiveQuotes)
+  const priceMatch = notes.match(/Preço:\s*([\d.,]+)/);
+  const currentPrice = priceMatch ? parseNum(priceMatch[1]) : null;
+
+  // Valor actual do ativo (= qty × preço_actual em EUR)
+  const currentValue = parseNum(asset.value);
+
+  // Custo total em EUR
+  // Prioridade: costBasis (campo dedicado) > qty × PM
+  let costBasis = parseNum(asset.costBasis || 0);
+  if (!costBasis && qty && pm) {
+    // PM está na moeda original — usar FX aproximado
+    const FX = { EUR:1, USD:0.92, GBP:1.17, CHF:1.05, DKK:0.134,
+                 SEK:0.087, NOK:0.085, CAD:0.68, AUD:0.59, JPY:0.006 };
+    costBasis = qty * pm * (FX[ccy] || 1);
+  }
+
+  if (!qty || !costBasis || costBasis <= 0 || currentValue <= 0) return null;
+
+  const gain = currentValue - costBasis;
+  const gainPct = (gain / costBasis) * 100;
+  const currentPricePerUnit = currentValue / qty;
+  const costPricePerUnit = costBasis / qty;
+
+  return {
+    qty, pm, ccy, costBasis, currentValue,
+    gain, gainPct,
+    currentPricePerUnit, costPricePerUnit,
+    priceChange: currentPricePerUnit - costPricePerUnit,
+    priceChangePct: costPricePerUnit > 0 ? (currentPricePerUnit - costPricePerUnit) / costPricePerUnit * 100 : 0
+  };
+}
+
+/* ─── CALCULAR P&L GLOBAL DO PORTFÓLIO DE ACÇÕES/ETFS ───────── */
+function calcEquityPortfolioPnL() {
+  const equityClasses = ["Ações/ETFs", "Cripto", "Fundos"];
+  const equityAssets = state.assets.filter(a =>
+    equityClasses.some(c => (a.class || "").includes(c.split("/")[0]))
+  );
+
+  let totalCost    = 0;
+  let totalCurrent = 0;
+  const positions  = [];
+
+  for (const asset of equityAssets) {
+    const pos = parsePositionFromAsset(asset);
+    if (!pos) continue;
+    totalCost    += pos.costBasis;
+    totalCurrent += pos.currentValue;
+    positions.push({ asset, pos });
+  }
+
+  const totalGain    = totalCurrent - totalCost;
+  const totalGainPct = totalCost > 0 ? (totalGain / totalCost) * 100 : 0;
+
+  return { positions, totalCost, totalCurrent, totalGain, totalGainPct };
+}
+
+/* ─── RENDER: PAINEL P&L ─────────────────────────────────────── */
+function renderEquityPnL() {
+  const el = document.getElementById("equityPnLContent");
+  if (!el) return;
+
+  const { positions, totalCost, totalCurrent, totalGain, totalGainPct } = calcEquityPortfolioPnL();
+
+  if (!positions.length) {
+    el.innerHTML = `<div class="note">
+      Sem posições com dados de custo.<br><br>
+      <b>Como activar:</b> importa o CSV do DivTracker ou de uma corretora com colunas
+      <code>ticker, qty, cost_per_share</code>. A app guarda automaticamente o preço médio (PM) e,
+      após actualizar cotações (⟳), calcula o P&L de cada posição.
+    </div>`;
+    return;
+  }
+
+  const posNeg = positions.filter(p => p.pos.gain <  0).length;
+  const posPos = positions.filter(p => p.pos.gain >= 0).length;
+
+  // Ordenar por ganho % decrescente
+  const sorted = [...positions].sort((a, b) => b.pos.gainPct - a.pos.gainPct);
+
+  // Cabeçalho global
+  const totalCol = totalGain >= 0 ? "var(--green)" : "var(--red)";
+  const totalSign = totalGain >= 0 ? "+" : "";
+
+  el.innerHTML = `
+    <!-- KPI global -->
+    <div style="background:${totalGain >= 0 ? "var(--kpi-in)" : "var(--kpi-out)"};
+      border-radius:var(--r-sm);padding:16px;margin-bottom:14px;
+      border:1px solid ${totalGain >= 0 ? "rgba(16,185,129,.2)" : "rgba(239,68,68,.2)"}">
+      <div style="font-size:12px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">
+        Portfólio de Acções/ETFs — P&L total
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+        <div>
+          <div style="font-size:11px;color:var(--muted);font-weight:700">Custo total</div>
+          <div style="font-size:18px;font-weight:900">${fmtEUR(totalCost)}</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);font-weight:700">Valor actual</div>
+          <div style="font-size:18px;font-weight:900">${fmtEUR(totalCurrent)}</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);font-weight:700">Ganho/Perda</div>
+          <div style="font-size:18px;font-weight:900;color:${totalCol}">
+            ${totalSign}${fmtPct(totalGainPct)}
+          </div>
+          <div style="font-size:12px;color:${totalCol};font-weight:700">
+            ${totalSign}${fmtEUR(totalGain)}
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:10px;height:6px;background:rgba(0,0,0,.08);border-radius:3px;overflow:hidden">
+        <div style="height:6px;background:${totalCol};
+          width:${Math.min(100, Math.max(0, (totalCurrent/Math.max(totalCost,1))*100))}%;
+          border-radius:3px;transition:width .6s"></div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">
+        ${posPos} posição${posPos!==1?"s":""} positiva${posPos!==1?"s":""} · 
+        ${posNeg} negativa${posNeg!==1?"s":""}
+      </div>
+    </div>
+
+    <!-- Lista de posições -->
+    <div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.5px;margin-bottom:8px;display:grid;
+      grid-template-columns:1fr 60px 70px 80px;gap:4px;padding:0 4px">
+      <span>Activo</span><span style="text-align:right">Qtd</span>
+      <span style="text-align:right">PM / Actual</span>
+      <span style="text-align:right">P&L</span>
+    </div>
+
+    ${sorted.map(({ asset, pos }) => {
+      const col   = pos.gain >= 0 ? "var(--green)" : "var(--red)";
+      const sign  = pos.gain >= 0 ? "+" : "";
+      const arrow = pos.gain >= 0 ? "▲" : "▼";
+      const barW  = Math.min(100, Math.max(0, (pos.currentValue / Math.max(pos.costBasis, 1)) * 100));
+      const isCrypto = (asset.class||"").toLowerCase().includes("cripto");
+
+      return `<div style="border:1px solid var(--line);border-radius:var(--r-sm);
+        padding:11px 13px;margin-bottom:7px;background:var(--item-bg);
+        border-left:3px solid ${col}">
+        <div style="display:grid;grid-template-columns:1fr 60px 70px 80px;gap:4px;align-items:center">
+          <div>
+            <div style="font-weight:900;font-size:14px">${escapeHtml(asset.name)}</div>
+            <div style="font-size:11px;color:var(--muted)">${escapeHtml(asset.class||"")}</div>
+          </div>
+          <div style="text-align:right;font-size:13px;font-weight:700;color:var(--muted)">
+            ${fmt(pos.qty, pos.qty < 1 ? 6 : 2)}
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:11px;color:var(--muted)">${fmtEUR2(pos.costPricePerUnit)}</div>
+            <div style="font-size:13px;font-weight:800">${fmtEUR2(pos.currentPricePerUnit)}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:14px;font-weight:900;color:${col}">${sign}${fmtPct(pos.gainPct)}</div>
+            <div style="font-size:11px;color:${col};font-weight:700">${sign}${fmtEUR(pos.gain)}</div>
+          </div>
+        </div>
+        <!-- Barra de progresso custo → actual -->
+        <div style="margin-top:7px;height:4px;background:var(--line);border-radius:2px;overflow:hidden">
+          <div style="height:4px;background:${col};width:${barW}%;border-radius:2px;transition:width .5s"></div>
+        </div>
+      </div>`;
+    }).join("")}
+
+    <div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:center">
+      Actualiza cotações (⟳) para P&L em tempo real · 
+      ${positions.length} posição${positions.length!==1?"s":""} com dados de custo
+    </div>`;
+}
+
+/* ─── WIRE P&L ───────────────────────────────────────────────── */
+(function wirePnL() {
+  const init = () => {
+    // Renderizar P&L quando entra na tab "assets" e quando cotações são actualizadas
+    document.addEventListener("quotesUpdated", renderEquityPnL);
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();
