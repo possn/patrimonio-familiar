@@ -1146,6 +1146,11 @@ function renderDashboard() {
   // v15
   renderSnapshotTable();
   renderIRSCard();
+  renderHealthRatios();
+  renderRiskAlerts();
+  renderMilestones();
+  renderMaturityAlerts();
+  renderPortfolioQuality();
 }
 
 function renderSummary() {
@@ -3155,6 +3160,9 @@ function renderAnalysis() {
   if (tab === "forecast") renderForecastPanel();
   if (tab === "compare") renderComparePanel();
   if (tab === "fire") renderFire();
+  if (tab === "fiscal") renderFiscalPanel();
+  if (tab === "performance") { renderBenchmarkComparison(); renderRebalancing(); }
+  if (tab === "drawdown") renderDrawdownPanel();
 }
 
 /* ── Compound Interest Panel ── */
@@ -3682,10 +3690,18 @@ function renderFire() {
   if (passBar) setTimeout(() => passBar.style.width = passPct + "%", 50);
 
   // Scenarios
+  // v15: parâmetros custom opcionais
+  const customReturnEl = document.getElementById("fireCustomReturn");
+  const customInflEl   = document.getElementById("fireCustomInflation");
+  const customR   = customReturnEl ? parseNum(customReturnEl.value) : 0;
+  const customInf = customInflEl   ? parseNum(customInflEl.value)   : 0;
+  const useR   = r   => customR   > 0 ? customR   / 100 : r;
+  const useInf = inf => customInf > 0 ? customInf / 100 : inf;
+
   const scenarios = [
-    { name:"Conservador", emoji:"🐢", r:0.04, inf:0.03,  swr:0.0325, color:"#f59e0b" },
-    { name:"Base",        emoji:"⚖️", r:0.06, inf:0.025, swr:0.0375, color:"#6366f1" },
-    { name:"Optimista",   emoji:"🚀", r:0.08, inf:0.02,  swr:0.04,   color:"#10b981" },
+    { name:"Conservador", emoji:"🐢", r:useR(0.04), inf:useInf(0.03),  swr:0.0325, color:"#f59e0b" },
+    { name:"Base",        emoji:"⚖️", r:useR(0.06), inf:useInf(0.025), swr:0.0375, color:"#6366f1" },
+    { name:"Optimista",   emoji:"🚀", r:useR(0.08), inf:useInf(0.02),  swr:0.04,   color:"#10b981" },
   ];
 
   const results = [];
@@ -5076,7 +5092,7 @@ function wire() {
   }
   const recalc = document.getElementById("btnRecalcFire");
   if (recalc) recalc.addEventListener("click", renderFire);
-  ["fireWindow","fireHorizon"].forEach(id => {
+  ["fireWindow","fireHorizon","fireCustomReturn","fireCustomInflation"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener("change", renderFire);
   });
@@ -5848,6 +5864,900 @@ function printDashboard() { window.print(); }
       b("btnEnableNotifications").textContent = "🔔 Notificações ativas";
       b("btnEnableNotifications").disabled = true;
     }
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();
+
+/* ═══════════════════════════════════════════════════════════════
+   PATRIMÓNIO FAMILIAR — v15 PARTE 2
+   Novas funcionalidades: Saúde Financeira, Risco, E-se?, Fiscal
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── SAÚDE FINANCEIRA (rácios) ─────────────────────────────── */
+function renderHealthRatios() {
+  const el = document.getElementById("debtRatioContent");
+  if (!el) return;
+
+  const t = calcTotals();
+  if (t.assetsTotal === 0) { el.innerHTML = "<div class='note'>Sem ativos registados.</div>"; return; }
+
+  const debtRatio = t.liabsTotal / t.assetsTotal * 100;
+  const leverageRatio = t.assetsTotal / Math.max(1, t.net);
+  const passiveRatio = t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0;
+
+  // Despesas mensais médias (últimos 6 meses)
+  const byMonth = new Map();
+  for (const tx of state.transactions) {
+    if (isInterAccountTransfer(tx)) continue;
+    const d = (tx.date || "").slice(0, 7); if (!d) continue;
+    const cur = byMonth.get(d) || { out: 0 }; if (tx.type === "out") cur.out += parseNum(tx.amount);
+    byMonth.set(d, cur);
+  }
+  const last6 = [...byMonth.keys()].sort().slice(-6);
+  const avgMonthlyExp = last6.length ? last6.reduce((s, k) => s + (byMonth.get(k).out || 0), 0) / last6.length : 0;
+  const monthsOfRunway = avgMonthlyExp > 0 ? t.net / avgMonthlyExp : null;
+
+  const semaforo = (val, good, ok) => val <= good ? "🟢" : val <= ok ? "🟡" : "🔴";
+  const semaforoInv = (val, good, ok) => val >= good ? "🟢" : val >= ok ? "🟡" : "🔴";
+
+  el.innerHTML = `
+    <div class="kpiRow" style="margin-bottom:10px">
+      <div class="kpi">
+        <div class="kpi__k">Rácio dívida/activos ${semaforo(debtRatio, 30, 60)}</div>
+        <div class="kpi__v" style="color:${debtRatio <= 30 ? '#059669' : debtRatio <= 60 ? '#d97706' : '#dc2626'}">${fmt(debtRatio, 1)}%</div>
+        <div class="kpi__s">&lt;30% excelente · &lt;60% aceitável</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi__k">Yield médio ponderado ${semaforoInv(passiveRatio, 4, 2)}</div>
+        <div class="kpi__v" style="color:${passiveRatio >= 4 ? '#059669' : passiveRatio >= 2 ? '#d97706' : '#94a3b8'}">${fmtPct(passiveRatio)}</div>
+        <div class="kpi__s">Rendimento passivo / activos</div>
+      </div>
+    </div>
+    <div class="kpiRow">
+      <div class="kpi">
+        <div class="kpi__k">Alavancagem ${semaforo(leverageRatio, 1.5, 3)}</div>
+        <div class="kpi__v">${fmt(leverageRatio, 2)}×</div>
+        <div class="kpi__s">Activos / Património líquido</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi__k">Autonomia financeira ${monthsOfRunway ? semaforoInv(monthsOfRunway, 24, 6) : ""}</div>
+        <div class="kpi__v">${monthsOfRunway ? fmt(monthsOfRunway, 0) + " meses" : "—"}</div>
+        <div class="kpi__s">Net worth / despesas mensais</div>
+      </div>
+    </div>`;
+}
+
+/* ─── ALERTAS DE CONCENTRAÇÃO DE RISCO ─────────────────────── */
+function renderRiskAlerts() {
+  const card = document.getElementById("riskAlertCard");
+  const content = document.getElementById("riskAlertContent");
+  if (!card || !content) return;
+
+  const t = calcTotals();
+  if (t.assetsTotal === 0) { card.style.display = "none"; return; }
+
+  const alerts = [];
+
+  // Concentração por ativo individual
+  for (const a of state.assets) {
+    const pct = parseNum(a.value) / t.assetsTotal * 100;
+    if (pct >= 40) alerts.push({ label: `${a.name}`, pct, tipo: "Ativo individual", severity: pct >= 60 ? "alta" : "média" });
+  }
+
+  // Concentração por classe
+  const byClass = {};
+  for (const a of state.assets) {
+    const k = a.class || "Outros";
+    byClass[k] = (byClass[k] || 0) + parseNum(a.value);
+  }
+  for (const [cls, val] of Object.entries(byClass)) {
+    const pct = val / t.assetsTotal * 100;
+    if (pct >= 50) alerts.push({ label: `Classe: ${cls}`, pct, tipo: "Classe de activo", severity: pct >= 70 ? "alta" : "média" });
+  }
+
+  if (!alerts.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+
+  content.innerHTML = alerts.map(a => {
+    const col = a.severity === "alta" ? "#dc2626" : "#d97706";
+    const bg = a.severity === "alta" ? "#fef2f2" : "#fffbeb";
+    return `<div class="item" style="cursor:default;background:${bg}">
+      <div class="item__l">
+        <div class="item__t" style="color:${col}">${escapeHtml(a.label)}</div>
+        <div class="item__s">${escapeHtml(a.tipo)} · Concentração ${a.severity}</div>
+      </div>
+      <div class="item__v" style="color:${col};font-weight:900">${fmt(a.pct, 1)}%</div>
+    </div>`;
+  }).join("");
+}
+
+/* ─── SIMULADOR "E SE?" ─────────────────────────────────────── */
+function runWhatIf() {
+  const pctInput = parseNum((document.getElementById("whatIfPct") || {}).value || "-20");
+  const result = document.getElementById("whatIfResult");
+  if (!result) return;
+
+  const t = calcTotals();
+  if (t.assetsTotal === 0) { toast("Sem activos para simular."); return; }
+
+  // Calcular impacto por classe (só activos de mercado são afectados)
+  const MARKET_CLASSES = ["Ações/ETFs", "Cripto", "Ouro", "Prata", "Fundos", "Obrigações"];
+  const STABLE_CLASSES = ["Imobiliário", "Depósitos", "PPR", "Liquidez"];
+
+  let marketVal = 0, stableVal = 0, otherVal = 0;
+  for (const a of state.assets) {
+    const v = parseNum(a.value);
+    const cls = a.class || "Outros";
+    if (MARKET_CLASSES.some(c => cls.includes(c.split("/")[0]))) marketVal += v;
+    else if (STABLE_CLASSES.some(c => cls.includes(c.split("/")[0]))) stableVal += v;
+    else otherVal += v;
+  }
+
+  const factor = pctInput / 100;
+  const marketLoss = marketVal * factor; // negativo se queda
+  const newAssetsTotal = t.assetsTotal + marketLoss;
+  const newNet = t.net + marketLoss;
+  const netChange = newNet - t.net;
+
+  const col = netChange >= 0 ? "#059669" : "#dc2626";
+  const sign = netChange >= 0 ? "+" : "";
+  const arrow = netChange >= 0 ? "▲" : "▼";
+
+  result.style.display = "";
+  result.innerHTML = `
+    <div style="padding:14px;background:${netChange >= 0 ? '#f0fdf4' : '#fef2f2'};border-radius:14px">
+      <div style="font-size:13px;color:#64748b;margin-bottom:8px">
+        Cenário: <b>${pctInput >= 0 ? "+" : ""}${pctInput}%</b> nos activos de mercado
+        (${fmtEUR(marketVal)} afectados de ${fmtEUR(t.assetsTotal)} totais)
+      </div>
+      <div class="kpiRow">
+        <div class="kpi"><div class="kpi__k">Activos totais</div><div class="kpi__v">${fmtEUR(newAssetsTotal)}</div><div class="kpi__s" style="color:${col}">${sign}${fmtEUR(marketLoss)}</div></div>
+        <div class="kpi"><div class="kpi__k">Net worth</div><div class="kpi__v" style="color:${col}">${fmtEUR(newNet)}</div><div class="kpi__s" style="color:${col}">${sign}${fmtEUR(netChange)}</div></div>
+        <div class="kpi"><div class="kpi__k">Impacto</div><div class="kpi__v" style="color:${col}">${sign}${fmtPct(netChange / Math.max(1, t.net) * 100)}</div><div class="kpi__s">do net worth</div></div>
+      </div>
+      <div style="font-size:12px;color:#64748b;margin-top:8px">
+        💡 Imóveis, depósitos, PPR e liquidez (${fmtEUR(stableVal)}) não são afectados neste cenário.
+      </div>
+    </div>`;
+}
+
+/* ─── RESUMO FISCAL COMPLETO ────────────────────────────────── */
+function renderFiscalPanel() {
+  const el = document.getElementById("fiscalContent");
+  if (!el) return;
+
+  const now = new Date();
+  const year = now.getFullYear();
+  const yearStart = `${year}-01-01`;
+
+  // 1. Dividendos
+  const divs = (state.dividends || []).filter(d => d.date >= yearStart);
+  const divGross = divs.reduce((s, d) => s + parseNum(d.amount), 0);
+  const divTaxPaid = divs.reduce((s, d) => s + parseNum(d.taxWithheld || 0), 0);
+  const divNet = divGross - divTaxPaid;
+  const divTaxDue = Math.max(0, divGross * 0.28 - divTaxPaid);
+
+  // Usar resumo anual se existir
+  const summary = (state.divSummaries || []).find(s => s.year === year);
+  const divGrossFinal = summary ? parseNum(summary.gross) : divGross;
+  const divTaxFinal = summary ? parseNum(summary.tax) : divTaxPaid;
+
+  // 2. Rendas
+  const rendasAcum = state.assets
+    .filter(a => a.yieldType === "rent_month")
+    .reduce((s, a) => s + parseNum(a.yieldValue) * now.getMonth(), 0); // meses já passados
+
+  // 3. Mais-valias latentes (não realizadas — informativo)
+  const latentGains = state.assets
+    .map(a => calcGainLoss(a)).filter(Boolean)
+    .reduce((s, g) => ({ gains: s.gains + Math.max(0, g.gain), losses: s.losses + Math.max(0, -g.gain) }),
+      { gains: 0, losses: 0 });
+
+  // 4. Mais-valias realizadas (movimentos de cashflow com categoria "Venda activo" — se registadas)
+  const realizedGains = state.transactions
+    .filter(t => t.date >= yearStart && (t.category || "").toLowerCase().includes("venda"))
+    .reduce((s, t) => s + (t.type === "in" ? parseNum(t.amount) : -parseNum(t.amount)), 0);
+
+  const totalTax = divTaxFinal + rendasAcum * 0.28;
+
+  el.innerHTML = `
+    <div style="font-size:13px;font-weight:700;color:#64748b;margin-bottom:12px">Ano ${year} — estimativa simplificada (taxa fixa 28%)</div>
+
+    <!-- Dividendos -->
+    <div style="border-bottom:1px solid #f1f5f9;padding:10px 0">
+      <div style="font-weight:700;margin-bottom:6px">💰 Dividendos</div>
+      <div style="display:flex;justify-content:space-between;font-size:14px"><span>Bruto recebido</span><span>${fmtEUR(divGrossFinal)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:14px"><span>Retenção na fonte (já paga)</span><span style="color:#dc2626">-${fmtEUR(divTaxFinal)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:14px"><span>Líquido recebido</span><span style="color:#059669">${fmtEUR(divGrossFinal - divTaxFinal)}</span></div>
+      ${divTaxDue > 0 ? `<div style="margin-top:6px;padding:6px 10px;background:#fef2f2;border-radius:8px;font-size:13px;color:#dc2626">⚠️ IRS adicional estimado a entregar: <b>${fmtEUR(divTaxDue)}</b></div>` : ""}
+    </div>
+
+    <!-- Rendas -->
+    ${rendasAcum > 0 ? `<div style="border-bottom:1px solid #f1f5f9;padding:10px 0">
+      <div style="font-weight:700;margin-bottom:6px">🏠 Rendas recebidas (est. ${now.getMonth()} meses)</div>
+      <div style="display:flex;justify-content:space-between;font-size:14px"><span>Rendas acumuladas</span><span>${fmtEUR(rendasAcum)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:14px"><span>IRS estimado (28%)</span><span style="color:#dc2626">-${fmtEUR(rendasAcum * 0.28)}</span></div>
+    </div>` : ""}
+
+    <!-- Mais-valias -->
+    <div style="border-bottom:1px solid #f1f5f9;padding:10px 0">
+      <div style="font-weight:700;margin-bottom:6px">📈 Mais-valias latentes (não realizadas)</div>
+      <div style="display:flex;justify-content:space-between;font-size:14px"><span>Ganhos latentes</span><span style="color:#059669">${fmtEUR(latentGains.gains)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:14px"><span>Perdas latentes</span><span style="color:#dc2626">-${fmtEUR(latentGains.losses)}</span></div>
+      <div style="font-size:12px;color:#94a3b8;margin-top:4px">Só são tributáveis quando realizadas (vendas).</div>
+      ${latentGains.gains > 0 ? `<div style="font-size:12px;color:#92400e;margin-top:4px">Se realizadas: IRS estimado <b>${fmtEUR(latentGains.gains * 0.28)}</b></div>` : ""}
+    </div>
+
+    <!-- Total estimado -->
+    <div style="padding:12px 0">
+      <div style="font-weight:700;font-size:16px;display:flex;justify-content:space-between">
+        <span>Total IRS estimado ${year}</span>
+        <span style="color:#dc2626">${fmtEUR(totalTax)}</span>
+      </div>
+      <div style="font-size:12px;color:#94a3b8;margin-top:4px">
+        Estimativa muito simplificada. Não considera deduções, retenções especiais, IRS englobado, ou escalões progressivos.
+        Consulta sempre um Técnico Oficial de Contas.
+      </div>
+    </div>`;
+}
+
+function exportFiscalCSV() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const yearStart = `${year}-01-01`;
+  const divs = (state.dividends || []).filter(d => d.date >= yearStart);
+  const header = ["Data","Activo","Dividendo Bruto (EUR)","Retenção (EUR)","Líquido (EUR)"];
+  const rows = divs.map(d => [d.date||"", d.assetName||"", parseNum(d.amount).toFixed(2), parseNum(d.taxWithheld||0).toFixed(2), (parseNum(d.amount)-parseNum(d.taxWithheld||0)).toFixed(2)]);
+  const csv = [header,...rows].map(r => r.map(c=>`"${c}"`).join(";")).join("\n");
+  downloadText(csv, `fiscal_${year}.csv`, "text/csv;charset=utf-8;");
+  toast("Resumo fiscal exportado.");
+}
+
+/* v15: FIRE custom params lidos directamente em renderFire via window._fireCustomR/Inf */
+
+/* ─── WIRE v15 PARTE 2 ───────────────────────────────────────── */
+(function wireV15b() {
+  const init = () => {
+    // Simulador E-se?
+    const btnWI = document.getElementById("btnWhatIf");
+    if (btnWI) btnWI.addEventListener("click", runWhatIf);
+
+    // Enter no campo E-se
+    const wiInput = document.getElementById("whatIfPct");
+    if (wiInput) wiInput.addEventListener("keydown", e => { if (e.key === "Enter") runWhatIf(); });
+
+    // Export fiscal
+    const btnFisc = document.getElementById("btnExportFiscal");
+    if (btnFisc) btnFisc.addEventListener("click", exportFiscalCSV);
+
+    // FIRE custom inputs — wired via wire() principal
+
+    // Nota: renderFiscalPanel é chamada directamente em renderAnalysis quando tab === "fiscal"
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();
+
+/* v15: renderHealthRatios e renderRiskAlerts chamados directamente em renderDashboard */
+
+/* ═══════════════════════════════════════════════════════════════
+   PATRIMÓNIO FAMILIAR — v15 PARTE 3
+   Funcionalidades adicionais: DCA tracker, histórico poupança,
+   alerta DP próximo do vencimento, net worth milestone
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── HISTÓRICO DE TAXA DE POUPANÇA (últimos 12 meses) ──────── */
+function calcSavingsHistory() {
+  const byMonth = new Map();
+  for (const tx of state.transactions) {
+    if (isInterAccountTransfer(tx)) continue;
+    const d = (tx.date || "").slice(0, 7);
+    if (!d) continue;
+    const cur = byMonth.get(d) || { in: 0, out: 0 };
+    if (tx.type === "in") cur.in += parseNum(tx.amount);
+    else cur.out += parseNum(tx.amount);
+    byMonth.set(d, cur);
+  }
+  const keys = [...byMonth.keys()].sort().slice(-12);
+  return keys.map(k => {
+    const { in: inc, out } = byMonth.get(k);
+    const net = inc - out;
+    const rate = inc > 0 ? Math.max(0, net / inc * 100) : 0;
+    return { month: k, in: inc, out, net, rate };
+  });
+}
+
+/* ─── DCA (Dollar-Cost Averaging) TRACKER ──────────────────── */
+function calcDCA(assetId) {
+  // Calcula preço médio ponderado das compras do asset via transacções marcadas como "Compra"
+  const buys = state.transactions.filter(t =>
+    t.type === "in" &&
+    (t.category || "").toLowerCase().includes("compra") &&
+    t.assetRef === assetId
+  );
+  if (!buys.length) return null;
+  const totalSpent = buys.reduce((s, t) => s + parseNum(t.amount), 0);
+  const totalUnits = buys.reduce((s, t) => s + parseNum(t.units || 0), 0);
+  return { totalSpent, totalUnits, avgPrice: totalUnits > 0 ? totalSpent / totalUnits : 0, count: buys.length };
+}
+
+/* ─── METAS / MILESTONES DE NET WORTH ───────────────────────── */
+function renderMilestones() {
+  const el = document.getElementById("milestonesContent");
+  if (!el) return;
+
+  const t = calcTotals();
+  const net = t.net;
+
+  const milestones = [
+    { val: 10000,   label: "10K€",   emoji: "🌱" },
+    { val: 25000,   label: "25K€",   emoji: "🌿" },
+    { val: 50000,   label: "50K€",   emoji: "🌳" },
+    { val: 100000,  label: "100K€",  emoji: "💎" },
+    { val: 250000,  label: "250K€",  emoji: "🏆" },
+    { val: 500000,  label: "500K€",  emoji: "🚀" },
+    { val: 1000000, label: "1M€",    emoji: "👑" },
+  ];
+
+  const nextMilestone = milestones.find(m => m.val > net);
+  const lastAchieved  = [...milestones].reverse().find(m => m.val <= net);
+
+  el.innerHTML = milestones.map(m => {
+    const done = net >= m.val;
+    const active = nextMilestone && m.val === nextMilestone.val;
+    const pct = active ? Math.min(100, net / m.val * 100) : done ? 100 : 0;
+    const falta = active ? m.val - net : 0;
+
+    return `<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #f1f5f9;opacity:${done || active ? 1 : 0.4}">
+      <div style="font-size:24px;width:32px;text-align:center">${done ? m.emoji : active ? "⏳" : "○"}</div>
+      <div style="flex:1">
+        <div style="font-weight:700;font-size:14px;color:${done ? "#059669" : active ? "#6366f1" : "#94a3b8"}">${m.label}</div>
+        ${active ? `<div style="height:5px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin-top:4px">
+          <div style="height:5px;background:#6366f1;border-radius:3px;width:${pct}%;transition:width .6s"></div>
+        </div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:3px">${fmtPct(pct)} · faltam ${fmtEUR(falta)}</div>` : ""}
+      </div>
+      <div style="font-size:18px">${done ? "✅" : ""}</div>
+    </div>`;
+  }).join("");
+}
+
+/* ─── ALERTAS DE DEPÓSITOS A PRAZO PRÓXIMO VENCIMENTO ───────── */
+function renderMaturityAlerts() {
+  const el = document.getElementById("maturityAlertsContent");
+  if (!el) return;
+
+  const today = new Date();
+  const todayISO = today.toISOString().slice(0, 10);
+  const in60 = new Date(today); in60.setDate(in60.getDate() + 60);
+  const in60ISO = in60.toISOString().slice(0, 10);
+
+  const expiring = state.assets
+    .filter(a => a.maturityDate && a.maturityDate >= todayISO && a.maturityDate <= in60ISO)
+    .sort((a, b) => a.maturityDate.localeCompare(b.maturityDate));
+
+  if (!expiring.length) {
+    el.innerHTML = `<div style="padding:12px;color:#64748b;font-size:13px;text-align:center">✅ Sem vencimentos nos próximos 60 dias</div>`;
+    return;
+  }
+
+  el.innerHTML = expiring.map(a => {
+    const days = Math.round((new Date(a.maturityDate) - today) / 86400000);
+    const urgent = days <= 14;
+    const col = urgent ? "#dc2626" : "#d97706";
+    const bg  = urgent ? "#fef2f2" : "#fffbeb";
+    const passive = passiveFromItem(a);
+    return `<div style="padding:10px 12px;border-radius:12px;background:${bg};margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-weight:700;color:${col}">${escapeHtml(a.name)}</div>
+          <div style="font-size:12px;color:#64748b">${escapeHtml(a.class)} · ${a.maturityDate}</div>
+          ${passive > 0 ? `<div style="font-size:12px;color:#059669;margin-top:2px">Rendimento: ${fmtEUR(passive)}/ano</div>` : ""}
+        </div>
+        <div style="text-align:right">
+          <div style="font-weight:900;font-size:15px">${fmtEUR(parseNum(a.value))}</div>
+          <div style="font-size:12px;font-weight:700;color:${col}">${days}d</div>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+/* ─── SCORE DE DIVERSIFICAÇÃO ────────────────────────────────── */
+function calcDiversificationScore() {
+  const t = calcTotals();
+  if (t.assetsTotal === 0) return { score: 0, label: "—", color: "#94a3b8", breakdown: [] };
+
+  // Herfindahl-Hirschman Index (HHI) por classe
+  const byClass = {};
+  for (const a of state.assets) {
+    const k = a.class || "Outros";
+    byClass[k] = (byClass[k] || 0) + parseNum(a.value);
+  }
+  const shares = Object.values(byClass).map(v => v / t.assetsTotal);
+  const hhi = shares.reduce((s, p) => s + p * p, 0); // 0=perfeito, 1=concentrado
+
+  // Score 0-100 (inverso do HHI)
+  const nClasses = Object.keys(byClass).length;
+  const score = Math.round((1 - hhi) * 100);
+
+  const label = score >= 70 ? "Excelente" : score >= 50 ? "Boa" : score >= 30 ? "Moderada" : "Fraca";
+  const color = score >= 70 ? "#059669" : score >= 50 ? "#6366f1" : score >= 30 ? "#d97706" : "#dc2626";
+
+  const breakdown = Object.entries(byClass)
+    .sort((a, b) => b[1] - a[1])
+    .map(([cls, val]) => ({ cls, val, pct: val / t.assetsTotal * 100 }));
+
+  return { score, label, color, breakdown, nClasses };
+}
+
+/* ─── RENDER: PAINEL LATERAL DE QUALIDADE DO PORTFÓLIO ──────── */
+function renderPortfolioQuality() {
+  const el = document.getElementById("portfolioQualityContent");
+  if (!el) return;
+
+  const div = calcDiversificationScore();
+  const t = calcTotals();
+
+  // Yield coverage — rendimento passivo cobre despesas?
+  const byMonth = new Map();
+  for (const tx of state.transactions) {
+    if (isInterAccountTransfer(tx)) continue;
+    const d = (tx.date || "").slice(0, 7); if (!d) continue;
+    const cur = byMonth.get(d) || { out: 0 };
+    if (tx.type === "out") cur.out += parseNum(tx.amount);
+    byMonth.set(d, cur);
+  }
+  const last6 = [...byMonth.keys()].sort().slice(-6);
+  const avgOut = last6.length ? last6.reduce((s, k) => s + byMonth.get(k).out, 0) / last6.length : 0;
+  const coverage = avgOut > 0 ? t.passiveAnnual / (avgOut * 12) * 100 : 0;
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid #f1f5f9">
+      <div style="width:56px;height:56px;border-radius:50%;background:${div.color}20;border:3px solid ${div.color};
+        display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:900;color:${div.color}">
+        ${div.score}
+      </div>
+      <div>
+        <div style="font-weight:700">Diversificação: <span style="color:${div.color}">${div.label}</span></div>
+        <div style="font-size:12px;color:#64748b">${div.nClasses} classe${div.nClasses !== 1 ? "s" : ""} de activos</div>
+      </div>
+    </div>
+    <div style="padding:10px 0;border-bottom:1px solid #f1f5f9">
+      ${div.breakdown.slice(0, 5).map(b =>
+        `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+          <span>${escapeHtml(b.cls)}</span>
+          <span style="font-weight:700">${fmt(b.pct, 1)}%</span>
+        </div>
+        <div style="height:4px;background:#f1f5f9;border-radius:2px;margin-bottom:6px;overflow:hidden">
+          <div style="height:4px;background:#6366f1;width:${Math.min(100,b.pct)}%;border-radius:2px"></div>
+        </div>`
+      ).join("")}
+    </div>
+    <div style="padding:10px 0">
+      <div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:6px">
+        <span>Cobertura passiva das despesas</span>
+        <span style="font-weight:700;color:${coverage >= 100 ? "#059669" : coverage >= 50 ? "#d97706" : "#dc2626"}">${fmt(Math.min(coverage, 999), 1)}%</span>
+      </div>
+      <div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden">
+        <div style="height:6px;background:${coverage >= 100 ? "#10b981" : "#6366f1"};width:${Math.min(100,coverage)}%;border-radius:3px;transition:width .6s"></div>
+      </div>
+    </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PATRIMÓNIO FAMILIAR — v16 PROFISSIONAL
+   TWR · XIRR · Benchmark · Rebalancing · Price Alerts · Drawdown
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── XIRR — Taxa Interna de Retorno com datas reais ────────── */
+// Newton-Raphson sobre NPV para encontrar a taxa que zera os fluxos
+function xirr(cashflows) {
+  // cashflows: [{date: "YYYY-MM-DD", amount: number}]
+  // amount positivo = investimento (saída de dinheiro = negativo para nós)
+  // amount negativo = retorno (entrada)
+  // convenção: cash invested = negativo, value today = positivo
+  if (!cashflows || cashflows.length < 2) return null;
+
+  const t0 = new Date(cashflows[0].date).getTime();
+  const flows = cashflows.map(cf => ({
+    t: (new Date(cf.date).getTime() - t0) / (365.25 * 24 * 3600 * 1000), // anos desde t0
+    v: cf.amount
+  }));
+
+  // NPV(r) = sum(v_i / (1+r)^t_i)
+  const npv = r => flows.reduce((s, f) => s + f.v / Math.pow(1 + r, f.t), 0);
+  const dnpv = r => flows.reduce((s, f) => s - f.t * f.v / Math.pow(1 + r, f.t + 1), 0);
+
+  let r = 0.1; // initial guess 10%
+  for (let i = 0; i < 100; i++) {
+    const n = npv(r), d = dnpv(r);
+    if (Math.abs(d) < 1e-12) break;
+    const r2 = r - n / d;
+    if (Math.abs(r2 - r) < 1e-8) { r = r2; break; }
+    r = r2;
+    if (!Number.isFinite(r) || Math.abs(r) > 100) return null;
+  }
+  return Number.isFinite(r) && Math.abs(r) < 100 ? r * 100 : null; // em %
+}
+
+function calcPortfolioXIRR() {
+  const t = calcTotals();
+  if (t.assetsTotal === 0) return null;
+
+  // Fluxos: entradas de cashflow marcadas como investimento, valor actual como retorno
+  const investFlows = state.transactions
+    .filter(tx => tx.type === "in" && (tx.category || "").toLowerCase().match(/poupança|investimento|depósito|compra/))
+    .map(tx => ({ date: tx.date, amount: -parseNum(tx.amount) })); // saída de caixa = negativo
+
+  if (investFlows.length === 0) return null;
+
+  // Ordenar por data
+  investFlows.sort((a, b) => a.date.localeCompare(b.date));
+
+  // Adicionar valor actual como retorno hoje
+  investFlows.push({ date: isoToday(), amount: t.net });
+
+  return xirr(investFlows);
+}
+
+/* ─── TWR — Time-Weighted Return ────────────────────────────── */
+// Elimina o efeito dos fluxos externos (depósitos/levantamentos)
+// Usa os snapshots mensais como sub-períodos
+function calcTWR() {
+  const h = state.history
+    .slice()
+    .sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
+
+  if (h.length < 2) return null;
+
+  let twr = 1;
+  for (let i = 1; i < h.length; i++) {
+    const prev = parseNum(h[i - 1].net);
+    const cur  = parseNum(h[i].net);
+    if (prev <= 0) continue;
+
+    // Estimar fluxos externos no período (poupança líquida)
+    const prevISO = String(h[i - 1].dateISO).slice(0, 7);
+    const curISO  = String(h[i].dateISO).slice(0, 7);
+    const periodFlow = state.transactions
+      .filter(tx => {
+        const m = (tx.date || "").slice(0, 7);
+        return m > prevISO && m <= curISO && !isInterAccountTransfer(tx);
+      })
+      .reduce((s, tx) => s + (tx.type === "in" ? parseNum(tx.amount) : -parseNum(tx.amount)), 0);
+
+    // Sub-período return = (cur - flow) / prev
+    const prevAdj = prev + Math.max(0, periodFlow); // adjust for external cash
+    if (prevAdj <= 0) continue;
+    const subReturn = (cur - periodFlow) / prevAdj;
+    if (subReturn > 0) twr *= subReturn;
+  }
+
+  // Annualise
+  const firstDate = new Date(h[0].dateISO);
+  const lastDate  = new Date(h[h.length - 1].dateISO);
+  const years = (lastDate - firstDate) / (365.25 * 24 * 3600 * 1000);
+  if (years <= 0) return null;
+
+  const annualisedTWR = (Math.pow(twr, 1 / years) - 1) * 100;
+  const totalTWR = (twr - 1) * 100;
+
+  return { annualised: annualisedTWR, total: totalTWR, years: Math.round(years * 10) / 10 };
+}
+
+/* ─── BENCHMARK COMPARISON ──────────────────────────────────── */
+// Retornos anuais históricos aproximados (S&P500, MSCI World, PSI20, Obrigações PT 10a)
+const BENCHMARK_RETURNS = {
+  "S&P 500":     { annual: 10.5, color: "#f59e0b", emoji: "🇺🇸" },
+  "MSCI World":  { annual: 9.2,  color: "#6366f1", emoji: "🌍" },
+  "VWCE (ETF)":  { annual: 8.8,  color: "#8b5cf6", emoji: "📊" },
+  "PSI 20":      { annual: 3.2,  color: "#10b981", emoji: "🇵🇹" },
+  "Ob. PT 10a":  { annual: 2.8,  color: "#64748b", emoji: "📄" },
+  "Imobiliário PT": { annual: 5.5, color: "#f97316", emoji: "🏠" },
+};
+
+function renderBenchmarkComparison() {
+  const el = document.getElementById("benchmarkContent");
+  if (!el) return;
+
+  const twr = calcTWR();
+  const t = calcTotals();
+  if (!twr || t.assetsTotal === 0) {
+    el.innerHTML = `<div class="note">Precisas de pelo menos 2 snapshots para calcular a performance.<br>Usa "📸 Registar mês" no Dashboard.</div>`;
+    return;
+  }
+
+  const portfolioReturn = twr.annualised;
+  const rows = Object.entries(BENCHMARK_RETURNS).map(([name, b]) => {
+    const diff = portfolioReturn - b.annual;
+    const beating = diff > 0;
+    return { name, annual: b.annual, color: b.color, emoji: b.emoji, diff, beating };
+  }).sort((a, b) => b.annual - a.annual);
+
+  // Chart data
+  const allEntries = [
+    { name: "O teu portfólio", annual: portfolioReturn, color: "#059669", emoji: "💼" },
+    ...rows
+  ].sort((a, b) => b.annual - a.annual);
+
+  el.innerHTML = `
+    <div style="margin-bottom:12px">
+      <div style="font-size:13px;color:#64748b;margin-bottom:8px">
+        TWR anualizado do teu portfólio:
+        <span style="font-size:18px;font-weight:900;color:${portfolioReturn >= 0 ? "#059669" : "#dc2626"}">
+          ${portfolioReturn >= 0 ? "+" : ""}${fmtPct(portfolioReturn)}
+        </span>
+        <span style="font-size:12px;color:#94a3b8">(${twr.years} anos · total ${twr.total >= 0 ? "+" : ""}${fmtPct(twr.total)})</span>
+      </div>
+    </div>
+    ${allEntries.map(e => {
+      const isPortfolio = e.name === "O teu portfólio";
+      const barW = Math.max(0, Math.min(100, (e.annual + 5) / 20 * 100));
+      return `<div style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
+          <span style="font-weight:${isPortfolio ? "900" : "600"}">${e.emoji} ${e.name}</span>
+          <span style="font-weight:700;color:${e.annual >= 0 ? e.color : "#dc2626"}">${e.annual >= 0 ? "+" : ""}${fmtPct(e.annual)}/ano</span>
+        </div>
+        <div style="height:${isPortfolio ? 8 : 5}px;background:#f1f5f9;border-radius:4px;overflow:hidden">
+          <div style="height:100%;background:${e.color};width:${barW}%;border-radius:4px;transition:width .6s"></div>
+        </div>
+        ${!isPortfolio ? `<div style="font-size:11px;color:${portfolioReturn > e.annual ? "#059669" : "#dc2626"};margin-top:2px">
+          ${portfolioReturn > e.annual ? "▲ bates por " : "▼ ficas atrás por "} ${fmtPct(Math.abs(portfolioReturn - e.annual))}/ano
+        </div>` : ""}
+      </div>`;
+    }).join("")}
+    <div style="margin-top:12px;padding:10px;background:#f8fafc;border-radius:10px;font-size:11px;color:#94a3b8">
+      ⚠️ Retornos históricos dos benchmarks são aproximações (médias longas). O TWR do portfólio pode variar consoante o período. Não é garantia de retornos futuros.
+    </div>`;
+}
+
+/* ─── REBALANCING CALCULATOR ────────────────────────────────── */
+// Calcula quanto comprar/vender para atingir a alocação alvo
+function calcRebalancing() {
+  const t = calcTotals();
+  if (t.assetsTotal === 0) return [];
+
+  // Ler targets do estado (guardado em settings)
+  const targets = (state.settings && state.settings.allocationTargets) || {};
+
+  const byClass = {};
+  for (const a of state.assets) {
+    const k = a.class || "Outros";
+    byClass[k] = (byClass[k] || 0) + parseNum(a.value);
+  }
+
+  return Object.entries(byClass).map(([cls, val]) => {
+    const currentPct = val / t.assetsTotal * 100;
+    const targetPct = parseNum(targets[cls] || 0);
+    const targetVal = t.assetsTotal * targetPct / 100;
+    const delta = targetVal - val;
+    return { cls, val, currentPct, targetPct, targetVal, delta };
+  }).filter(r => r.targetPct > 0 || r.currentPct > 0)
+    .sort((a, b) => a.delta - b.delta); // mais urgentes primeiro
+}
+
+function renderRebalancing() {
+  const el = document.getElementById("rebalancingContent");
+  const totalEl = document.getElementById("rebalancingTotal");
+  if (!el) return;
+
+  const targets = (state.settings && state.settings.allocationTargets) || {};
+  const t = calcTotals();
+
+  if (t.assetsTotal === 0) { el.innerHTML = `<div class="note">Sem activos.</div>`; return; }
+
+  // Se não há targets definidos, mostrar interface de configuração
+  const hasSomeTarget = Object.values(targets).some(v => parseNum(v) > 0);
+  if (!hasSomeTarget) {
+    const byClass = {};
+    for (const a of state.assets) { const k = a.class||"Outros"; byClass[k]=(byClass[k]||0)+parseNum(a.value); }
+    el.innerHTML = `
+      <div class="note" style="margin-bottom:12px">Define a tua <b>alocação alvo</b> por classe (total deve = 100%):</div>
+      ${Object.entries(byClass).map(([cls, val]) => `
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <label style="flex:1;font-size:13px;font-weight:600">${escapeHtml(cls)}<br><span style="font-weight:400;color:#94a3b8">${fmtPct(val/t.assetsTotal*100)} actual</span></label>
+          <input class="input" style="width:80px" inputmode="decimal" placeholder="%" id="target_${escapeHtml(cls).replace(/[^a-zA-Z0-9]/g,'_')}"
+            value="${parseNum(targets[cls])||""}">
+          <span style="font-size:13px;color:#94a3b8">%</span>
+        </div>`).join("")}
+      <button class="btn btn--primary" id="btnSaveTargets" style="width:100%;margin-top:8px">💾 Guardar alocação alvo</button>`;
+
+    const btnSave = document.getElementById("btnSaveTargets");
+    if (btnSave) btnSave.addEventListener("click", () => {
+      const newTargets = {};
+      for (const [cls] of Object.entries(byClass)) {
+        const key = cls.replace(/[^a-zA-Z0-9]/g,'_');
+        const el2 = document.getElementById("target_" + key);
+        const v = parseNum(el2 ? el2.value : 0);
+        if (v > 0) newTargets[cls] = v;
+      }
+      const total = Object.values(newTargets).reduce((s,v)=>s+v,0);
+      if (Math.abs(total - 100) > 1) { toast(`Total = ${fmtPct(total)}, deve ser 100%.`); return; }
+      if (!state.settings) state.settings = {};
+      state.settings.allocationTargets = newTargets;
+      saveState();
+      renderRebalancing();
+      toast("✅ Alocação alvo guardada.");
+    });
+    return;
+  }
+
+  const rows = calcRebalancing();
+  const totalBuy  = rows.filter(r => r.delta > 0).reduce((s, r) => s + r.delta, 0);
+  const totalSell = rows.filter(r => r.delta < 0).reduce((s, r) => s + Math.abs(r.delta), 0);
+
+  if (totalEl) totalEl.innerHTML = `Comprar ${fmtEUR(totalBuy)} · Vender ${fmtEUR(totalSell)}`;
+
+  el.innerHTML = rows.map(r => {
+    const offTarget = Math.abs(r.currentPct - r.targetPct);
+    const urgent = offTarget > 5;
+    const action = r.delta > 0 ? "COMPRAR" : r.delta < 0 ? "VENDER" : "OK";
+    const actionCol = r.delta > 0 ? "#059669" : r.delta < 0 ? "#dc2626" : "#94a3b8";
+    const barCur = Math.min(100, r.currentPct);
+    const barTgt = Math.min(100, r.targetPct);
+    return `<div style="padding:10px 0;border-bottom:1px solid #f1f5f9">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <div>
+          <span style="font-weight:700;font-size:14px">${escapeHtml(r.cls)}</span>
+          ${urgent ? `<span style="font-size:10px;background:#fef2f2;color:#dc2626;border-radius:4px;padding:1px 5px;margin-left:6px">fora do alvo</span>` : ""}
+        </div>
+        <div style="text-align:right">
+          <span style="font-size:12px;color:${actionCol};font-weight:900">${action}</span>
+          ${Math.abs(r.delta) > 1 ? `<span style="font-size:13px;font-weight:700;color:${actionCol};margin-left:6px">${fmtEUR(Math.abs(r.delta))}</span>` : ""}
+        </div>
+      </div>
+      <div style="position:relative;height:8px;background:#f1f5f9;border-radius:4px;overflow:hidden;margin-bottom:3px">
+        <div style="height:8px;background:#6366f1;width:${barCur}%;border-radius:4px;transition:width .6s"></div>
+        <div style="position:absolute;top:0;left:${barTgt}%;width:2px;height:8px;background:#ef4444;transform:translateX(-1px)"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:#94a3b8">
+        <span>Actual: ${fmtPct(r.currentPct)} · ${fmtEUR(r.val)}</span>
+        <span>Alvo: ${fmtPct(r.targetPct)} · ${fmtEUR(r.targetVal)}</span>
+      </div>
+    </div>`;
+  }).join("") + `
+    <button class="btn btn--ghost" id="btnResetTargets" style="margin-top:10px;font-size:12px;width:100%">✏️ Redefinir alocação alvo</button>`;
+
+  const btnReset = document.getElementById("btnResetTargets");
+  if (btnReset) btnReset.addEventListener("click", () => {
+    if (!state.settings) state.settings = {};
+    state.settings.allocationTargets = {};
+    saveState();
+    renderRebalancing();
+  });
+}
+
+/* ─── ALERTAS DE PREÇO ───────────────────────────────────────── */
+function checkPriceAlerts() {
+  const alerts = (state.settings && state.settings.priceAlerts) || [];
+  if (!alerts.length) return;
+
+  for (const a of state.assets) {
+    const price = parseNum(a.value);
+    for (const alert of alerts) {
+      if (alert.assetId !== a.id) continue;
+      const triggered =
+        (alert.type === "above" && price >= alert.price) ||
+        (alert.type === "below" && price <= alert.price);
+      if (triggered && !alert.fired) {
+        alert.fired = true;
+        const msg = `${a.name}: ${alert.type === "above" ? "acima de" : "abaixo de"} ${fmtEUR(alert.price)} (actual: ${fmtEUR(price)})`;
+        toast(`🔔 Alerta: ${msg}`, 6000);
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          new Notification("🔔 Alerta de preço — Património", { body: msg, icon: "icon192.png" });
+        }
+      }
+    }
+  }
+  saveState();
+}
+
+/* ─── SIMULAÇÃO DE DRAWDOWN (pós-FIRE) ──────────────────────── */
+// Simula quanto tempo dura o capital se retirar X€/ano
+function calcDrawdown(capital, annualWithdrawal, returnRate, inflationRate, years) {
+  if (annualWithdrawal <= 0) return { survives: true, depletedAt: null, data: [] };
+
+  const data = [];
+  let cap = capital;
+  let withdrawal = annualWithdrawal;
+  let depletedAt = null;
+
+  for (let y = 0; y <= years; y++) {
+    data.push({ year: y, capital: Math.max(0, cap) });
+    if (cap <= 0 && !depletedAt) { depletedAt = y; }
+    if (cap <= 0) continue;
+    cap = cap * (1 + returnRate / 100) - withdrawal;
+    withdrawal *= (1 + inflationRate / 100);
+  }
+
+  return { survives: cap > 0, depletedAt, data, finalCap: Math.max(0, cap) };
+}
+
+function renderDrawdownPanel() {
+  const el = document.getElementById("drawdownContent");
+  if (!el) return;
+
+  const t = calcTotals();
+  const capital = t.net;
+
+  const wdEl  = document.getElementById("drawdownWithdrawal");
+  const retEl = document.getElementById("drawdownReturn");
+  const infEl = document.getElementById("drawdownInflation");
+  const yrEl  = document.getElementById("drawdownYears");
+
+  const withdrawal  = parseNum((wdEl  || {}).value) || t.passiveAnnual || 24000;
+  const returnRate  = parseNum((retEl || {}).value) || 5;
+  const inflationRate = parseNum((infEl || {}).value) || 2.5;
+  const years = parseInt((yrEl || {}).value || "40");
+
+  // Auto-fill se vazio
+  if (wdEl && !wdEl.value) wdEl.placeholder = fmtEUR(withdrawal) + " (auto)";
+
+  const result = calcDrawdown(capital, withdrawal, returnRate, inflationRate, years);
+
+  const ctx = document.getElementById("drawdownChart");
+  if (ctx && ctx.getContext) {
+    if (window._drawdownChart) window._drawdownChart.destroy();
+    window._drawdownChart = new Chart(ctx.getContext("2d"), {
+      type: "line",
+      data: {
+        labels: result.data.map(d => d.year === 0 ? "Hoje" : `+${d.year}a`),
+        datasets: [{
+          label: "Capital restante",
+          data: result.data.map(d => d.capital),
+          borderColor: result.survives ? "#10b981" : "#ef4444",
+          backgroundColor: result.survives ? "rgba(16,185,129,.08)" : "rgba(239,68,68,.06)",
+          fill: true, tension: .3, pointRadius: 0, borderWidth: 2
+        }]
+      },
+      options: {
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: c => `Capital: ${fmtEUR(c.raw)}` } }
+        },
+        scales: { y: { ticks: { callback: v => v >= 1e6 ? (v/1e6).toFixed(1)+"M€" : fmtEUR(v) } } }
+      }
+    });
+  }
+
+  el.innerHTML = `
+    <div style="padding:12px;background:${result.survives ? "#f0fdf4" : "#fef2f2"};border-radius:12px;margin-bottom:12px">
+      ${result.survives
+        ? `<div style="font-weight:700;color:#059669;font-size:15px">✅ O capital aguenta os ${years} anos</div>
+           <div style="font-size:13px;color:#064e3b;margin-top:4px">Capital final estimado: <b>${fmtEUR(result.finalCap)}</b></div>`
+        : `<div style="font-weight:700;color:#dc2626;font-size:15px">⚠️ Capital esgota-se ao ano ${result.depletedAt}</div>
+           <div style="font-size:13px;color:#7f1d1d;margin-top:4px">Reduz os levantamentos ou aumenta o capital antes de te reformares.</div>`
+      }
+    </div>
+    <div style="font-size:12px;color:#64748b">
+      Capital inicial: <b>${fmtEUR(capital)}</b> · 
+      Levantamento: <b>${fmtEUR(withdrawal)}/ano</b> · 
+      SWR: <b>${fmtPct(withdrawal/Math.max(1,capital)*100)}</b> ·
+      Retorno ${fmtPct(returnRate)} · Inflação ${fmtPct(inflationRate)}
+    </div>`;
+}
+
+/* ─── WIRE v16 ───────────────────────────────────────────────── */
+(function wireV16() {
+  const init = () => {
+    // Drawdown recalc
+    ["drawdownWithdrawal","drawdownReturn","drawdownInflation","drawdownYears"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener("change", renderDrawdownPanel);
+    });
+    // Benchmark tab
+    const tab = document.getElementById("analysisTab");
+    if (tab) tab.addEventListener("change", () => {
+      if (tab.value === "performance") {
+        renderBenchmarkComparison();
+        renderRebalancing();
+      }
+      if (tab.value === "drawdown") renderDrawdownPanel();
+    });
+    // Verificar alertas de preço após actualização de cotações
+    document.addEventListener("quotesUpdated", checkPriceAlerts);
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();

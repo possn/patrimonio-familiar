@@ -66,27 +66,31 @@
     </div>
 
     <!-- KPIs secundários: 4 métricas rápidas -->
-    <div class="card" style="padding:12px 14px">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div style="background:#f8fafc;border-radius:10px;padding:10px">
-          <div style="font-size:11px;color:#64748b;margin-bottom:2px">Rendimento passivo/mês</div>
-          <div style="font-weight:800;font-size:17px;color:#059669" id="kpiPassiveMonthly2">—</div>
-          <div style="font-size:11px;color:#94a3b8" id="kpiPassiveAnnualSub">0 €/ano</div>
+    <div class="card" style="padding:12px">
+      <div class="kpi-grid">
+        <div class="kpi-cell kpi-cell--green">
+          <div class="kpi-cell__icon">💚</div>
+          <div class="kpi-cell__label">Rend. passivo/mês</div>
+          <div class="kpi-cell__value" id="kpiPassiveMonthly2">—</div>
+          <div class="kpi-cell__sub" id="kpiPassiveAnnualSub">0 €/ano</div>
         </div>
-        <div style="background:#f8fafc;border-radius:10px;padding:10px">
-          <div style="font-size:11px;color:#64748b;margin-bottom:2px">Dividendos YTD</div>
-          <div style="font-weight:800;font-size:17px;color:#6366f1" id="kpiDivYTD2">—</div>
-          <div style="font-size:11px;color:#94a3b8" id="kpiDivCount2"></div>
+        <div class="kpi-cell kpi-cell--vio">
+          <div class="kpi-cell__icon">💰</div>
+          <div class="kpi-cell__label">Dividendos YTD</div>
+          <div class="kpi-cell__value" id="kpiDivYTD2">—</div>
+          <div class="kpi-cell__sub" id="kpiDivCount2"></div>
         </div>
-        <div style="background:#f8fafc;border-radius:10px;padding:10px">
-          <div style="font-size:11px;color:#64748b;margin-bottom:2px">Yield médio carteira</div>
-          <div style="font-weight:800;font-size:17px;color:#f59e0b" id="kpiYield">—</div>
-          <div style="font-size:11px;color:#94a3b8">rendimento/capital</div>
+        <div class="kpi-cell kpi-cell--amber">
+          <div class="kpi-cell__icon">📈</div>
+          <div class="kpi-cell__label">Yield médio</div>
+          <div class="kpi-cell__value" id="kpiYield">—</div>
+          <div class="kpi-cell__sub">rend. / capital</div>
         </div>
-        <div style="background:#f8fafc;border-radius:10px;padding:10px">
-          <div style="font-size:11px;color:#64748b;margin-bottom:2px">Autonomia passiva</div>
-          <div style="font-weight:800;font-size:17px;color:#8b5cf6" id="kpiAutonomy">—</div>
-          <div style="font-size:11px;color:#94a3b8">rend. passivo / despesas</div>
+        <div class="kpi-cell kpi-cell--purple">
+          <div class="kpi-cell__icon">🛡️</div>
+          <div class="kpi-cell__label">Autonomia passiva</div>
+          <div class="kpi-cell__value" id="kpiAutonomy">—</div>
+          <div class="kpi-cell__sub">rend. / despesas</div>
         </div>
       </div>
     </div>
@@ -134,11 +138,11 @@
         </div>
       </div>
       <div class="card__muted" style="margin-top:6px;font-size:13px" id="kpiDivCount"></div>
-      <div class="row row--wrap" style="margin-top:12px">
-        <button class="btn btn--primary" id="btnSnapshot">📸 Registar mês</button>
-        <button class="btn btn--primary" id="btnAddDiv">💰 Dividendo</button>
-        <button class="btn" id="btnClearHistory">Limpar histórico</button>
-        <button class="btn btn--ghost" id="btnPrintDashboard" title="Imprimir / PDF">🖨️</button>
+      <div class="row row--wrap" style="margin-top:14px;gap:8px">
+        <button class="btn btn--primary btn--sm" id="btnSnapshot">📸 Registar</button>
+        <button class="btn btn--primary btn--sm" id="btnAddDiv">💰 Dividendo</button>
+        <button class="btn btn--sm" id="btnClearHistory">Limpar</button>
+        <button class="btn btn--ghost btn--sm" id="btnPrintDashboard" title="Imprimir / PDF">🖨️</button>
       </div>
     </div>
 
@@ -173,6 +177,62 @@
       <div class="hint" id="historyHint" style="display:none">Sem histórico. Usa "📸 Registar mês".</div>
       <!-- Mini tabela de snapshots recentes -->
       <div id="snapshotTable" style="margin-top:10px"></div>
+    </div>
+
+    <!-- v15: Metas (milestones) -->
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">🎯 Metas de patrimônio</div><div class="card__muted">Progressão até independência financeira</div></div>
+      </div>
+      <div id="milestonesContent"></div>
+    </div>
+
+    <!-- v15: Alertas depósitos a prazo -->
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">⏳ Vencimentos (60 dias)</div><div class="card__muted">Depósitos, PPR e obrigações a vencer</div></div>
+      </div>
+      <div id="maturityAlertsContent"></div>
+    </div>
+
+    <!-- v15: Qualidade do portfólio -->
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">🏅 Qualidade do portfólio</div><div class="card__muted">Score de diversificação e cobertura passiva</div></div>
+      </div>
+      <div id="portfolioQualityContent"></div>
+    </div>
+
+    <!-- v15: Rácio de dívida e saúde financeira -->
+    <div class="card" id="debtRatioCard">
+      <div class="card__head">
+        <div><div class="card__title">📊 Saúde Financeira</div><div class="card__muted">Rácios chave do portfólio</div></div>
+      </div>
+      <div id="debtRatioContent"></div>
+    </div>
+
+    <!-- v15: Alertas de concentração de risco -->
+    <div class="card" id="riskAlertCard" style="display:none;border-left:4px solid #ef4444">
+      <div class="card__head">
+        <div><div class="card__title" style="color:#dc2626">⚠️ Concentração de risco</div>
+        <div class="card__muted">Um activo ou classe representa >40% do portfólio</div></div>
+      </div>
+      <div id="riskAlertContent" class="list"></div>
+    </div>
+
+    <!-- v15: Simulador "E se?" -->
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">🎲 Simulador "E se?"</div><div class="card__muted">Impacto de cenários no net worth</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end">
+        <div>
+          <label class="lbl">Queda de mercado / ajuste (%)</label>
+          <input class="input" id="whatIfPct" inputmode="decimal" placeholder="ex: -20" value="-20">
+        </div>
+        <button class="btn btn--primary" id="btnWhatIf">Calcular</button>
+      </div>
+      <div id="whatIfResult" style="margin-top:12px;display:none"></div>
     </div>
 
     <!-- v15: IRS estimado -->
@@ -615,6 +675,9 @@
         <option value="compare">Comparação de Períodos</option>
         <option value="fire">Projeção FIRE</option>
         <option value="portfolio">📊 Sector &amp; Geografia</option>
+        <option value="fiscal">🧾 Resumo Fiscal</option>
+        <option value="performance">📊 Performance</option>
+        <option value="drawdown">📉 Simulação Reforma</option>
       </select>
     </div>
     <!-- Portfolio Analysis: Sector + Geography charts -->
@@ -737,6 +800,17 @@
             <input class="input" id="fireSaveInput" inputmode="decimal" placeholder="automático do Balanço">
           </div>
         </div>
+        <!-- v15: parâmetros custom -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0">
+          <div>
+            <label class="lbl">Retorno custom (%/ano) <span style="font-size:11px;color:#94a3b8">deixa vazio = automático</span></label>
+            <input class="input" id="fireCustomReturn" inputmode="decimal" placeholder="ex: 6">
+          </div>
+          <div>
+            <label class="lbl">Inflação custom (%/ano)</label>
+            <input class="input" id="fireCustomInflation" inputmode="decimal" placeholder="ex: 2.5">
+          </div>
+        </div>
         <button class="btn btn--primary" id="btnRecalcFire" style="width:100%">🔄 Calcular</button>
       </div>
 
@@ -798,6 +872,80 @@
       <div class="card" id="firePartialCard">
         <div class="card__title" style="margin-bottom:10px">🌤️ Independência parcial actual</div>
         <div id="firePartial"></div>
+      </div>
+    </div>
+    <!-- v16: Painel Performance (TWR + Benchmark + Rebalancing) -->
+    <div class="analysisPanelTab" id="analysisPanelTab_performance" style="display:none">
+      <div class="card">
+        <div class="card__head">
+          <div><div class="card__title">📊 Performance do portfólio</div>
+          <div class="card__muted">TWR anualizado vs benchmarks de mercado</div></div>
+        </div>
+        <div id="benchmarkContent"></div>
+      </div>
+      <div class="card">
+        <div class="card__head">
+          <div><div class="card__title">⚖️ Rebalancing</div>
+          <div class="card__muted">Sugestões para atingir a alocação alvo</div></div>
+          <span id="rebalancingTotal" style="font-size:12px;color:#94a3b8"></span>
+        </div>
+        <div id="rebalancingContent"></div>
+      </div>
+    </div>
+
+    <!-- v16: Painel Simulação Reforma (Drawdown) -->
+    <div class="analysisPanelTab" id="analysisPanelTab_drawdown" style="display:none">
+      <div class="card">
+        <div class="card__head">
+          <div><div class="card__title">📉 Simulação de reforma</div>
+          <div class="card__muted">Quanto tempo dura o capital se retirares X€/ano?</div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+          <div>
+            <label class="lbl">Levantamento anual (€)</label>
+            <input class="input" id="drawdownWithdrawal" inputmode="decimal" placeholder="ex: 24000">
+          </div>
+          <div>
+            <label class="lbl">Retorno esperado (%/ano)</label>
+            <input class="input" id="drawdownReturn" inputmode="decimal" value="5">
+          </div>
+          <div>
+            <label class="lbl">Inflação (%/ano)</label>
+            <input class="input" id="drawdownInflation" inputmode="decimal" value="2.5">
+          </div>
+          <div>
+            <label class="lbl">Horizonte (anos)</label>
+            <select class="input" id="drawdownYears">
+              <option value="30">30 anos</option>
+              <option value="40" selected>40 anos</option>
+              <option value="50">50 anos</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn--primary" id="btnCalcDrawdown" style="width:100%;margin-bottom:12px" onclick="renderDrawdownPanel()">🔄 Calcular</button>
+        <div id="drawdownContent"></div>
+        <div class="chartWrap" style="margin-top:12px"><canvas id="drawdownChart" height="240"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card__title" style="margin-bottom:8px">💡 Regras de ouro da reforma</div>
+        <div style="font-size:13px;line-height:1.8;color:#475569">
+          <b>Regra dos 4%</b> — Retira até 4% do capital/ano → dura 30+ anos historicamente<br>
+          <b>Regra dos 3%</b> — Mais conservador → dura quase indefinidamente<br>
+          <b>Guarda 1-2 anos</b> em liquidez para não venderes em crash<br>
+          <b>Ajusta levantamentos</b> à inflação para manter o poder de compra
+        </div>
+      </div>
+    </div>
+
+    <!-- v15: Painel Resumo Fiscal -->
+    <div class="analysisPanelTab" id="analysisPanelTab_fiscal" style="display:none">
+      <div class="card">
+        <div class="card__head">
+          <div><div class="card__title">🧾 Resumo Fiscal Estimado</div>
+          <div class="card__muted">28% retenção PT · consulta sempre um TOC</div></div>
+          <button class="btn btn--ghost" id="btnExportFiscal" style="font-size:12px">📥 CSV</button>
+        </div>
+        <div id="fiscalContent"></div>
       </div>
     </div>
   </section>
@@ -875,10 +1023,11 @@
 <!-- PASSIVE BAR -->
 <div class="passivebar" id="passivebar">
   <div class="passivebar__item">
-    <div class="passivebar__label">Rendimento passivo anual <button class="info-btn" onclick="openTip('passiveIncome')" title="Saber mais">ℹ️</button></div>
+    <div class="passivebar__label">Rend. passivo anual <button class="info-btn" onclick="openTip('passiveIncome')">ℹ️</button></div>
     <div class="passivebar__value passivebar__value--green" id="barPassiveAnnual">0 €</div>
   </div>
-  <div class="passivebar__item" style="text-align:right">
+  <div class="passivebar__sep"></div>
+  <div class="passivebar__item">
     <div class="passivebar__label">Mensal estimado</div>
     <div class="passivebar__value" id="barPassiveMonthly">0 €</div>
   </div>
