@@ -607,3 +607,43 @@ select.input   { cursor: pointer; }
   #viewDashboard { display: block !important; }
   @page { margin: 15mm; size: A4 portrait; }
 }
+
+/* ─── KPI QUICK GRID (2×2 compacto) ─── */
+.kpi-quick { padding: 12px !important; }
+.kpi-quick__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.kpi-quick__cell {
+  border-radius: var(--r-sm);
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  background: var(--card2);
+  transition: transform .12s;
+}
+.kpi-quick__cell:active { transform: scale(.97); }
+.kpi-quick__cell--green  { border-top: 3px solid var(--green); }
+.kpi-quick__cell--vio    { border-top: 3px solid var(--vio); }
+.kpi-quick__cell--amber  { border-top: 3px solid var(--amber); }
+.kpi-quick__cell--purple { border-top: 3px solid var(--purple); }
+.kpi-quick__k {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .3px;
+}
+.kpi-quick__v {
+  font-size: 19px; font-weight: 900; margin-top: 4px;
+  letter-spacing: -.3px; color: var(--text);
+}
+.kpi-quick__s {
+  font-size: 11px; color: var(--muted); margin-top: 2px; font-weight: 600;
+}
+
+/* Dark mode kpi-quick */
+@media (prefers-color-scheme: dark) {
+  .kpi-quick__cell { background: var(--card2); border-color: var(--line); }
+}
+
+@media (max-width: 380px) {
+  .kpi-quick__v { font-size: 16px; }
+}

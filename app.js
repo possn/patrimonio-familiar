@@ -6185,10 +6185,13 @@ function calcDCA(assetId) {
 /* ─── METAS / MILESTONES DE NET WORTH ───────────────────────── */
 function renderMilestones() {
   const el = document.getElementById("milestonesContent");
+  const card = document.getElementById("milestonesCard");
   if (!el) return;
 
   const t = calcTotals();
   const net = t.net;
+  if (net <= 0) { if (card) card.style.display = "none"; return; }
+  if (card) card.style.display = "";
 
   const milestones = [
     { val: 10000,   label: "10K€",   emoji: "🌱" },
@@ -6237,10 +6240,12 @@ function renderMaturityAlerts() {
     .filter(a => a.maturityDate && a.maturityDate >= todayISO && a.maturityDate <= in60ISO)
     .sort((a, b) => a.maturityDate.localeCompare(b.maturityDate));
 
+  const alertCard = document.getElementById("maturityAlertsCard");
   if (!expiring.length) {
-    el.innerHTML = `<div style="padding:12px;color:#64748b;font-size:13px;text-align:center">✅ Sem vencimentos nos próximos 60 dias</div>`;
+    if (alertCard) alertCard.style.display = "none";
     return;
   }
+  if (alertCard) alertCard.style.display = "";
 
   el.innerHTML = expiring.map(a => {
     const days = Math.round((new Date(a.maturityDate) - today) / 86400000);
@@ -6295,6 +6300,7 @@ function calcDiversificationScore() {
 /* ─── RENDER: PAINEL LATERAL DE QUALIDADE DO PORTFÓLIO ──────── */
 function renderPortfolioQuality() {
   const el = document.getElementById("portfolioQualityContent");
+  const card = document.getElementById("portfolioQualityCard");
   if (!el) return;
 
   const div = calcDiversificationScore();
@@ -6313,6 +6319,7 @@ function renderPortfolioQuality() {
   const avgOut = last6.length ? last6.reduce((s, k) => s + byMonth.get(k).out, 0) / last6.length : 0;
   const coverage = avgOut > 0 ? t.passiveAnnual / (avgOut * 12) * 100 : 0;
 
+  if (card) card.style.display = "";
   el.innerHTML = `
     <div style="display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid #f1f5f9">
       <div style="width:56px;height:56px;border-radius:50%;background:${div.color}20;border:3px solid ${div.color};

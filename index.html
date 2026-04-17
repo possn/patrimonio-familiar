@@ -65,32 +65,28 @@
       <div id="kpiChanges" style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap"></div>
     </div>
 
-    <!-- KPIs secundários: 4 métricas rápidas -->
-    <div class="card" style="padding:12px">
-      <div class="kpi-grid">
-        <div class="kpi-cell kpi-cell--green">
-          <div class="kpi-cell__icon">💚</div>
-          <div class="kpi-cell__label">Rend. passivo/mês</div>
-          <div class="kpi-cell__value" id="kpiPassiveMonthly2">—</div>
-          <div class="kpi-cell__sub" id="kpiPassiveAnnualSub">0 €/ano</div>
+    <!-- KPIs secundários: 4 métricas rápidas — layout 2×2 compacto -->
+    <div class="card kpi-quick">
+      <div class="kpi-quick__grid">
+        <div class="kpi-quick__cell kpi-quick__cell--green">
+          <div class="kpi-quick__k">Rend. passivo/mês</div>
+          <div class="kpi-quick__v" id="kpiPassiveMonthly2">—</div>
+          <div class="kpi-quick__s" id="kpiPassiveAnnualSub">0 €/ano</div>
         </div>
-        <div class="kpi-cell kpi-cell--vio">
-          <div class="kpi-cell__icon">💰</div>
-          <div class="kpi-cell__label">Dividendos YTD</div>
-          <div class="kpi-cell__value" id="kpiDivYTD2">—</div>
-          <div class="kpi-cell__sub" id="kpiDivCount2"></div>
+        <div class="kpi-quick__cell kpi-quick__cell--vio">
+          <div class="kpi-quick__k">Dividendos YTD</div>
+          <div class="kpi-quick__v" id="kpiDivYTD2">—</div>
+          <div class="kpi-quick__s" id="kpiDivCount2"></div>
         </div>
-        <div class="kpi-cell kpi-cell--amber">
-          <div class="kpi-cell__icon">📈</div>
-          <div class="kpi-cell__label">Yield médio</div>
-          <div class="kpi-cell__value" id="kpiYield">—</div>
-          <div class="kpi-cell__sub">rend. / capital</div>
+        <div class="kpi-quick__cell kpi-quick__cell--amber">
+          <div class="kpi-quick__k">Yield médio</div>
+          <div class="kpi-quick__v" id="kpiYield">—</div>
+          <div class="kpi-quick__s">rend. / capital</div>
         </div>
-        <div class="kpi-cell kpi-cell--purple">
-          <div class="kpi-cell__icon">🛡️</div>
-          <div class="kpi-cell__label">Autonomia passiva</div>
-          <div class="kpi-cell__value" id="kpiAutonomy">—</div>
-          <div class="kpi-cell__sub">rend. / despesas</div>
+        <div class="kpi-quick__cell kpi-quick__cell--purple">
+          <div class="kpi-quick__k">Autonomia passiva</div>
+          <div class="kpi-quick__v" id="kpiAutonomy">—</div>
+          <div class="kpi-quick__s">rend. / despesas</div>
         </div>
       </div>
     </div>
@@ -179,26 +175,26 @@
       <div id="snapshotTable" style="margin-top:10px"></div>
     </div>
 
-    <!-- v15: Metas (milestones) -->
-    <div class="card">
+    <!-- v15: Metas (milestones) — collapsible, só mostra se há dados -->
+    <div class="card" id="milestonesCard" style="display:none">
       <div class="card__head">
-        <div><div class="card__title">🎯 Metas de patrimônio</div><div class="card__muted">Progressão até independência financeira</div></div>
+        <div><div class="card__title">🎯 Metas</div><div class="card__muted">Próximo marco de patrimônio</div></div>
       </div>
       <div id="milestonesContent"></div>
     </div>
 
     <!-- v15: Alertas depósitos a prazo -->
-    <div class="card">
+    <div class="card" id="maturityAlertsCard" style="display:none">
       <div class="card__head">
         <div><div class="card__title">⏳ Vencimentos (60 dias)</div><div class="card__muted">Depósitos, PPR e obrigações a vencer</div></div>
       </div>
       <div id="maturityAlertsContent"></div>
     </div>
 
-    <!-- v15: Qualidade do portfólio -->
-    <div class="card">
+    <!-- v15: Qualidade do portfólio — inline no dashboard quando há assets -->
+    <div class="card" id="portfolioQualityCard" style="display:none">
       <div class="card__head">
-        <div><div class="card__title">🏅 Qualidade do portfólio</div><div class="card__muted">Score de diversificação e cobertura passiva</div></div>
+        <div><div class="card__title">🏅 Qualidade</div><div class="card__muted">Score de diversificação e cobertura passiva</div></div>
       </div>
       <div id="portfolioQualityContent"></div>
     </div>
