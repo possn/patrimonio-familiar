@@ -79,9 +79,9 @@
           <div class="kpi-quick__s" id="kpiDivCount2"></div>
         </div>
         <div class="kpi-quick__cell kpi-quick__cell--amber">
-          <div class="kpi-quick__k">Yield médio</div>
+          <div class="kpi-quick__k">Rend. base</div>
           <div class="kpi-quick__v" id="kpiYield">—</div>
-          <div class="kpi-quick__s">rend. / capital</div>
+          <div class="kpi-quick__s">passivo / capital</div>
         </div>
         <div class="kpi-quick__cell kpi-quick__cell--purple">
           <div class="kpi-quick__k">Autonomia passiva</div>
@@ -89,6 +89,13 @@
           <div class="kpi-quick__s">rend. / despesas</div>
         </div>
       </div>
+    </div>
+
+    <div class="card" id="portfolioSourcesCard" style="display:none">
+      <div class="card__head">
+        <div><div class="card__title">Fontes activas da carteira</div><div class="card__muted">Origem dos dados que estão a alimentar os cálculos</div></div>
+      </div>
+      <div id="portfolioSourcesBody"></div>
     </div>
 
     <!-- Objetivo de rendimento passivo -->
@@ -324,6 +331,25 @@
         Também reconhece exports de corretoras (ticker, shares, market value, yield).
       </div>
       <div class="hint" id="importHint">Nenhum ficheiro importado nesta sessão.</div>
+    </div>
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">Importar corretoras</div><div class="card__muted">CSV ou Excel · múltiplos anos · múltiplas corretoras</div></div>
+      </div>
+      <div class="row row--wrap" style="gap:10px">
+        <input id="brokerFiles" type="file" class="input" accept=".csv,.xls,.xlsx,text/csv,application/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple>
+        <button class="btn btn--primary" id="btnImportBrokerFiles" disabled>Importar ficheiros</button>
+      </div>
+      <div class="note">
+        Junta vários ficheiros anuais (ex: 2023, 2024, 2025) e até corretoras diferentes. Reconhece <b>ledger</b> tipo <i>Action/Time/Total</i> e <b>posições</b> tipo <i>Ticker/Quantity/Cost Per Share</i>.<br>
+        A app guarda os eventos, deduplica sobreposições e reconstrói a parte importada da carteira. Evita importar ao mesmo tempo o ledger completo e um snapshot da mesma conta se não quiseres somar duas vezes.
+      </div>
+      <div id="brokerImportResult" style="display:none;margin-top:10px"></div>
+      <div id="brokerImportAudit" style="display:none;margin-top:10px"></div>
+      <div id="brokerImportList" class="list" style="margin-top:10px"></div>
+      <div class="row row--wrap" style="gap:10px;margin-top:10px">
+        <button class="btn btn--outline" id="btnClearBrokerImports">🗑️ Limpar imports de corretoras</button>
+      </div>
     </div>
     <div class="card">
       <div class="card__head">
@@ -757,7 +783,7 @@
         <div id="compPortfolioNote" class="note" style="display:none;margin-top:10px"></div>
         <div class="filters" style="margin-top:10px">
           <div><label class="lbl">Capital (€)</label><input class="input" id="compPrincipal" inputmode="decimal" placeholder="ex: 50000"></div>
-          <div><label class="lbl">Yield médio (%/ano)</label><input class="input" id="compRate" inputmode="decimal" placeholder="ex: 4.5"></div>
+          <div><label class="lbl">Retorno anual total (%/ano)</label><input class="input" id="compRate" inputmode="decimal" placeholder="ex: 6.5"></div>
           <div><label class="lbl">Anos</label><input class="input" id="compYears" type="number" min="1" max="50" value="20"></div>
         </div>
         <div class="filters" style="margin-top:10px">
@@ -771,7 +797,7 @@
           <div style="display:flex;align-items:flex-end"><button class="btn btn--primary" id="btnCalcCompound" style="width:100%">Calcular</button></div>
         </div>
         <div class="note" style="margin-top:10px;font-size:13px">
-          💡 Em modo <b>Carteira completa</b> os campos são preenchidos com o capital investido e yield ponderado.<br>
+          💡 Em modo <b>Carteira completa</b> os campos são preenchidos com o capital investido e o retorno total ponderado da carteira.<br>
           <button class="btn btn--primary btn--sm" onclick="usePnLInCompound()" style="margin-top:8px;width:100%">
             📊 Usar retorno real (TWR + dividendos)
           </button>
@@ -787,7 +813,8 @@
     </div>
     <div class="analysisPanelTab" id="analysisPanelTab_forecast" style="display:none">
       <div class="card">
-        <div class="card__title" style="margin-bottom:12px">Previsão de Rentabilidade</div>
+        <div class="card__title" style="margin-bottom:12px">Previsão de retorno</div>
+        <div id="forecastPortfolioNote" class="note" style="margin-top:12px"></div>
         <div class="row" style="gap:12px;align-items:center">
           <label class="lbl" style="margin:0;white-space:nowrap">Horizonte:</label>
           <select class="input" id="forecastYears" style="max-width:160px">
@@ -855,6 +882,7 @@
           <button class="btn btn--primary" id="btnRecalcFire">🔄 Calcular</button>
           <button class="btn btn--outline" onclick="usePnLInFIRE()" title="Preenche o retorno com o P&L real do portfólio de acções">📊 Usar P&L real</button>
         </div>
+        <div id="fireEngineNote" class="note" style="margin-top:12px"></div>
       </div>
 
       <!-- Estado actual -->
@@ -1121,6 +1149,9 @@
         </div>
       </div>
       <div class="card">
+        <div id="returnAssumptionsCard"></div>
+      </div>
+      <div class="card">
         <div class="card__title" style="margin-bottom:8px">Importar / Exportar</div>
         <button class="btn btn--primary" id="btnGoImport">⇅ Ir para Importar</button>
       </div>
@@ -1160,7 +1191,7 @@
 
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Sobre</div>
-        <div class="card__muted">Património Familiar <b>v15</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
+        <div class="card__muted">Património Familiar <b>v16.5</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v16.5:</b> Motor de retorno unificado · valorização esperada por activo · pressupostos editáveis por classe · FIRE/Compound/Previsão coerentes<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
       </div>
     </div>
     <div id="paneFire" style="display:none">
@@ -1229,11 +1260,13 @@
       <div id="yieldRow">
         <label class="lbl">Rendimento passivo</label>
         <select class="input" id="mYieldType">
-          <option value="none">Sem rendimento</option><option value="yield_pct">Yield %/ano</option>
+          <option value="none">Sem rendimento</option><option value="yield_pct">Rendimento %/ano</option>
           <option value="yield_eur_year">€ / ano</option><option value="rent_month">Renda mensal (€)</option>
         </select>
-        <label class="lbl">Valor do rendimento</label>
+        <label class="lbl">Valor do rendimento base</label>
         <input class="input" id="mYieldValue" inputmode="decimal" placeholder="ex: 3.2 (%) ou 700 (renda)">
+        <label class="lbl">Valorização esperada (%/ano) <span style="font-size:11px;color:#94a3b8;font-weight:500">— opcional</span></label>
+        <input class="input" id="mAppreciationPct" inputmode="decimal" placeholder="ex: 6 para crescimento esperado do capital">
         <label class="lbl">Capitalização</label>
         <select class="input" id="mCompound">
           <option value="1">Anual</option><option value="2">Semestral</option>

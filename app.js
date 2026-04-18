@@ -131,7 +131,7 @@ A diferença cresce exponencialmente com o tempo — por isso Einstein terá dit
 • Certificados de aforro: taxa fixa definida pelo Estado<br>
 • Depósito a prazo: taxa acordada com o banco<br>
 • Imobiliário: renda mensal / valor do imóvel × 12<br><br>
-Na app, o yield ponderado da carteira é calculado automaticamente com base nos yields individuais de cada ativo.`
+Na app, o rendimento base projectado da carteira é calculado automaticamente com base no rendimento configurado em cada ativo ou, na falta dele, pelos pressupostos por classe.`
   },
   passiveIncome: {
     title: "Rendimento Passivo",
@@ -159,7 +159,7 @@ Se retirares 4% do teu portfólio por ano, historicamente o capital dura mais de
 <b>Exemplo:</b><br>
 • 80.000€ em ETFs com 5% → contribui 4.000€/ano<br>
 • 20.000€ em depósitos com 3% → contribui 600€/ano<br>
-• Total: 100.000€ → 4.600€/ano → yield ponderado = 4,6%<br><br>
+• Total: 100.000€ → 4.600€/ano → rendimento base ponderado = 4,6%<br><br>
 É mais preciso do que fazer a média simples dos yields porque tem em conta o tamanho de cada posição.`
   },
   savingsRate: {
@@ -212,12 +212,12 @@ O valor mostrado aqui é o líquido (já descontada a retenção na fonte).`
 Este valor é usado como fonte principal no cálculo do Rendimento Passivo.`
   },
   forecast: {
-    title: "Previsão de Rentabilidade",
-    body: `A <b>previsão</b> estima o valor futuro de cada ativo com base no seu yield configurado.<br><br>
+    title: "Previsão de retorno",
+    body: `A <b>previsão</b> estima o valor futuro de cada ativo com base no seu retorno esperado.<br><br>
 <b>Como funciona:</b><br>
-• Aplica o yield % de cada ativo ao seu valor actual<br>
-• Projeta para o horizonte temporal escolhido<br>
-• Assume reinvestimento dos rendimentos (juro composto)<br><br>
+• Soma rendimento base e valorização esperada de cada ativo<br>
+• Usa TWR anualizado da carteira quando existe histórico robusto para a projeção global<br>
+• Projeta para o horizonte temporal escolhido com reinvestimento implícito<br><br>
 <b>Nota:</b> É uma estimativa — os retornos reais dependem das condições de mercado.`
   },
   compare: {
@@ -328,13 +328,14 @@ async function storageClear() {
 
 /* ─── STATE ───────────────────────────────────────────────── */
 const DEFAULT_STATE = {
-  settings: { currency: "EUR", goalMonthly: 0 },
+  settings: { currency: "EUR", goalMonthly: 0, returnDefaults: safeClone(DEFAULT_RETURN_SETTINGS) },
   assets: [],
   liabilities: [],
   transactions: [],
   dividends: [],
   divSummaries: [], // {id, year, gross, tax, yieldPct, notes}
-  history: []
+  history: [],
+  brokerData: { files: [], events: [], positions: [] }
 };
 
 let state = safeClone(DEFAULT_STATE);
@@ -368,13 +369,18 @@ async function loadStateAsync() {
     if (!raw) return safeClone(DEFAULT_STATE);
     const p = JSON.parse(raw);
     return {
-      settings: { currency: "EUR", goalMonthly: 0, ...( p.settings || {}) },
+      settings: { currency: "EUR", goalMonthly: 0, returnDefaults: safeClone(DEFAULT_RETURN_SETTINGS), ...( p.settings || {}) },
       assets: Array.isArray(p.assets) ? p.assets : [],
       liabilities: Array.isArray(p.liabilities) ? p.liabilities : [],
       transactions: Array.isArray(p.transactions) ? p.transactions : [],
       dividends: Array.isArray(p.dividends) ? p.dividends : [],
       divSummaries: Array.isArray(p.divSummaries) ? p.divSummaries : [],
-      history: Array.isArray(p.history) ? p.history : []
+      history: Array.isArray(p.history) ? p.history : [],
+      brokerData: {
+        files: Array.isArray(p.brokerData && p.brokerData.files) ? p.brokerData.files : [],
+        events: Array.isArray(p.brokerData && p.brokerData.events) ? p.brokerData.events : [],
+        positions: Array.isArray(p.brokerData && p.brokerData.positions) ? p.brokerData.positions : []
+      }
     };
   } catch { return safeClone(DEFAULT_STATE); }
 }
@@ -389,6 +395,117 @@ function passiveFromItem(it) {
   if (yt === "yield_eur_year") return yv;
   if (yt === "rent_month") return yv * 12;
   return 0;
+}
+
+const PASSIVE_DEFAULTS = {
+  "acoes/etfs": 1.8,
+  "fundos": 1.2,
+  "ppr": 0.4,
+  "imobiliario": 4,
+  "ouro": 0,
+  "prata": 0,
+  "cripto": 0,
+  "liquidez": 0,
+  "depositos": 2,
+  "obrigacoes": 3,
+  "outros": 0
+};
+
+const APPRECIATION_DEFAULTS = {
+  "acoes/etfs": 6,
+  "fundos": 4,
+  "ppr": 3.5,
+  "imobiliario": 2,
+  "ouro": 2,
+  "prata": 1.5,
+  "cripto": 0,
+  "liquidez": 0,
+  "depositos": 0,
+  "obrigacoes": 0,
+  "outros": 0
+};
+
+const DEFAULT_RETURN_SETTINGS = {
+  classPassivePct: { ...PASSIVE_DEFAULTS },
+  classAppreciationPct: { ...APPRECIATION_DEFAULTS },
+  preferTWR: true,
+  twrMinYears: 0.5
+};
+
+function getReturnSettings() {
+  const s = (state && state.settings && state.settings.returnDefaults) || {};
+  return {
+    classPassivePct: { ...PASSIVE_DEFAULTS, ...(s.classPassivePct || {}) },
+    classAppreciationPct: { ...APPRECIATION_DEFAULTS, ...(s.classAppreciationPct || {}) },
+    preferTWR: s.preferTWR !== false,
+    twrMinYears: Number.isFinite(parseNum(s.twrMinYears)) && parseNum(s.twrMinYears) > 0 ? parseNum(s.twrMinYears) : DEFAULT_RETURN_SETTINGS.twrMinYears
+  };
+}
+
+function saveReturnSettings(partial = {}) {
+  if (!state.settings) state.settings = {};
+  const cur = getReturnSettings();
+  state.settings.returnDefaults = {
+    classPassivePct: { ...cur.classPassivePct, ...(partial.classPassivePct || {}) },
+    classAppreciationPct: { ...cur.classAppreciationPct, ...(partial.classAppreciationPct || {}) },
+    preferTWR: partial.preferTWR !== undefined ? !!partial.preferTWR : cur.preferTWR,
+    twrMinYears: partial.twrMinYears !== undefined ? parseNum(partial.twrMinYears) : cur.twrMinYears
+  };
+}
+
+function assetClassKey(asset) {
+  const c = normStr(asset && asset.class || "");
+  if (c.includes("acoes") || c.includes("etf")) return "acoes/etfs";
+  if (c.includes("fundo")) return "fundos";
+  if (c.includes("ppr")) return "ppr";
+  if (c.includes("imobili")) return "imobiliario";
+  if (c.includes("ouro")) return "ouro";
+  if (c.includes("prata")) return "prata";
+  if (c.includes("cripto")) return "cripto";
+  if (c.includes("liquidez")) return "liquidez";
+  if (c.includes("deposit")) return "depositos";
+  if (c.includes("obrig")) return "obrigacoes";
+  return "outros";
+}
+
+function hasExplicitAppreciationPct(asset) {
+  const raw = asset && (asset.appreciationPct ?? asset.expectedAppreciationPct ?? asset.capitalReturnPct);
+  return raw !== undefined && raw !== null && String(raw).trim() !== "";
+}
+
+function hasExplicitPassiveYield(asset) {
+  if (!asset) return false;
+  const yt = asset.yieldType || "none";
+  return yt !== "none";
+}
+
+function getAssetPassiveRatePct(asset, opts = {}) {
+  const v = parseNum(asset && asset.value);
+  if (v <= 0) return 0;
+  const allowClassFallback = opts.allowClassFallback !== false;
+  const yt = asset && asset.yieldType || "none";
+  const yv = parseNum(asset && asset.yieldValue);
+  if (yt === "yield_pct") return yv;
+  if (yt === "yield_eur_year") return yv / Math.max(1, v) * 100;
+  if (yt === "rent_month") return yv * 12 / Math.max(1, v) * 100;
+  if (!allowClassFallback) return 0;
+  const rs = getReturnSettings();
+  return parseNum(rs.classPassivePct[assetClassKey(asset)] || 0);
+}
+
+function getAssetAppreciationPct(asset, opts = {}) {
+  const allowClassFallback = opts.allowClassFallback !== false;
+  const raw = asset && (asset.appreciationPct ?? asset.expectedAppreciationPct ?? asset.capitalReturnPct);
+  if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+    return Math.max(-100, Math.min(100, parseNum(raw)));
+  }
+  if (!allowClassFallback) return 0;
+  const rs = getReturnSettings();
+  return parseNum(rs.classAppreciationPct[assetClassKey(asset)] || 0);
+}
+
+function getAssetTotalReturnPct(asset, opts = {}) {
+  return getAssetPassiveRatePct(asset, opts) + getAssetAppreciationPct(asset, opts);
 }
 
 function calcTotals() {
@@ -529,6 +646,7 @@ function setView(view) {
   if (view === "cashflow") renderCashflow();
   if (view === "analysis") { renderAnalysis(); }
   if (view === "dividends") renderDividends();
+  if (view === "settings") renderReturnSettingsCard();
   if (view === "import") checkDuplicateWarning();
   window.scrollTo({ top: 0, behavior: "instant" });
 }
@@ -721,7 +839,9 @@ function renderAll() {
   renderCashflow();
   renderDividends();
   updatePassiveBar();
+  renderBrokerImportStatus();
   if (currentView === "analysis") { renderSectorChart(); renderGeoChart(); }
+  if (currentView === "settings") renderReturnSettingsCard();
 }
 
 /* ─── DASHBOARD ───────────────────────────────────────────── */
@@ -1105,7 +1225,7 @@ function renderDashboard() {
   if (pm2) pm2.textContent = fmtEUR(t.passiveAnnual / 12);
   if (pa2) pa2.textContent = fmtEUR(t.passiveAnnual) + "/ano";
 
-  // Yield médio carteira
+  // Rendimento base da carteira
   const yieldEl = document.getElementById("kpiYield");
   if (yieldEl) {
     const y = t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0;
@@ -1131,6 +1251,7 @@ function renderDashboard() {
   }
 
   updatePassiveBar();
+  renderPortfolioSourcesCard();
   renderGoal();
   renderAlerts();
   renderDivYTD();
@@ -1169,7 +1290,10 @@ function renderSummary() {
     row.className = "item";
     const passive = passiveFromItem(it);
     const badge = passive > 0 ? `<span class="badge badge--green">${fmtEUR(passive)}/ano</span>` : "";
-    row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(it.name || "—")} ${badge}</div><div class="item__s">${escapeHtml(it.class || "")}</div></div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
+    const sourceBadge = it.generatedFromBroker
+      ? `<span class="badge" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe">Corretora</span>`
+      : ``;
+    row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(it.name || "—")} ${badge} ${sourceBadge}</div><div class="item__s">${escapeHtml(it.class || "")}</div></div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
     row.addEventListener("click", () => { setView("assets"); editItem(it.id); });
     list.appendChild(row);
   }
@@ -1339,7 +1463,7 @@ function renderItems() {
     const gainBadge = !showingLiabs ? renderGainLossBadge(it) : "";
     row.innerHTML = `<div class="item__l">
       <div class="item__t">${escapeHtml(it.name || "—")}${gainBadge}</div>
-      <div class="item__s">${escapeHtml(it.class || "")}${badge}</div>
+      <div class="item__s">${escapeHtml(it.class || "")}${badge}${!showingLiabs ? appreciationBadge(it) : ""}</div>
     </div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
     row.addEventListener("click", () => editItem(it.id));
     list.appendChild(row);
@@ -1367,6 +1491,12 @@ function yieldBadge(it) {
   return "";
 }
 
+function appreciationBadge(it) {
+  const r = getAssetAppreciationPct(it, { allowClassFallback: false });
+  if (Math.abs(r) < 1e-9) return "";
+  return ` · <span class="badge badge--purple">↑ ${fmtPct(r)}</span>`;
+}
+
 /* ─── MODAL: ITEM ─────────────────────────────────────────── */
 function openItemModal(kind) {
   editingItemId = null;
@@ -1379,6 +1509,7 @@ function openItemModal(kind) {
   $("mValue").value = "";
   $("mYieldType").value = "none";
   $("mYieldValue").value = "";
+  $("mAppreciationPct").value = "";
   $("mMaturity").value = "";
   $("mCompound").value = "12";
   $("mNotes").value = "";
@@ -1400,6 +1531,7 @@ function toggleYieldFields(kind) {
   const isLiab = kind === "liab";
   $("mYieldType").disabled = isLiab;
   $("mYieldValue").disabled = isLiab;
+  $("mAppreciationPct").disabled = isLiab;
   $("mMaturity").disabled = isLiab;
   $("mCompound").disabled = isLiab;
   const yieldRow = document.getElementById("yieldRow");
@@ -1425,14 +1557,17 @@ function editItem(id) {
   if (!showingLiabs) {
     $("mYieldType").value = it.yieldType || "none";
     $("mYieldValue").value = it.yieldValue != null ? String(it.yieldValue) : "";
+    const appEl = document.getElementById("mAppreciationPct");
+    if (appEl) appEl.value = hasExplicitAppreciationPct(it) ? String(parseNum(it.appreciationPct)) : "";
     $("mMaturity").value = it.maturityDate || "";
     $("mCompound").value = String(it.compoundFreq || 12);
-    // v15: custo de aquisição
     const cbEl = document.getElementById("mCostBasis");
     if (cbEl) cbEl.value = it.costBasis ? String(it.costBasis) : "";
   } else {
     $("mYieldType").value = "none";
     $("mYieldValue").value = "";
+    const appEl = document.getElementById("mAppreciationPct");
+    if (appEl) appEl.value = "";
     $("mMaturity").value = "";
     $("mCompound").value = "12";
   }
@@ -1454,9 +1589,10 @@ function saveItemFromModal() {
   if (!isLiab) {
     obj.yieldType = $("mYieldType").value || "none";
     obj.yieldValue = parseNum($("mYieldValue").value);
+    const appRaw = ((document.getElementById("mAppreciationPct") || {}).value || "").trim();
+    if (appRaw) obj.appreciationPct = parseNum(appRaw); else delete obj.appreciationPct;
     obj.maturityDate = $("mMaturity").value || "";
     obj.compoundFreq = parseInt($("mCompound").value) || 12;
-    // v15: custo de aquisição para mais-valias
     const cb = parseNum((document.getElementById("mCostBasis") || {}).value || "");
     if (cb > 0) obj.costBasis = cb; else delete obj.costBasis;
   }
@@ -1793,7 +1929,7 @@ function prefillDivSummaryFromYear(year) {
       .filter(s => s.year < year).sort((a, b) => b.year - a.year)[0];
     const yieldVal = prevSummary
       ? String(parseNum(prevSummary.yieldPct))
-      : (calcPortfolioYield().weightedYield > 0 ? fmt(calcPortfolioYield().weightedYield, 2) : "");
+      : (calcDividendYield().yieldPct > 0 ? fmt(calcDividendYield().yieldPct, 2) : "");
     ["divSummaryYield_gt","divSummaryYield_net","divSummaryYield_py","divSummaryYield_yo"].forEach(id => {
       const el = document.getElementById(id); if (el) el.value = yieldVal;
     });
@@ -1954,7 +2090,7 @@ function renderDivSummaryKPIs() {
         <div class="kpi__s">Bruto ${fmtEUR2(parseNum(latest.gross))}</div>
       </div>
       <div class="kpi">
-        <div class="kpi__k">Yield médio (corretora)</div>
+        <div class="kpi__k">Rendimento médio (corretora)</div>
         <div class="kpi__v">${fmtPct(parseNum(latest.yieldPct))}</div>
         <div class="kpi__s">Implícito: ${fmtPct(impliedYield)}</div>
       </div>
@@ -2090,7 +2226,7 @@ function renderDivProjection() {
   // Get yield from projection field (user can override) or from latest summary
   const projYieldField = parseNum($("divProjYield").value);
   const baseYield = projYieldField > 0 ? projYieldField
-    : (latest ? parseNum(latest.yieldPct) : calcPortfolioYield().weightedYield);
+    : (latest ? parseNum(latest.yieldPct) : calcDividendYield().yieldPct);
 
   if (!baseYield) { toast("Introduz o Dividend Yield no campo acima."); return; }
 
@@ -3211,105 +3347,154 @@ function isDividendAsset(a) {
 // Rendimento anual de dividendos (bruto) da carteira
 // Usa divSummaries se existirem, senão estima pelos yields dos ativos
 function calcDividendYield() {
-  // 1) Se há resumo anual recente, usa esse
   const now = new Date();
+  const divClasses = ["acoes/etfs", "fundos", "obrigacoes"];
+  const isDivLike = (a) => {
+    const cls = (a.class || "").toLowerCase()
+      .replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o")
+      .replace(/á|à|â|ä/g,"a").replace(/é|è|ê/g,"e").replace(/í/g,"i")
+      .replace(/ó|ô/g,"o").replace(/ú/g,"u");
+    return divClasses.some(c => cls.includes(c.split("/")[0]));
+  };
+
+  const divAssets = state.assets.filter(a => isDivLike(a));
+  const divPortfolioVal = divAssets.reduce((s, a) => s + parseNum(a.value), 0);
+
+  // 1) Resumo anual recente
   const latestSummary = (state.divSummaries || [])
     .filter(s => s.year >= now.getFullYear() - 1)
     .sort((a, b) => b.year - a.year)[0];
   if (latestSummary) {
     const gross = parseNum(latestSummary.gross);
     const net = gross - parseNum(latestSummary.tax);
-    const yieldPct = parseNum(latestSummary.yieldPct);
-    // Estimar valor da carteira de dividendos
-    const divAssets = state.assets.filter(a => passiveFromItem(a) > 0 && a.yieldType === "yield_pct");
-    const divPortfolioVal = divAssets.reduce((s, a) => s + parseNum(a.value), 0);
-    return { gross, net, yieldPct, divPortfolioVal, source: "summary" };
+    const yieldPct = parseNum(latestSummary.yieldPct) || (divPortfolioVal > 0 ? (gross / divPortfolioVal * 100) : 0);
+    return { gross, net, yieldPct, weightedYield: yieldPct, divPortfolioVal, source: "summary" };
   }
 
-  // 2) Se há dividendos individuais (últimos 12 meses)
+  // 2) Dividendos individuais últimos 12 meses
   const cutoff = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
-  const indivGross = (state.dividends || []).filter(d => d.date >= cutoff).reduce((s, d) => s + parseNum(d.amount), 0);
-  const indivNet = (state.dividends || []).filter(d => d.date >= cutoff).reduce((s, d) => s + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
+  const indivGross = (state.dividends || [])
+    .filter(d => d.date >= cutoff)
+    .reduce((s, d) => s + parseNum(d.amount), 0);
+  const indivNet = (state.dividends || [])
+    .filter(d => d.date >= cutoff)
+    .reduce((s, d) => s + parseNum(d.amount) - parseNum(d.taxWithheld || 0), 0);
   if (indivGross > 0) {
-    const divAssets = state.assets.filter(a => a.yieldType === "yield_pct");
-    const divPortfolioVal = divAssets.reduce((s, a) => s + parseNum(a.value), 0);
     const yieldPct = divPortfolioVal > 0 ? (indivGross / divPortfolioVal * 100) : 0;
-    return { gross: indivGross, net: indivNet, yieldPct, divPortfolioVal, source: "individual" };
+    return { gross: indivGross, net: indivNet, yieldPct, weightedYield: yieldPct, divPortfolioVal, source: "individual" };
   }
 
-  // 3) Estimativa pelos yields dos ativos com yield_pct (ações/ETFs)
-  let divPortfolioVal = 0, estimatedGross = 0;
-  for (const a of state.assets) {
-    if (a.yieldType !== "yield_pct") continue;
+  // 3) Estimativa pelos yields configurados apenas em ativos distribuidores
+  let estimatedGross = 0;
+  for (const a of divAssets) {
+    if ((a.yieldType || "none") !== "yield_pct") continue;
     const v = parseNum(a.value);
-    const gross = v * (parseNum(a.yieldValue) / 100);
-    divPortfolioVal += v;
-    estimatedGross += gross;
+    estimatedGross += v * (parseNum(a.yieldValue) / 100);
   }
   const yieldPct = divPortfolioVal > 0 ? (estimatedGross / divPortfolioVal * 100) : 0;
-  return { gross: estimatedGross, net: estimatedGross * 0.72, yieldPct, divPortfolioVal, source: "estimated" };
+  return { gross: estimatedGross, net: estimatedGross * 0.72, yieldPct, weightedYield: yieldPct, divPortfolioVal, source: "estimated" };
 }
 
 // Rendimento passivo total de TODOS os ativos (dividendos + rendas + depósitos + PPR + obrigações)
 // Usado no simulador de Juro Composto
 // Separa yield passivo (juros/rendas/dividendos) do retorno total (inclui valorização acções)
 function calcPortfolioYield() {
-  let totalValue = 0, totalPassive = 0;
-  let equityValue = 0, nonEquityWithYieldValue = 0, nonEquityWithYieldPassive = 0;
+  const totals = calcTotals();
+  const assetRows = state.assets.map(a => {
+    const value = parseNum(a.value);
+    const passiveRatePct = getAssetPassiveRatePct(a, { allowClassFallback: true });
+    const appreciationPct = getAssetAppreciationPct(a, { allowClassFallback: true });
+    const totalRatePct = passiveRatePct + appreciationPct;
+    return {
+      id: a.id,
+      name: a.name || "",
+      cls: a.class || "Outros",
+      classKey: assetClassKey(a),
+      value,
+      passiveRatePct,
+      appreciationPct,
+      totalRatePct,
+      hasExplicitPassive: hasExplicitPassiveYield(a),
+      hasExplicitAppreciation: hasExplicitAppreciationPct(a),
+      compoundFreq: a.compoundFreq || 12
+    };
+  }).filter(r => r.value > 0);
 
-  const EQUITY_CLS = ["acoes/etfs", "cripto", "fundos"];
-  function isEquity(a) {
-    const c = (a.class||"").toLowerCase()
-      .replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o")
-      .replace(/á|à|â/g,"a").replace(/é|è|ê/g,"e").replace(/í/g,"i")
-      .replace(/ó|ô/g,"o").replace(/ú/g,"u");
-    return EQUITY_CLS.some(e => c.includes(e.split("/")[0]));
-  }
+  const totalValue = assetRows.reduce((s, r) => s + r.value, 0);
+  const totalPassive = totals.passiveAnnual;
+  const actualPassiveYieldPct = totalValue > 0 ? (totalPassive / totalValue) * 100 : 0;
+  const weightedProjectedPassivePct = totalValue > 0
+    ? assetRows.reduce((s, r) => s + r.value * r.passiveRatePct, 0) / totalValue
+    : 0;
+  const weightedAppreciationPct = totalValue > 0
+    ? assetRows.reduce((s, r) => s + r.value * r.appreciationPct, 0) / totalValue
+    : 0;
+  const fallbackTotalReturn = weightedProjectedPassivePct + weightedAppreciationPct;
 
-  for (const a of state.assets) {
-    const v = parseNum(a.value);
-    const p = passiveFromItem(a);
-    totalValue += v;
-    totalPassive += p;
-    if (isEquity(a)) {
-      equityValue += v;
-    } else if (p > 0) {
-      nonEquityWithYieldValue += v;
-      nonEquityWithYieldPassive += p;
-    }
-  }
-
-  // yield passivo = apenas rendimentos configurados / total activos
-  // (o que o utilizador realmente recebe em cash: juros, rendas, dividendos registados)
-  const weightedYield = totalValue > 0 ? (totalPassive / totalValue) * 100 : 0;
-
-  // yield passivo dos activos não-equity com yield configurado (yield "limpo")
-  // Ex: depósito 200k@3% + obrigação 100k@3% → yield não-equity = 3%
-  const nonEquityYield = nonEquityWithYieldValue > 0
-    ? (nonEquityWithYieldPassive / nonEquityWithYieldValue) * 100 : 0;
-
-  // retorno total esperado = yield passivo + retorno de capital das acções
-  // Para as acções/ETFs, usar TWR anualizado se disponível, senão estimativa histórica
   const twr = calcTWR ? calcTWR() : null;
-  const equityReturnAnnual = (twr && twr.years >= 0.5 && Math.abs(twr.annualised) < 80)
-    ? twr.annualised
-    : 7; // estimativa histórica conservadora se sem dados
-
-  const equityWeight = totalValue > 0 ? equityValue / totalValue : 0;
-  const nonEquityWeight = totalValue > 0 ? (totalValue - equityValue) / totalValue : 1;
-  const totalReturnBlended =
-    equityWeight * equityReturnAnnual +
-    nonEquityWeight * (nonEquityYield > 0 ? nonEquityYield : weightedYield);
+  const rs = getReturnSettings();
+  const hasRobustTWR = !!(rs.preferTWR && twr && twr.years >= rs.twrMinYears && Math.abs(twr.annualised) < 80);
+  const totalReturnAnnual = hasRobustTWR ? twr.annualised : fallbackTotalReturn;
 
   return {
-    totalValue, totalPassive, weightedYield,
-    nonEquityYield, equityReturnAnnual, equityWeight, nonEquityWeight,
-    totalReturnBlended, equityValue,
-    twr: twr ? twr.annualised : null
+    totalValue,
+    totalPassive,
+    actualPassiveAnnual: totalPassive,
+    actualPassiveYieldPct,
+    projectedPassiveAnnual: totalValue * weightedProjectedPassivePct / 100,
+    weightedProjectedPassivePct,
+    weightedYield: weightedProjectedPassivePct,
+    passiveYieldPct: weightedProjectedPassivePct,
+    weightedAppreciationPct,
+    totalReturnAnnual,
+    totalReturnBlended: totalReturnAnnual,
+    totalReturnSource: hasRobustTWR ? "twr" : "fallback",
+    twr: hasRobustTWR ? twr.annualised : null,
+    classFallbackUsed: assetRows.some(r => (!r.hasExplicitPassive && Math.abs(r.passiveRatePct) > 1e-9) || (!r.hasExplicitAppreciation && Math.abs(r.appreciationPct) > 1e-9)),
+    assetRows
   };
 }
 
 // Estima contribuição mensal média dos últimos 6 meses de cashflow
+function getPortfolioReturnMeta(py = null) {
+  const p = py || calcPortfolioYield();
+  return {
+    totalValue: p.totalValue || 0,
+    totalPassive: p.totalPassive || 0,
+    actualPassiveAnnual: p.actualPassiveAnnual || 0,
+    actualPassiveYieldPct: p.actualPassiveYieldPct || 0,
+    projectedPassiveAnnual: p.projectedPassiveAnnual || 0,
+    weightedYield: p.weightedYield || 0,
+    weightedProjectedPassivePct: p.weightedProjectedPassivePct || 0,
+    weightedAppreciationPct: p.weightedAppreciationPct || 0,
+    totalReturnAnnual: p.totalReturnAnnual || 0,
+    sourceTag: p.totalReturnSource === "twr" ? "TWR real" : "Estimativa ponderada",
+    sourceLine: p.totalReturnSource === "twr"
+      ? `TWR anualizado real da carteira · base projectada ${fmtPct(p.weightedProjectedPassivePct)} · passivo actual ${fmtPct(p.actualPassiveYieldPct)}`
+      : `Rendimento base projectado ${fmtPct(p.weightedProjectedPassivePct)} + valorização esperada ${fmtPct(p.weightedAppreciationPct)}`
+  };
+}
+
+function buildPortfolioEngineSummary(py = null, extraTiles = [], footnote = "") {
+  const meta = getPortfolioReturnMeta(py);
+  const tiles = [
+    { k: "Retorno total", v: fmtPct(meta.totalReturnAnnual), tone: "vio" },
+    { k: "Rend. base proj.", v: fmtPct(meta.weightedYield), tone: "green" },
+    { k: "Valorização", v: fmtPct(meta.weightedAppreciationPct), tone: "purple" },
+    { k: "Origem", v: meta.sourceTag, tone: "slate" },
+    ...extraTiles
+  ];
+  return `
+    <div class="return-mini-grid">
+      ${tiles.map(t => `
+        <div class="return-mini return-mini--${t.tone || "slate"}">
+          <div class="return-mini__k">${escapeHtml(t.k)}</div>
+          <div class="return-mini__v">${escapeHtml(String(t.v ?? "—"))}</div>
+        </div>`).join("")}
+    </div>
+    <div class="return-mini__foot">${meta.sourceLine}${footnote ? ` · ${footnote}` : ""}</div>`;
+}
+
 function calcAvgMonthlySavings(months = 6) {
   const now = new Date();
   const byMonth = new Map();
@@ -3343,9 +3528,7 @@ function renderCompoundPanel() {
     <option value="__custom__">✏️ Personalizado…</option>`;
   for (const a of state.assets) {
     const v = parseNum(a.value);
-    const rate = a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
-      a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue) / Math.max(1, v) * 100 :
-      a.yieldType === "rent_month" ? parseNum(a.yieldValue) * 12 / Math.max(1, v) * 100 : 0;
+    const rate = getAssetTotalReturnPct(a, { allowClassFallback: true });
     const o = document.createElement("option");
     o.value = a.id;
     o.textContent = `${a.name} · ${fmtPct(rate)} · ${fmtEUR(v)}`;
@@ -3360,19 +3543,22 @@ function renderCompoundPanel() {
   if (note) {
     if (portfolio.totalValue > 0) {
       note.style.display = "";
-      const breakdown = state.assets
-        .filter(a => passiveFromItem(a) > 0)
-        .map(a => `${a.name} (${fmtPct(
-          a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
-          a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue)/Math.max(1,parseNum(a.value))*100 :
-          a.yieldType === "rent_month" ? parseNum(a.yieldValue)*12/Math.max(1,parseNum(a.value))*100 : 0
-        )})`).join(", ");
-      note.innerHTML = `📊 <b>Capital total:</b> ${fmtEUR(portfolio.totalValue)} · Retorno blended <b>${fmtPct(portfolio.totalReturnBlended)}</b>
-        <span style="font-size:11px;color:var(--muted)">
-          (Yield passivo ${fmtPct(portfolio.weightedYield)} + acções ${fmtPct(portfolio.equityReturnAnnual)}${portfolio.twr ? " via TWR" : " estimado"})
-        </span>
-        · Rendimento passivo anual <b>${fmtEUR(portfolio.totalPassive)}</b><br>
-        <span style="font-size:12px;color:#667085">Inclui: ${breakdown || "nenhum ativo com rendimento"}</span>${avgSavings > 0 ? `<br><span style="font-size:12px;color:#667085">Poupança média mensal: <b>${fmtEUR(avgSavings)}</b></span>` : ""}`;
+      const explicit = portfolio.assetRows.filter(r => r.hasExplicitAppreciation).length;
+      note.innerHTML = `
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">
+          <div>
+            <div style="font-weight:800">Carteira completa</div>
+            <div style="font-size:12px;color:var(--muted)">Motor único usado em Compound, Previsão e FIRE</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-weight:900;font-size:18px;color:var(--text)">${fmtEUR(portfolio.totalValue)}</div>
+            <div style="font-size:11px;color:var(--muted)">capital investido</div>
+          </div>
+        </div>
+        ${buildPortfolioEngineSummary(portfolio, [
+          { k: "Rendimento anual", v: fmtEUR(portfolio.totalPassive), tone: "green" },
+          { k: "Poupança/mês", v: avgSavings > 0 ? fmtEUR(avgSavings) : "—", tone: "slate" }
+        ], `Ativos com valorização explícita: ${explicit}${portfolio.classFallbackUsed ? ' · restantes usam pressupostos por classe' : ''}`)}`;
     } else {
       note.style.display = "none";
     }
@@ -3385,27 +3571,21 @@ function syncCompoundFromAsset(portfolioData, avgSavings) {
   const id = sel.value;
 
   if (id === "__portfolio__") {
-    // Preencher com dados reais da carteira completa
     const p = portfolioData || calcPortfolioYield();
     const s = avgSavings !== undefined ? avgSavings : calcAvgMonthlySavings(6);
     $("compPrincipal").value = String(Math.round(p.totalValue));
-    // Usar retorno blended: yield passivo + retorno capital acções ponderado
-    $("compRate").value = fmt(p.totalReturnBlended, 2);
-    $("compFreq").value = "12"; // mensal por defeito para carteira
+    $("compRate").value = fmt(p.totalReturnAnnual, 2);
+    $("compFreq").value = "12";
     $("compContrib").value = String(Math.round(s));
     return;
   }
 
-  if (id === "__custom__") return; // não tocar nos campos
+  if (id === "__custom__") return;
 
-  // Ativo individual
   const a = state.assets.find(x => x.id === id);
   if (!a) return;
   $("compPrincipal").value = String(Math.round(parseNum(a.value)));
-  const rate = a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
-    a.yieldType === "yield_eur_year" ? fmt(parseNum(a.yieldValue) / Math.max(1, parseNum(a.value)) * 100, 2) :
-    a.yieldType === "rent_month" ? fmt(parseNum(a.yieldValue) * 12 / Math.max(1, parseNum(a.value)) * 100, 2) : "0";
-  $("compRate").value = String(rate);
+  $("compRate").value = String(fmt(getAssetTotalReturnPct(a, { allowClassFallback: true }), 2));
   $("compFreq").value = String(a.compoundFreq || 12);
   $("compContrib").value = "0";
 }
@@ -3432,35 +3612,25 @@ function calcPositionCAGR(pos, asset) {
 }
 
 function usePnLInCompound() {
-  const pnl = calcEquityPortfolioPnL();
-  const t   = calcTotals();
-
-  // Capital = net worth total
+  const t = calcTotals();
   $("compPrincipal").value = String(Math.round(t.net));
 
-  // Taxa = TWR anualizado do portfólio (métrica correcta)
-  // Fallback em cascata: TWR → CAGR médio ponderado → yield passivo
+  const py = calcPortfolioYield();
   const twr = calcTWR();
   let rate, rateSource;
 
   if (twr && twr.years >= 0.5 && Math.abs(twr.annualised) < 80) {
-    // TWR anualizado — elimina efeito dos depósitos/levantamentos
     rate = twr.annualised;
     rateSource = `TWR anualizado (${twr.years} anos)`;
   } else {
-    // Sem snapshots suficientes → yield passivo ponderado
-    const py = calcPortfolioYield();
-    rate = py.weightedYield;
-    rateSource = "yield passivo ponderado";
+    rate = py.totalReturnAnnual;
+    rateSource = py.totalReturnSource === "fallback"
+      ? "retorno anual estimado ponderado"
+      : "retorno anual ponderado";
   }
 
-  // Incluir dividend yield nas acções/ETFs (reinvestimento)
-  const divYield = calcDividendYield ? calcDividendYield().weightedYield || 0 : 0;
-  const totalRate = rate + (divYield > 0 ? divYield * 0.72 : 0); // 72% = após IRS 28%
+  $("compRate").value = fmt(Math.max(0.1, Math.min(rate, 50)), 2);
 
-  $("compRate").value = fmt(Math.max(0.1, Math.min(totalRate, 50)), 2);
-
-  // DCA = poupança mensal + investimento programado
   const savings = calcAvgMonthlySavings(6);
   const monthlyInvest = parseNum((document.getElementById("fireMonthlyInvest")||{}).value || 0);
   $("compContrib").value = String(Math.round(savings + monthlyInvest));
@@ -3468,41 +3638,27 @@ function usePnLInCompound() {
   const sel = $("compAsset");
   if (sel) sel.value = "__portfolio__";
 
-  toast(`✅ Taxa: ${fmt(Math.min(totalRate,50),2)}% (${rateSource}${divYield > 0 ? ` + ${fmt(divYield*0.72,1)}% div líquido` : ""})`);
+  toast(`✅ Taxa: ${fmt(Math.min(rate,50),2)}% (${rateSource})`);
   calcAndRenderCompound();
   renderCompoundWithDCAPanel();
   renderReturnBreakdown();
 }
 
 function usePnLInFIRE() {
-  const pnl = calcEquityPortfolioPnL();
-  const withLive = pnl.positions.filter(p => p.pos.hasLivePrice);
-
-  // Usar TWR anualizado — a métrica correcta para FIRE
   const twr = calcTWR();
   const retEl = document.getElementById("fireCustomReturn");
+  const py = calcPortfolioYield();
 
   if (twr && twr.years >= 0.5 && Math.abs(twr.annualised) < 80) {
-    // TWR anualizado + dividend yield líquido
-    const divYield = calcDividendYield ? calcDividendYield().weightedYield || 0 : 0;
-    const totalRate = twr.annualised + divYield * 0.72;
-    const safeRate = Math.max(0.1, Math.min(totalRate, 50));
+    const safeRate = Math.max(0.1, Math.min(twr.annualised, 50));
     if (retEl) retEl.value = fmt(safeRate, 2);
-    toast(`✅ FIRE: ${fmt(safeRate,2)}%/ano (TWR ${twr.years}a${divYield > 0 ? ` + div líq.` : ""})`);
-  } else if (withLive.length >= 3) {
-    // Fallback: CAGR conservador (assume 1 ano de holding)
-    const totalCost = withLive.reduce((s,p) => s + p.pos.costBasis, 0);
-    const wReturn   = withLive.reduce((s,p) => s + p.pos.gainPct * (p.pos.costBasis/totalCost), 0);
-    // Converter ganho total em CAGR conservador (1 ano) — sub-estima propositadamente
-    const conserv   = Math.max(0, Math.min(wReturn, 30));
-    if (retEl) retEl.value = fmt(conserv, 2);
-    toast(`⚠️ Sem TWR suficiente. Taxa conservadora ${fmt(conserv,2)}% — revê manualmente.`);
+    toast(`✅ FIRE: ${fmt(safeRate,2)}%/ano (TWR anualizado ${twr.years}a)`);
   } else {
-    toast("⚡ Precisas de pelo menos 2 snapshots para o TWR. Regista o mês no Dashboard.");
-    return;
+    const fallback = Math.max(0.1, Math.min(py.totalReturnAnnual, 30));
+    if (retEl) retEl.value = fmt(fallback, 2);
+    toast(`⚠️ Sem TWR suficiente. FIRE usa ${fmt(fallback,2)}%/ano ponderado.`);
   }
 
-  // Investimento mensal programado → poupança mensal
   const monthlyEl = document.getElementById("fireSaveInput");
   const savings = calcAvgMonthlySavings(6);
   if (monthlyEl && savings > 0) monthlyEl.value = String(Math.round(savings));
@@ -3543,19 +3699,17 @@ function calcAndRenderCompound() {
 
     // Se for modo carteira, mostrar decomposição por ativo
     if (mode === "__portfolio__") {
-      const assetsWithYield = state.assets.filter(a => passiveFromItem(a) > 0);
+      const assetsWithYield = state.assets.filter(a => parseNum(a.value) > 0);
       if (assetsWithYield.length > 0) {
         const rows = assetsWithYield.map(a => {
           const v0 = parseNum(a.value);
-          const r = a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
-            a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue) / Math.max(1, v0) * 100 :
-            a.yieldType === "rent_month" ? parseNum(a.yieldValue) * 12 / Math.max(1, v0) * 100 : 0;
+          const r = getAssetTotalReturnPct(a, { allowClassFallback: true });
           const fq = a.compoundFreq || 1;
           const vN = compoundGrowth(v0, r, years, fq, 0)[years].value;
           return `<div class="item" style="cursor:default">
             <div class="item__l">
               <div class="item__t">${escapeHtml(a.name)}</div>
-              <div class="item__s">${escapeHtml(a.class)} · ${fmtPct(r)}/ano · cap. ${fq}×/ano</div>
+              <div class="item__s">${escapeHtml(a.class)} · retorno total ${fmtPct(r)}/ano · cap. ${fq}×/ano</div>
             </div>
             <div class="item__v" style="text-align:right">
               <div>${fmtEUR(vN)}</div>
@@ -3669,30 +3823,51 @@ function calcAndRenderCompound() {
 function renderForecastPanel() {
   const years = parseInt($("forecastYears") && $("forecastYears").value) || 10;
   const t = calcTotals();
+  const py = calcPortfolioYield();
 
-  // per-asset forecast
-  const rows = state.assets.filter(a => {
-    const yt = a.yieldType || "none";
-    return yt !== "none" || (a.compoundFreq && parseNum(a.yieldValue) > 0);
-  });
+  const rows = state.assets.filter(a => parseNum(a.value) > 0);
+
+  const note = $("forecastPortfolioNote");
+  if (note) {
+    if (!rows.length) {
+      note.style.display = "none";
+    } else {
+      note.style.display = "";
+      note.innerHTML = `
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">
+          <div>
+            <div style="font-weight:800">Motor de retorno da carteira</div>
+            <div style="font-size:12px;color:var(--muted)">A projeção global usa a mesma lógica do Compound e do FIRE</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-weight:900;font-size:18px;color:var(--text)">${fmtEUR(py.totalValue)}</div>
+            <div style="font-size:11px;color:var(--muted)">valor actual</div>
+          </div>
+        </div>
+        ${buildPortfolioEngineSummary(py, [
+          { k: "Horizonte", v: `${years} anos`, tone: "slate" },
+          { k: "Ativos", v: String(rows.length), tone: "slate" }
+        ], rows.some(a => !hasExplicitAppreciationPct(a)) ? 'Sem valorização explícita nalguns ativos, a app usa pressupostos por classe.' : '')}`;
+    }
+  }
 
   const tbl = $("forecastTable");
   if (tbl) {
     if (!rows.length) {
-      tbl.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Nenhum ativo com rendimento configurado</div><div class="item__s">Edita os ativos e define yield/taxa.</div></div><div class="item__v">—</div></div>`;
+      tbl.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Nenhum ativo disponível</div><div class="item__s">Adiciona ativos para projetar o património.</div></div><div class="item__v">—</div></div>`;
     } else {
       tbl.innerHTML = rows.map(a => {
         const v0 = parseNum(a.value);
-        const rate = a.yieldType === "yield_pct" ? parseNum(a.yieldValue) :
-          a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue) / Math.max(1, v0) * 100 :
-          a.yieldType === "rent_month" ? parseNum(a.yieldValue) * 12 / Math.max(1, v0) * 100 : 0;
-        const freq = a.compoundFreq || 1; // default annual for non-compound assets
+        const passiveRate = getAssetPassiveRatePct(a);
+        const appreciation = getAssetAppreciationPct(a, { allowClassFallback: true });
+        const rate = passiveRate + appreciation;
+        const freq = a.compoundFreq || 1;
         const vN = compoundGrowth(v0, rate, years, freq, 0)[years].value;
         const gain = vN - v0;
         return `<div class="item">
           <div class="item__l">
             <div class="item__t">${escapeHtml(a.name)}</div>
-            <div class="item__s">${escapeHtml(a.class)} · ${fmtPct(rate)}/ano · freq ${a.compoundFreq || 1}×</div>
+            <div class="item__s">${escapeHtml(a.class)} · base ${fmtPct(passiveRate)} + valorização ${fmtPct(appreciation)} = ${fmtPct(rate)}/ano</div>
           </div>
           <div class="item__v" style="text-align:right">
             <div>${fmtEUR(vN)}</div>
@@ -3703,34 +3878,19 @@ function renderForecastPanel() {
     }
   }
 
-  // Portfolio aggregate chart
   const ctx = $("forecastChart") && $("forecastChart").getContext("2d");
   if (!ctx) return;
   if (forecastChart) forecastChart.destroy();
 
-  // Build aggregate projection for each year
-  const aggData = [];
-  for (let y = 0; y <= years; y++) {
-    let total = 0;
-    for (const a of state.assets) {
-      const v0 = parseNum(a.value);
-      const yt = a.yieldType || "none";
-      const rate = yt === "yield_pct" ? parseNum(a.yieldValue) :
-        yt === "yield_eur_year" ? parseNum(a.yieldValue) / Math.max(1, v0) * 100 :
-        yt === "rent_month" ? parseNum(a.yieldValue) * 12 / Math.max(1, v0) * 100 : 0;
-      const freq = a.compoundFreq || 1;
-      total += compoundGrowth(v0, rate, y, freq, 0)[y].value;
-    }
-    aggData.push(total);
-  }
-  const labels = Array.from({ length: years + 1 }, (_, i) => `+${i}a`);
+  const aggData = compoundGrowth(py.totalValue, py.totalReturnAnnual, years, 12, 0).map(d => d.value);
+  const flatLine = Array(years + 1).fill(t.assetsTotal);
   forecastChart = new Chart(ctx, {
     type: "line",
     data: {
-      labels,
+      labels: Array.from({ length: years + 1 }, (_, i) => `+${i}a`),
       datasets: [
-        { label: "Portfólio projetado", data: aggData, tension: .4, borderColor: "#10b981", backgroundColor: "rgba(16,185,129,.08)", fill: true, pointRadius: 0 },
-        { label: "Atual (sem crescimento)", data: Array(years + 1).fill(t.assetsTotal), borderDash: [6, 4], borderColor: "#94a3b8", borderWidth: 1.5, pointRadius: 0 }
+        { label: "Carteira projetada", data: aggData, tension: .4, borderColor: "#10b981", backgroundColor: "rgba(16,185,129,.08)", fill: true, pointRadius: 0, borderWidth: 2.2 },
+        { label: "Atual (sem crescimento)", data: flatLine, borderDash: [6, 4], borderColor: "#94a3b8", borderWidth: 1.5, pointRadius: 0 }
       ]
     },
     options: {
@@ -3846,7 +4006,7 @@ function renderFire() {
   const exp0 = outM * 12;
   const totals = calcTotals();
   const passiveAnnual = totals.passiveAnnual;
-  const yieldRate = cap0 > 0 ? passiveAnnual / cap0 : 0;
+  const passiveYieldRate = cap0 > 0 ? passiveAnnual / cap0 : 0;
 
   // Update KPIs
   $("fireCap").textContent  = fmtEUR(cap0);
@@ -3866,28 +4026,47 @@ function renderFire() {
   if (passBar) setTimeout(() => passBar.style.width = passPct + "%", 50);
 
   // Scenarios
-  // v15: parâmetros custom opcionais
+  const py = calcPortfolioYield();
   const customReturnEl = document.getElementById("fireCustomReturn");
   const customInflEl   = document.getElementById("fireCustomInflation");
   const customR   = customReturnEl ? parseNum(customReturnEl.value) : 0;
   const customInf = customInflEl   ? parseNum(customInflEl.value)   : 0;
-  const useR   = r   => customR   > 0 ? customR   / 100 : r;
-  const useInf = inf => customInf > 0 ? customInf / 100 : inf;
+  const baseReturnPct = Math.max(0.5, Math.min(customR > 0 ? customR : (py.totalReturnAnnual || 6), 18));
+  const baseInflPct   = customInf > 0 ? customInf : 2.5;
 
   const scenarios = [
-    { name:"Conservador", emoji:"🐢", r:useR(0.04), inf:useInf(0.03),  swr:0.0325, color:"#f59e0b" },
-    { name:"Base",        emoji:"⚖️", r:useR(0.06), inf:useInf(0.025), swr:0.0375, color:"#6366f1" },
-    { name:"Optimista",   emoji:"🚀", r:useR(0.08), inf:useInf(0.02),  swr:0.04,   color:"#10b981" },
+    { name:"Conservador", emoji:"🐢", r:Math.max(0.005, (baseReturnPct - 2) / 100), inf:(baseInflPct + 0.5) / 100, swr:0.0325, color:"#f59e0b" },
+    { name:"Base",        emoji:"⚖️", r:baseReturnPct / 100,                  inf:baseInflPct / 100,        swr:0.0375, color:"#6366f1" },
+    { name:"Optimista",   emoji:"🚀", r:Math.min(0.25, (baseReturnPct + 2) / 100), inf:Math.max(0, (baseInflPct - 0.5) / 100), swr:0.04, color:"#10b981" },
   ];
+
+  const fireEngineNote = $("fireEngineNote");
+  if (fireEngineNote) {
+    fireEngineNote.innerHTML = `
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:800">Motor de retorno FIRE</div>
+          <div style="font-size:12px;color:var(--muted)">${customR > 0 ? 'Estás a usar um retorno manual.' : 'Em modo automático, o FIRE usa o mesmo motor da carteira.'}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-weight:900;font-size:18px;color:var(--text)">${fmtPct(baseReturnPct)}</div>
+          <div style="font-size:11px;color:var(--muted)">retorno base do cenário central</div>
+        </div>
+      </div>
+      ${buildPortfolioEngineSummary(py, [
+        { k: 'Retorno FIRE', v: fmtPct(baseReturnPct), tone: 'vio' },
+        { k: 'Inflação', v: fmtPct(baseInflPct), tone: 'slate' }
+      ], customR > 0 ? 'O retorno FIRE foi sobreposto manualmente.' : 'Sem override manual, FIRE herda o retorno total da carteira.')}`;
+  }
 
   const results = [];
   for (const sc of scenarios) {
     let cap = cap0, exp = exp0, hit = null;
     const fireNum = sc.swr > 0 ? exp0 / sc.swr : Infinity;
     for (let t = 0; t <= H; t++) {
-      const pass = yieldRate * cap;
+      const pass = passiveYieldRate * cap;
       const fn = sc.swr > 0 ? exp / sc.swr : Infinity;
-      if (!hit && cap >= fn && pass >= exp) hit = {t, cap, exp, pass, fireNum: fn};
+      if (!hit && cap >= fn) hit = {t, cap, exp, pass, fireNum: fn};
       if (t < H) {
         cap = cap * (1 + sc.r) + saveM * 12;
         exp = exp * (1 + sc.inf);
@@ -3970,7 +4149,7 @@ function renderFire() {
     labels.push(t === 0 ? "Hoje" : "+" + t + "a");
     capS.push(Math.round(cap));
     fireS.push(base.swr > 0 ? Math.round(exp / base.swr) : null);
-    passS.push(Math.round(yieldRate * cap * 1));
+    passS.push(Math.round(passiveYieldRate * cap));
     cap2.push(Math.round(cap_cons));
     cap3.push(Math.round(cap_opt));
     if (t < H) {
@@ -4205,7 +4384,9 @@ function importRows(rows) {
       const value = parseNumberSmart(r.valor || r.value || r.market_value || r.current_value || r.amount || r.total);
       if (!Number.isFinite(value) || Math.abs(value) < 1e-9) continue;
       const yv = parseNumberSmart(r.yield_valor || r.yield_value || r.yield || r.dividend_yield);
+      const appPct = parseNumberSmart(r.valorizacao_esperada_pct || r.expected_appreciation_pct || r.appreciation_pct || r.capital_return_pct || r.growth_pct);
       const item = { id: uid(), class: normalizeClassName(className), name, value: Math.abs(value), yieldType: normalizeYieldType(r.yield_tipo || r.yield_type || ""), yieldValue: Number.isFinite(yv) ? yv : 0, compoundFreq: 12, notes: "" };
+      if (Number.isFinite(appPct) && Math.abs(appPct) > 1e-9) item.appreciationPct = appPct;
       if (kind === "passivo") { state.liabilities.push(item); addedL++; }
       else { state.assets.push(item); addedA++; }
       continue;
@@ -4291,6 +4472,617 @@ async function fileToText(file) {
     r.onload = () => res(String(r.result || ""));
     r.readAsText(file);
   });
+}
+
+function ensureBrokerData() {
+  if (!state.brokerData || typeof state.brokerData !== "object") state.brokerData = { files: [], events: [], positions: [] };
+  if (!Array.isArray(state.brokerData.files)) state.brokerData.files = [];
+  if (!Array.isArray(state.brokerData.events)) state.brokerData.events = [];
+  if (!Array.isArray(state.brokerData.positions)) state.brokerData.positions = [];
+  return state.brokerData;
+}
+
+async function hashFile(file) {
+  try {
+    if (crypto && crypto.subtle && file && typeof file.arrayBuffer === "function") {
+      const buf = await file.arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", buf);
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+  } catch (_) {}
+  return [file?.name || "", file?.size || 0, file?.lastModified || 0].join("|");
+}
+
+async function fileToObjectRows(file) {
+  const name = String(file?.name || "").toLowerCase();
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+    if (typeof XLSX === "undefined") throw new Error("Biblioteca Excel não carregada.");
+    const ab = await file.arrayBuffer();
+    const wb = XLSX.read(ab, { type: "array", raw: false, cellDates: true });
+    const sheetName = wb.SheetNames[0];
+    if (!sheetName) return [];
+    const ws = wb.Sheets[sheetName];
+    return XLSX.utils.sheet_to_json(ws, { defval: "", raw: false });
+  }
+  const text = await fileToText(file);
+  return csvToObjects(text);
+}
+
+function brokerApproxFxToEUR(ccy) {
+  const FX = {
+    EUR:1, USD:0.92, GBP:1.17, GBX:0.0117, CHF:1.05, CAD:0.68, AUD:0.59,
+    DKK:0.134, SEK:0.087, NOK:0.085, PLN:0.23, JPY:0.006, HKD:0.118,
+    SGD:0.68, BRL:0.17, MXN:0.046, ZAR:0.052
+  };
+  return FX[String(ccy || "EUR").toUpperCase()] || 1;
+}
+
+function detectBrokerRowsFormat(rows) {
+  if (!Array.isArray(rows) || !rows.length) return "unknown";
+  const sample = rows.slice(0, 8).map(normalizeRow);
+  const keys = new Set();
+  sample.forEach(r => Object.keys(r || {}).forEach(k => keys.add(k)));
+  const has = (...arr) => arr.some(k => keys.has(k));
+  if (has("action") && has("time") && has("ticker", "isin") && has("total")) return "broker_ledger";
+  if (has("ticker", "symbol") && has("quantity", "qty", "shares", "no_of_shares") && has("cost_per_share", "price_share", "price", "preco")) return "positions";
+  return "unknown";
+}
+
+function normalizeBrokerNameFromFile(fileName) {
+  const n = normStr(fileName || "");
+  if (n.includes("divtracker")) return "DivTracker";
+  if (n.includes("trade republic") || n.includes("from_")) return "Corretora CSV";
+  if (n.includes("trading212") || n.includes("trade212")) return "Trading 212";
+  if (n.includes("degiro")) return "DEGIRO";
+  if (n.includes("xtb")) return "XTB";
+  return "Corretora";
+}
+
+function normalizeBrokerAction(raw) {
+  const n = normStr(raw || "");
+  if (n.includes("market buy") || n.includes("limit buy")) return "BUY";
+  if (n.includes("market sell") || n.includes("limit sell")) return "SELL";
+  if (n === "deposit") return "DEPOSIT";
+  if (n.includes("withdraw")) return "WITHDRAWAL";
+  if (n.includes("interest on cash")) return "CASH_INTEREST";
+  if (n.includes("lending interest")) return "LENDING_INTEREST";
+  if (n.includes("dividend adjustment")) return "DIVIDEND_ADJ";
+  if (n.includes("return of capital")) return "ROC";
+  if (n.startsWith("dividend")) return "DIVIDEND";
+  if (n.includes("stock split open")) return "SPLIT_OPEN";
+  if (n.includes("stock split close")) return "SPLIT_CLOSE";
+  if (n.includes("stock distribution")) return "STOCK_DISTRIBUTION";
+  return "OTHER";
+}
+
+function brokerPositionClassFromTicker(ticker) {
+  const upper = String(ticker || "").toUpperCase();
+  const plain = upper.replace(/\.CC$/, "");
+  const isCrypto = upper.endsWith(".CC") || ["BTC","ETH","SOL","ADA","XRP","DOT","BNB"].includes(plain);
+  return isCrypto ? "Cripto" : "Ações/ETFs";
+}
+
+function brokerEventKey(evt) {
+  return [
+    evt.type || "", evt.dateTime || evt.date || "", evt.ticker || "", evt.isin || "", evt.name || "",
+    Math.round(parseNum(evt.qty) * 1e8) / 1e8,
+    Math.round(parseNum(evt.totalEUR) * 100) / 100,
+    Math.round(parseNum(evt.grossLocal) * 1e8) / 1e8,
+    evt.actionRaw || "", evt.notes || ""
+  ].join("|");
+}
+
+function brokerPositionKey(pos) {
+  return [pos.ticker || "", pos.isin || "", Math.round(parseNum(pos.qty) * 1e8) / 1e8, Math.round(parseNum(pos.costBasisEUR) * 100) / 100, pos.sourceName || ""].join("|");
+}
+
+function estimateEURFactorFromRow(r, grossLocal, totalEUR, ccy) {
+  const cur = String(ccy || "EUR").toUpperCase();
+  if (!cur || cur === "EUR") return 1;
+  if (grossLocal > 0 && totalEUR > 0) return totalEUR / grossLocal;
+  const fx = parseNumberSmart(r.exchange_rate);
+  if (Number.isFinite(fx) && fx > 0 && fx < 10) return fx;
+  return brokerApproxFxToEUR(cur);
+}
+
+function parseBrokerLedgerRows(rows, meta) {
+  const events = [];
+  for (const raw of (rows || [])) {
+    const r = normalizeRow(raw);
+    const type = normalizeBrokerAction(r.action);
+    if (type === "OTHER") continue;
+    const qty = parseNumberSmart(r.no_of_shares || r.quantity || r.qty || r.shares);
+    const price = parseNumberSmart(r.price_share || r.price || r.price_per_share);
+    const totalEUR = parseNumberSmart(r.total);
+    const grossLocal = (Number.isFinite(qty) ? qty : 0) * (Number.isFinite(price) ? price : 0);
+    const ccy = String(r.currency_price_share || r.currency || "EUR").trim().toUpperCase() || "EUR";
+    const factor = estimateEURFactorFromRow(r, grossLocal, totalEUR, ccy);
+    const taxLocal = parseNumberSmart(r.withholding_tax);
+    const taxEUR = Number.isFinite(taxLocal) && taxLocal > 0 ? taxLocal * factor : 0;
+    const feeEUR = [r.currency_conversion_fee, r.stamp_duty_reserve_tax, r.french_transaction_tax]
+      .map(parseNumberSmart)
+      .filter(v => Number.isFinite(v) && v > 0)
+      .reduce((a, b) => a + b, 0);
+    const when = String(r.time || r.date || "").trim();
+    const date = normalizeDate(when.slice(0, 10)) || normalizeDate(when) || isoToday();
+    const evt = {
+      id: uid(),
+      sourceHash: meta.hash,
+      sourceName: meta.name,
+      broker: meta.broker,
+      type,
+      actionRaw: String(r.action || "").trim(),
+      date,
+      dateTime: when || date,
+      isin: String(r.isin || "").trim(),
+      ticker: String(r.ticker || r.symbol || "").trim(),
+      name: String(r.name || r.instrument || "").trim(),
+      notes: String(r.notes || "").trim(),
+      qty: Number.isFinite(qty) ? qty : 0,
+      pricePerShare: Number.isFinite(price) ? price : 0,
+      totalEUR: Number.isFinite(totalEUR) ? totalEUR : 0,
+      totalCurrency: String(r.currency_total || "EUR").trim().toUpperCase() || "EUR",
+      grossLocal: Number.isFinite(grossLocal) ? grossLocal : 0,
+      localCurrency: ccy,
+      taxEUR,
+      feeEUR,
+      resultEUR: parseNumberSmart(r.result),
+      key: ""
+    };
+    evt.key = brokerEventKey(evt);
+    events.push(evt);
+  }
+  return events;
+}
+
+function parseBrokerPositionRows(rows, meta) {
+  const positions = [];
+  for (const raw of (rows || [])) {
+    const r = normalizeRow(raw);
+    const ticker = String(r.ticker || r.symbol || "").trim();
+    const qty = parseNumberSmart(r.quantity || r.qty || r.shares || r.no_of_shares || r.units);
+    const cps = parseNumberSmart(r.cost_per_share || r.price_share || r.price || r.preco);
+    if (!ticker || !Number.isFinite(qty) || !Number.isFinite(cps) || qty <= 0) continue;
+    const ccy = String(r.currency || r.ccy || r.currency_price_share || "EUR").trim().toUpperCase() || "EUR";
+    const costBasisEUR = qty * cps * brokerApproxFxToEUR(ccy);
+    const pos = {
+      id: uid(),
+      sourceHash: meta.hash,
+      sourceName: meta.name,
+      broker: meta.broker,
+      ticker,
+      isin: String(r.isin || "").trim(),
+      name: String(r.name || r.security || ticker).trim(),
+      qty,
+      costBasisEUR,
+      pricePerShare: cps,
+      priceCurrency: ccy,
+      class: brokerPositionClassFromTicker(ticker),
+      key: ""
+    };
+    pos.key = brokerPositionKey(pos);
+    positions.push(pos);
+  }
+  return positions;
+}
+
+function rebuildBrokerGeneratedData() {
+  const bd = ensureBrokerData();
+  state.assets = (state.assets || []).filter(a => !a.generatedFromBroker);
+  state.dividends = (state.dividends || []).filter(d => !d.generatedFromBroker);
+  state.transactions = (state.transactions || []).filter(t => !t.generatedFromBroker);
+
+  const posMap = new Map();
+  const keyForTicker = (ticker, cls) => `${String(ticker || "").toUpperCase()}|${cls || "Ações/ETFs"}`;
+
+  const touchPos = (ticker, cls, patch = {}) => {
+    const key = keyForTicker(ticker, cls);
+    const prev = posMap.get(key) || { ticker, name: patch.name || ticker, class: cls || brokerPositionClassFromTicker(ticker), qty: 0, costBasis: 0, sourceNames: new Set(), currency: patch.currency || "EUR" };
+    if (patch.name && !prev.name) prev.name = patch.name;
+    if (patch.currency) prev.currency = patch.currency;
+    if (patch.sourceName) prev.sourceNames.add(patch.sourceName);
+    posMap.set(key, prev);
+    return prev;
+  };
+
+  for (const p of (bd.positions || [])) {
+    const cls = p.class || brokerPositionClassFromTicker(p.ticker);
+    const pos = touchPos(p.ticker, cls, { name: p.name, sourceName: p.sourceName, currency: p.priceCurrency || "EUR" });
+    pos.qty += parseNum(p.qty);
+    pos.costBasis += parseNum(p.costBasisEUR);
+  }
+
+  const events = (bd.events || []).slice().sort((a, b) => String(a.dateTime || a.date).localeCompare(String(b.dateTime || b.date)));
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    const cls = brokerPositionClassFromTicker(e.ticker);
+    if (e.type === "BUY") {
+      const pos = touchPos(e.ticker, cls, { name: e.name, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
+      pos.qty += parseNum(e.qty);
+      pos.costBasis += Math.max(0, parseNum(e.totalEUR) + parseNum(e.feeEUR));
+      continue;
+    }
+    if (e.type === "SELL") {
+      const pos = touchPos(e.ticker, cls, { name: e.name, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
+      const sellQty = Math.abs(parseNum(e.qty));
+      const avg = pos.qty > 0 ? pos.costBasis / pos.qty : 0;
+      pos.qty = Math.max(0, pos.qty - sellQty);
+      pos.costBasis = Math.max(0, pos.costBasis - sellQty * avg);
+      continue;
+    }
+    if (e.type === "SPLIT_OPEN" || e.type === "SPLIT_CLOSE") {
+      const next = events[i + 1];
+      const sameGroup = next && next.ticker === e.ticker && String(next.dateTime || next.date) === String(e.dateTime || e.date) && ((e.type === "SPLIT_OPEN" && next.type === "SPLIT_CLOSE") || (e.type === "SPLIT_CLOSE" && next.type === "SPLIT_OPEN"));
+      if (sameGroup) {
+        const openEvt = e.type === "SPLIT_OPEN" ? e : next;
+        const closeEvt = e.type === "SPLIT_CLOSE" ? e : next;
+        const pos = touchPos(e.ticker, cls, { name: e.name || next.name, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
+        pos.qty = Math.max(0, pos.qty - parseNum(closeEvt.qty)) + parseNum(openEvt.qty);
+        i++;
+      }
+      continue;
+    }
+    if (e.type === "STOCK_DISTRIBUTION") {
+      const pos = touchPos(e.ticker, cls, { name: e.name, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
+      pos.qty += Math.max(0, parseNum(e.qty));
+      continue;
+    }
+    if (e.type === "DIVIDEND" || e.type === "ROC" || e.type === "DIVIDEND_ADJ") {
+      const gross = Math.max(0, parseNum(e.totalEUR));
+      const tax = Math.max(0, parseNum(e.taxEUR));
+      const net = Math.max(0, gross - tax);
+      state.dividends.push({
+        id: uid(), assetId: "", assetName: e.ticker || e.name || "Dividendo", amount: net || gross, taxWithheld: tax,
+        date: e.date, notes: `${e.actionRaw || e.type} · ${e.broker || "Corretora"}${e.sourceName ? " · " + e.sourceName : ""}`,
+        generatedFromBroker: true, sourceHash: e.sourceHash, eventKey: e.key
+      });
+      continue;
+    }
+    if (e.type === "CASH_INTEREST" || e.type === "LENDING_INTEREST") {
+      state.transactions.push({
+        id: uid(), date: e.date, type: "in", category: e.type === "LENDING_INTEREST" ? "Juros empréstimo títulos" : "Juros corretora",
+        amount: Math.max(0, parseNum(e.totalEUR)), recurring: "none",
+        notes: `${e.actionRaw || e.type} · ${e.broker || "Corretora"}${e.sourceName ? " · " + e.sourceName : ""}`,
+        generatedFromBroker: true, sourceHash: e.sourceHash, eventKey: e.key
+      });
+      continue;
+    }
+    if (e.type === "DEPOSIT" || e.type === "WITHDRAWAL") {
+      state.transactions.push({
+        id: uid(), date: e.date, type: e.type === "DEPOSIT" ? "in" : "out", category: e.type === "DEPOSIT" ? "Transferência corretora" : "Levantamento corretora",
+        amount: Math.max(0, parseNum(e.totalEUR)), recurring: "none",
+        notes: `${e.actionRaw || e.type} · ${e.broker || "Corretora"}${e.sourceName ? " · " + e.sourceName : ""}`,
+        generatedFromBroker: true, sourceHash: e.sourceHash, eventKey: e.key
+      });
+    }
+  }
+
+  for (const p of posMap.values()) {
+    if (!(p.qty > 0) || !(p.costBasis > 0)) continue;
+    const notes = `Gerado por importação de corretora. Qty=${fmt(p.qty, 6)} · Custo=${fmtEUR2(p.costBasis)} · Fontes=${Array.from(p.sourceNames || []).join(", ") || "import"}`;
+    state.assets.push({
+      id: uid(), class: p.class || brokerPositionClassFromTicker(p.ticker), name: p.ticker, value: p.costBasis,
+      yieldType: "none", yieldValue: 0, compoundFreq: 12, notes,
+      qty: p.qty, costBasis: p.costBasis, pmOriginal: p.qty > 0 ? p.costBasis / p.qty : 0, pmCcy: "EUR",
+      generatedFromBroker: true
+    });
+  }
+}
+
+
+function getBrokerImportDiagnostics() {
+  const bd = ensureBrokerData();
+  const files = (bd.files || []).slice();
+  const events = (bd.events || []).slice();
+  const positions = (bd.positions || []).slice();
+  const byHash = new Map();
+  files.forEach(f => byHash.set(f.hash, {
+    ...f,
+    years: new Set(),
+    currencies: new Set(),
+    eventTypes: {},
+    firstDate: "",
+    lastDate: "",
+    actualEvents: 0,
+    actualPositions: 0
+  }));
+
+  events.forEach(e => {
+    const rec = byHash.get(e.sourceHash);
+    if (!rec) return;
+    rec.actualEvents += 1;
+    const d = String(e.date || e.dateTime || "").slice(0, 10);
+    if (d) {
+      if (!rec.firstDate || d < rec.firstDate) rec.firstDate = d;
+      if (!rec.lastDate || d > rec.lastDate) rec.lastDate = d;
+      rec.years.add(d.slice(0, 4));
+    }
+    const ty = String(e.type || "OTHER");
+    rec.eventTypes[ty] = (rec.eventTypes[ty] || 0) + 1;
+    if (e.totalCurrency) rec.currencies.add(String(e.totalCurrency).toUpperCase());
+    if (e.localCurrency) rec.currencies.add(String(e.localCurrency).toUpperCase());
+  });
+
+  positions.forEach(p => {
+    const rec = byHash.get(p.sourceHash);
+    if (!rec) return;
+    rec.actualPositions += 1;
+    if (p.priceCurrency) rec.currencies.add(String(p.priceCurrency).toUpperCase());
+  });
+
+  const fileRecs = Array.from(byHash.values()).sort((a, b) => String(a.firstDate || a.importedAt || "").localeCompare(String(b.firstDate || b.importedAt || "")));
+  const brokers = new Map();
+  fileRecs.forEach(r => {
+    const key = r.broker || "Corretora";
+    const prev = brokers.get(key) || { broker: key, files: 0, events: 0, positions: 0, years: new Set(), firstDate: "", lastDate: "" };
+    prev.files += 1;
+    prev.events += r.actualEvents || r.events || 0;
+    prev.positions += r.actualPositions || r.positions || 0;
+    (r.years || []).forEach(y => prev.years.add(y));
+    if (r.firstDate && (!prev.firstDate || r.firstDate < prev.firstDate)) prev.firstDate = r.firstDate;
+    if (r.lastDate && (!prev.lastDate || r.lastDate > prev.lastDate)) prev.lastDate = r.lastDate;
+    brokers.set(key, prev);
+  });
+
+  const years = new Set();
+  fileRecs.forEach(r => (r.years || []).forEach(y => years.add(y)));
+  const sortedYears = Array.from(years).filter(Boolean).sort();
+  const missingYears = [];
+  if (sortedYears.length >= 2) {
+    const minY = parseInt(sortedYears[0], 10);
+    const maxY = parseInt(sortedYears[sortedYears.length - 1], 10);
+    if (Number.isFinite(minY) && Number.isFinite(maxY) && maxY >= minY) {
+      for (let y = minY; y <= maxY; y++) {
+        if (!years.has(String(y))) missingYears.push(String(y));
+      }
+    }
+  }
+
+  let overlapCount = 0;
+  for (let i = 0; i < fileRecs.length; i++) {
+    for (let j = i + 1; j < fileRecs.length; j++) {
+      const a = fileRecs[i], b = fileRecs[j];
+      if ((a.broker || "") !== (b.broker || "")) continue;
+      if (!a.firstDate || !a.lastDate || !b.firstDate || !b.lastDate) continue;
+      if (a.firstDate <= b.lastDate && b.firstDate <= a.lastDate) overlapCount += 1;
+    }
+  }
+
+  const importedAssets = (state.assets || []).filter(a => a.generatedFromBroker);
+  const importedValue = importedAssets.reduce((s, a) => s + parseNum(a.value), 0);
+  const importedDivs = (state.dividends || []).filter(d => d.generatedFromBroker).reduce((s, d) => s + parseNum(d.amount), 0);
+  const importedInterest = (state.transactions || []).filter(t => t.generatedFromBroker && /juros/i.test(String(t.category || ""))).reduce((s, t) => s + parseNum(t.amount), 0);
+
+  return {
+    files: fileRecs,
+    brokers: Array.from(brokers.values()).sort((a, b) => b.files - a.files || String(a.broker).localeCompare(String(b.broker))),
+    brokerCount: brokers.size,
+    years: sortedYears,
+    missingYears,
+    overlapCount,
+    importedAssets: importedAssets.length,
+    importedValue,
+    importedDivs,
+    importedInterest,
+    firstDate: fileRecs.find(r => r.firstDate)?.firstDate || "",
+    lastDate: fileRecs.slice().reverse().find(r => r.lastDate)?.lastDate || ""
+  };
+}
+
+function renderBrokerImportAudit() {
+  const el = document.getElementById("brokerImportAudit");
+  if (!el) return;
+  const d = getBrokerImportDiagnostics();
+  if (!d || !d.files.length) {
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  const warning = d.overlapCount > 0;
+  const coverage = d.firstDate && d.lastDate ? `${d.firstDate} → ${d.lastDate}` : (d.years.join(", ") || "—");
+  const missing = d.missingYears.length ? ` · anos em falta: ${d.missingYears.join(", ")}` : "";
+  const brokerRows = d.brokers.map(b => {
+    const years = Array.from(b.years || []).sort().join(", ") || "—";
+    const range = b.firstDate && b.lastDate ? `${b.firstDate} → ${b.lastDate}` : years;
+    return `<div class="item" style="cursor:default">
+      <div class="item__l">
+        <div class="item__t">${escapeHtml(b.broker || "Corretora")}</div>
+        <div class="item__s">${b.files} ficheiro${b.files !== 1 ? "s" : ""} · ${b.events} eventos · ${b.positions} posições · ${escapeHtml(range)}</div>
+      </div>
+      <div class="item__r"><span class="pill">${escapeHtml(years)}</span></div>
+    </div>`;
+  }).join("");
+  el.style.display = "";
+  el.style.border = `1px solid ${warning ? "#fdba74" : "#bfdbfe"}`;
+  el.style.background = warning ? "#fff7ed" : "#eff6ff";
+  el.style.borderRadius = "14px";
+  el.style.padding = "12px 14px";
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:900;color:${warning ? "#9a3412" : "#1d4ed8"}">${warning ? "⚠️ Auditoria dos imports" : "🔎 Auditoria dos imports"}</div>
+        <div style="font-size:12px;color:#64748b;margin-top:4px">Cobertura temporal: ${escapeHtml(coverage)}${escapeHtml(missing)}</div>
+      </div>
+      <div style="font-size:12px;color:#475569">${warning ? `Sobreposições detectadas: <b>${d.overlapCount}</b>` : "Sem sobreposições temporais detectadas entre ficheiros da mesma corretora."}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px">
+      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Corretoras</div><div style="font-weight:900">${d.brokerCount}</div></div>
+      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Ativos gerados</div><div style="font-weight:900">${d.importedAssets}</div></div>
+      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Valor reconstruído</div><div style="font-weight:900">${fmtEUR(d.importedValue)}</div></div>
+      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Passivo real</div><div style="font-weight:900">${fmtEUR(d.importedDivs + d.importedInterest)}</div></div>
+    </div>
+    <div class="list" style="margin-top:10px">${brokerRows}</div>`;
+}
+
+function renderPortfolioSourcesCard() {
+  const card = document.getElementById("portfolioSourcesCard");
+  const body = document.getElementById("portfolioSourcesBody");
+  if (!card || !body) return;
+  const totalAssets = (state.assets || []).slice();
+  const brokerAssets = totalAssets.filter(a => a.generatedFromBroker);
+  const manualAssets = totalAssets.filter(a => !a.generatedFromBroker);
+  const brokerValue = brokerAssets.reduce((s, a) => s + parseNum(a.value), 0);
+  const manualValue = manualAssets.reduce((s, a) => s + parseNum(a.value), 0);
+  const total = brokerValue + manualValue;
+  const brokerPct = total > 0 ? (brokerValue / total * 100) : 0;
+  const d = getBrokerImportDiagnostics();
+  const show = brokerAssets.length > 0 || (d && d.files.length > 0);
+  if (!show) {
+    card.style.display = "none";
+    body.innerHTML = "";
+    return;
+  }
+  card.style.display = "";
+  const sourceLine = d && d.files.length
+    ? `${d.files.length} ficheiro${d.files.length !== 1 ? "s" : ""} · ${d.brokerCount} corretora${d.brokerCount !== 1 ? "s" : ""}${d.firstDate && d.lastDate ? ` · ${d.firstDate} → ${d.lastDate}` : ""}`
+    : "Sem ficheiros activos de corretora";
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px">
+        <div style="font-size:11px;color:#64748b">Manual</div>
+        <div style="font-weight:900;font-size:18px;margin-top:4px">${fmtEUR(manualValue)}</div>
+        <div style="font-size:12px;color:#64748b;margin-top:4px">${manualAssets.length} ativo${manualAssets.length !== 1 ? "s" : ""}</div>
+      </div>
+      <div style="background:#fff;border:1px solid #c7d2fe;border-radius:14px;padding:12px">
+        <div style="font-size:11px;color:#64748b">Corretoras</div>
+        <div style="font-weight:900;font-size:18px;margin-top:4px">${fmtEUR(brokerValue)}</div>
+        <div style="font-size:12px;color:#64748b;margin-top:4px">${brokerAssets.length} ativo${brokerAssets.length !== 1 ? "s" : ""} · ${fmtPct(brokerPct)}</div>
+      </div>
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px">
+        <div style="font-size:11px;color:#64748b">Cobertura importada</div>
+        <div style="font-weight:900;font-size:18px;margin-top:4px">${d ? d.years.length : 0} ano${d && d.years.length !== 1 ? "s" : ""}</div>
+        <div style="font-size:12px;color:#64748b;margin-top:4px">${escapeHtml(sourceLine)}</div>
+      </div>
+    </div>
+    ${d && d.overlapCount > 0 ? `<div style="margin-top:10px;font-size:12px;color:#9a3412;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;padding:8px 10px">Há ${d.overlapCount} sobreposição${d.overlapCount !== 1 ? "ões" : ""} temporal${d.overlapCount !== 1 ? "ais" : ""} entre ficheiros da mesma corretora. A deduplicação está activa, mas vale a pena rever os imports.</div>` : ""}`;
+}
+
+function renderBrokerImportStatus() {
+  const box = document.getElementById("brokerImportResult");
+  const list = document.getElementById("brokerImportList");
+  if (!box || !list) return;
+  const bd = ensureBrokerData();
+  const files = (bd.files || []).slice().sort((a, b) => String(b.importedAt || "").localeCompare(String(a.importedAt || "")));
+  const stats = {
+    files: files.length,
+    events: (bd.events || []).length,
+    positions: (bd.positions || []).length,
+    years: new Set((bd.events || []).map(e => String(e.date || "").slice(0, 4)).filter(Boolean)).size
+  };
+  if (!files.length) {
+    box.style.display = "none";
+    renderBrokerImportAudit();
+    list.innerHTML = `<div class="item" style="cursor:default"><div class="item__l"><div class="item__t">Sem imports de corretoras</div><div class="item__s">Podes juntar vários CSV/Excel de anos diferentes e a app reconstrói a parte importada da carteira.</div></div></div>`;
+    return;
+  }
+  box.style.display = "";
+  box.style.background = "#f0fdf4";
+  box.style.border = "1px solid #86efac";
+  box.style.borderRadius = "14px";
+  box.style.padding = "12px 14px";
+  box.innerHTML = `
+    <div style="font-weight:900;margin-bottom:6px">✅ Imports de corretoras activos</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Ficheiros</div><div style="font-weight:900">${stats.files}</div></div>
+      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Eventos</div><div style="font-weight:900">${stats.events}</div></div>
+      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Posições</div><div style="font-weight:900">${stats.positions}</div></div>
+      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Anos</div><div style="font-weight:900">${stats.years}</div></div>
+    </div>`;
+  list.innerHTML = files.map(f => `
+    <div class="item" style="cursor:default">
+      <div class="item__l">
+        <div class="item__t">${escapeHtml(f.name || "Ficheiro")}</div>
+        <div class="item__s">${escapeHtml(f.broker || "Corretora")} · ${escapeHtml(f.format || "—")} · ${f.rows || 0} linhas · ${f.events || 0} eventos · ${f.positions || 0} posições</div>
+      </div>
+      <div class="item__r"><span class="pill">${escapeHtml(f.importedAt ? String(f.importedAt).slice(0, 10) : "")}</span></div>
+    </div>
+  `).join("");
+  renderBrokerImportAudit();
+}
+
+async function importBrokerFiles(files) {
+  const fileArr = Array.from(files || []);
+  if (!fileArr.length) throw new Error("Sem ficheiros.");
+  const bd = ensureBrokerData();
+  let addedFiles = 0, replacedFiles = 0, addedEvents = 0, addedPositions = 0, unknownFiles = 0;
+  const existingEventKeys = new Set();
+  const existingPosKeys = new Set();
+  const refreshKeySets = () => {
+    existingEventKeys.clear();
+    existingPosKeys.clear();
+    (bd.events || []).forEach(e => existingEventKeys.add(e.key));
+    (bd.positions || []).forEach(p => existingPosKeys.add(p.key));
+  };
+  refreshKeySets();
+
+  for (const file of fileArr) {
+    const hash = await hashFile(file);
+    const rows = await fileToObjectRows(file);
+    const format = detectBrokerRowsFormat(rows);
+    const broker = normalizeBrokerNameFromFile(file.name);
+    const meta = { hash, name: file.name, broker, format, importedAt: new Date().toISOString(), rows: rows.length, events: 0, positions: 0 };
+
+    const prevCount = (bd.files || []).filter(f => f.hash === hash).length;
+    bd.files = (bd.files || []).filter(f => f.hash !== hash);
+    bd.events = (bd.events || []).filter(e => e.sourceHash !== hash);
+    bd.positions = (bd.positions || []).filter(p => p.sourceHash !== hash);
+    refreshKeySets();
+    if (prevCount) replacedFiles++;
+
+    if (format === "broker_ledger") {
+      const evts = parseBrokerLedgerRows(rows, meta);
+      for (const evt of evts) {
+        if (existingEventKeys.has(evt.key)) continue;
+        existingEventKeys.add(evt.key);
+        bd.events.push(evt);
+        addedEvents++;
+      }
+      meta.events = evts.length;
+      bd.files.push(meta);
+      addedFiles++;
+      continue;
+    }
+    if (format === "positions") {
+      const positions = parseBrokerPositionRows(rows, meta);
+      for (const pos of positions) {
+        if (existingPosKeys.has(pos.key)) continue;
+        existingPosKeys.add(pos.key);
+        bd.positions.push(pos);
+        addedPositions++;
+      }
+      meta.positions = positions.length;
+      bd.files.push(meta);
+      addedFiles++;
+      continue;
+    }
+    unknownFiles++;
+  }
+
+  // keep only latest file metadata per hash
+  const uniqueFiles = new Map();
+  for (const f of (bd.files || [])) uniqueFiles.set(f.hash, f);
+  bd.files = Array.from(uniqueFiles.values());
+
+  rebuildBrokerGeneratedData();
+  await saveStateAsync();
+  renderAll();
+
+  const msg = `Corretoras: ${addedFiles} ficheiro${addedFiles !== 1 ? 's' : ''} · ${addedEvents} evento${addedEvents !== 1 ? 's' : ''} · ${addedPositions} posição${addedPositions !== 1 ? 'ões' : ''}${replacedFiles ? ` · ${replacedFiles} substituído${replacedFiles !== 1 ? 's' : ''}` : ''}${unknownFiles ? ` · ${unknownFiles} não reconhecido${unknownFiles !== 1 ? 's' : ''}` : ''}`;
+  toast(msg, 4500);
+  return { addedFiles, replacedFiles, addedEvents, addedPositions, unknownFiles };
+}
+
+function clearBrokerImports() {
+  const bd = ensureBrokerData();
+  const n = (bd.files || []).length;
+  if (!n) { toast("Sem imports de corretoras para limpar."); return; }
+  state.assets = (state.assets || []).filter(a => !a.generatedFromBroker);
+  state.dividends = (state.dividends || []).filter(d => !d.generatedFromBroker);
+  state.transactions = (state.transactions || []).filter(t => !t.generatedFromBroker);
+  state.brokerData = { files: [], events: [], positions: [] };
+  saveState();
+  renderAll();
+  toast(`🗑️ ${n} import${n !== 1 ? 's' : ''} de corretora apagado${n !== 1 ? 's' : ''}.`, 4000);
 }
 
 /* ─── IMPORTAÇÃO UNIVERSAL DE EXTRACTOS ──────────────────────
@@ -5121,15 +5913,15 @@ async function importBankMovementsCsv(file) {
 
 function downloadTemplate() {
   const rows = [
-    ["tipo","classe","nome","valor","yield_tipo","yield_valor","data","notas"],
-    ["ativo","Ações/ETFs","VWCE",25000,"yield_pct",1.8,"",""],
-    ["ativo","Imobiliário","Apartamento Lisboa",280000,"rent_month",900,"",""],
-    ["ativo","Depósitos","DP CGD 4.5%",50000,"yield_pct",4.5,"2026-12-31","Capitalização mensal"],
-    ["ativo","PPR","PPR Alves Ribeiro",15000,"yield_pct",5.2,"",""],
-    ["ativo","Ouro","Ouro físico",8000,"","","",""],
-    ["passivo","Crédito habitação","CH Millennium",150000,"","","",""],
-    ["movimento","","Salário Pedro",3500,"","",isoToday(),""],
-    ["movimento","","Supermercado",200,"","",isoToday(),""]
+    ["tipo","classe","nome","valor","yield_tipo","yield_valor","valorizacao_esperada_pct","data","notas"],
+    ["ativo","Ações/ETFs","VWCE",25000,"yield_pct",1.8,6,"",""],
+    ["ativo","Imobiliário","Apartamento Lisboa",280000,"rent_month",900,2,"",""],
+    ["ativo","Depósitos","DP CGD 4.5%",50000,"yield_pct",4.5,0,"2026-12-31","Capitalização mensal"],
+    ["ativo","PPR","PPR Alves Ribeiro",15000,"yield_pct",5.2,1.5,"",""],
+    ["ativo","Ouro","Ouro físico",8000,"","","","",""],
+    ["passivo","Crédito habitação","CH Millennium",150000,"","","","",""],
+    ["movimento","","Salário Pedro",3500,"","","",isoToday(),""],
+    ["movimento","","Supermercado",200,"","","",isoToday(),""]
   ];
   const csv = rows.map(r => r.map(x => String(x)).join(";")).join("\n");
   const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
@@ -5153,7 +5945,7 @@ async function importJSON(file) {
   const text = await file.text();
   const p = JSON.parse(text);
   state = {
-    settings: { currency: "EUR", goalMonthly: 0, ...(p.settings || {}) },
+    settings: { currency: "EUR", goalMonthly: 0, returnDefaults: safeClone(DEFAULT_RETURN_SETTINGS), ...(p.settings || {}) },
     assets: Array.isArray(p.assets) ? p.assets : [],
     liabilities: Array.isArray(p.liabilities) ? p.liabilities : [],
     transactions: Array.isArray(p.transactions) ? p.transactions : [],
@@ -5187,6 +5979,122 @@ function resetAll() {
 }
 
 /* ─── SETTINGS ────────────────────────────────────────────── */
+function getReturnClassDefinitions() {
+  return [
+    { key: "acoes/etfs", label: "Ações / ETFs", hint: "dividendos + crescimento do mercado", passiveHint: "dividendo esperado", appreciationHint: "crescimento esperado" },
+    { key: "fundos", label: "Fundos", hint: "fundos multi-activos / UCITS", passiveHint: "distribuição esperada", appreciationHint: "crescimento esperado" },
+    { key: "ppr", label: "PPR", hint: "fundos PPR / seguros PPR", passiveHint: "distribuição / participação", appreciationHint: "crescimento esperado" },
+    { key: "imobiliario", label: "Imobiliário", hint: "renda + valorização do activo", passiveHint: "yield renda", appreciationHint: "valorização do imóvel" },
+    { key: "ouro", label: "Ouro", hint: "activo sem yield natural", passiveHint: "yield projectado", appreciationHint: "valorização esperada" },
+    { key: "prata", label: "Prata", hint: "activo sem yield natural", passiveHint: "yield projectado", appreciationHint: "valorização esperada" },
+    { key: "cripto", label: "Cripto", hint: "staking separado da apreciação", passiveHint: "staking / yield", appreciationHint: "apreciação esperada" },
+    { key: "liquidez", label: "Liquidez", hint: "contas / saldo à ordem", passiveHint: "juro esperado", appreciationHint: "valorização" },
+    { key: "depositos", label: "Depósitos", hint: "juro contratual", passiveHint: "juro esperado", appreciationHint: "valorização" },
+    { key: "obrigacoes", label: "Obrigações", hint: "cupão separado do capital", passiveHint: "cupão / carry", appreciationHint: "pull-to-par / preço" },
+    { key: "outros", label: "Outros", hint: "fallback residual", passiveHint: "rendimento base", appreciationHint: "valorização" }
+  ];
+}
+
+function renderReturnSettingsCard() {
+  const wrap = document.getElementById("returnAssumptionsCard");
+  if (!wrap) return;
+  const rs = getReturnSettings();
+  const defs = getReturnClassDefinitions();
+  const explicitApp = (state.assets || []).filter(a => hasExplicitAppreciationPct(a)).length;
+  const explicitPassive = (state.assets || []).filter(a => hasExplicitPassiveYield(a)).length;
+  const impliedApp = (state.assets || []).filter(a => !hasExplicitAppreciationPct(a) && Math.abs(getAssetAppreciationPct(a, { allowClassFallback: true })) > 1e-9).length;
+  const impliedPassive = (state.assets || []).filter(a => !hasExplicitPassiveYield(a) && Math.abs(getAssetPassiveRatePct(a, { allowClassFallback: true })) > 1e-9).length;
+
+  wrap.innerHTML = `
+    <div class="return-settings-head">
+      <div>
+        <div class="card__title" style="margin-bottom:4px">Pressupostos de retorno projectado por classe</div>
+        <div class="card__muted">Usados apenas nas projeções quando o activo não tem rendimento base ou valorização explícitos.</div>
+      </div>
+      <div class="return-settings-stat">${explicitPassive + explicitApp} overrides · ${impliedPassive + impliedApp} em fallback</div>
+    </div>
+    <div class="return-settings-summary">
+      <div class="return-mini return-mini--green"><div class="return-mini__k">Rendimento base explícito</div><div class="return-mini__v">${explicitPassive}</div></div>
+      <div class="return-mini return-mini--purple"><div class="return-mini__k">Valorização explícita</div><div class="return-mini__v">${explicitApp}</div></div>
+      <div class="return-mini return-mini--slate"><div class="return-mini__k">Fallback rendimento</div><div class="return-mini__v">${impliedPassive}</div></div>
+      <div class="return-mini return-mini--slate"><div class="return-mini__k">Fallback valorização</div><div class="return-mini__v">${impliedApp}</div></div>
+    </div>
+    <div class="return-settings-grid return-settings-grid--dual">
+      ${defs.map(d => `
+        <div class="return-setting-row return-setting-row--dual">
+          <div>
+            <div class="return-setting-row__title">${escapeHtml(d.label)}</div>
+            <div class="return-setting-row__hint">${escapeHtml(d.hint)}</div>
+          </div>
+          <div class="return-setting-dual-wrap">
+            <label class="return-setting-row__input return-setting-row__input--stack">
+              <span class="return-setting-row__sub">${escapeHtml(d.passiveHint)}</span>
+              <div class="return-setting-row__inputline">
+                <input class="input input--sm js-ret-passive" data-key="${d.key}" inputmode="decimal" value="${String(parseNum(rs.classPassivePct[d.key] || 0))}">
+                <span class="return-setting-row__suffix">%/ano</span>
+              </div>
+            </label>
+            <label class="return-setting-row__input return-setting-row__input--stack">
+              <span class="return-setting-row__sub">${escapeHtml(d.appreciationHint)}</span>
+              <div class="return-setting-row__inputline">
+                <input class="input input--sm js-ret-default" data-key="${d.key}" inputmode="decimal" value="${String(parseNum(rs.classAppreciationPct[d.key] || 0))}">
+                <span class="return-setting-row__suffix">%/ano</span>
+              </div>
+            </label>
+          </div>
+        </div>`).join("")}
+    </div>
+    <div class="card" style="padding:12px;margin-top:12px;background:var(--card2)">
+      <div class="return-settings-toggle">
+        <label style="display:flex;align-items:center;gap:10px;font-weight:700">
+          <input type="checkbox" id="prefPreferTWR" ${rs.preferTWR ? "checked" : ""}>
+          Preferir TWR real quando houver histórico suficiente
+        </label>
+        <div class="return-setting-row__input" style="min-width:168px">
+          <input class="input input--sm" id="prefTwrMinYears" inputmode="decimal" value="${String(parseNum(rs.twrMinYears || DEFAULT_RETURN_SETTINGS.twrMinYears))}">
+          <span class="return-setting-row__suffix">anos mínimos</span>
+        </div>
+      </div>
+      <div class="return-mini__foot" style="margin-top:8px">Sem TWR robusto, o motor usa rendimento base projectado ponderado + valorização esperada ponderada. O dashboard de rendimento passivo continua a usar o rendimento real/configurado.</div>
+    </div>
+    <div class="row row--wrap" style="margin-top:12px;gap:8px">
+      <button class="btn btn--primary" id="btnSaveReturnDefaults" style="flex:1">Guardar pressupostos</button>
+      <button class="btn btn--ghost" id="btnResetReturnDefaults">Repor valores sugeridos</button>
+    </div>`;
+
+  const btnSave = document.getElementById("btnSaveReturnDefaults");
+  if (btnSave) btnSave.addEventListener("click", () => {
+    const classPassivePct = {};
+    const classAppreciationPct = {};
+    document.querySelectorAll(".js-ret-passive").forEach(el => {
+      const key = el.getAttribute("data-key");
+      classPassivePct[key] = Math.max(-100, Math.min(100, parseNum(el.value)));
+    });
+    document.querySelectorAll(".js-ret-default").forEach(el => {
+      const key = el.getAttribute("data-key");
+      classAppreciationPct[key] = Math.max(-100, Math.min(100, parseNum(el.value)));
+    });
+    const preferTWR = !!((document.getElementById("prefPreferTWR") || {}).checked);
+    const twrMinYears = Math.max(0.1, parseNum((document.getElementById("prefTwrMinYears") || {}).value || DEFAULT_RETURN_SETTINGS.twrMinYears));
+    saveReturnSettings({ classPassivePct, classAppreciationPct, preferTWR, twrMinYears });
+    saveState();
+    renderReturnSettingsCard();
+    if (currentView === "analysis") renderAnalysis();
+    renderDashboard();
+    toast("✅ Pressupostos de retorno guardados.");
+  });
+
+  const btnReset = document.getElementById("btnResetReturnDefaults");
+  if (btnReset) btnReset.addEventListener("click", () => {
+    saveReturnSettings({ classPassivePct: safeClone(PASSIVE_DEFAULTS), classAppreciationPct: safeClone(APPRECIATION_DEFAULTS), preferTWR: true, twrMinYears: DEFAULT_RETURN_SETTINGS.twrMinYears });
+    saveState();
+    renderReturnSettingsCard();
+    if (currentView === "analysis") renderAnalysis();
+    renderDashboard();
+    toast("Pressupostos repostos para os valores sugeridos.");
+  });
+}
+
 function setSettingsPane(which) {
   const ps = document.getElementById("paneSettings"), pf = document.getElementById("paneFire");
   const bs = $("segSettings"), bf = $("segFire");
@@ -5197,6 +6105,7 @@ function setSettingsPane(which) {
   bs.classList.toggle("seg__btn--active", !isFire);
   bf.classList.toggle("seg__btn--active", isFire);
   if (isFire) renderFire();
+  else renderReturnSettingsCard();
 }
 
 /* ─── WIRING ──────────────────────────────────────────────── */
@@ -5331,6 +6240,32 @@ function wire() {
   });
   $("btnTemplate").addEventListener("click", downloadTemplate);
 
+  // Importar corretoras (multi-ficheiro / multi-ano)
+  const brokerFilesInput = document.getElementById("brokerFiles");
+  const btnImportBrokerFiles = document.getElementById("btnImportBrokerFiles");
+  if (brokerFilesInput && btnImportBrokerFiles) {
+    brokerFilesInput.addEventListener("change", () => {
+      btnImportBrokerFiles.disabled = !(brokerFilesInput.files && brokerFilesInput.files.length);
+    });
+    btnImportBrokerFiles.addEventListener("click", async () => {
+      const files = brokerFilesInput.files;
+      if (!files || !files.length) return;
+      btnImportBrokerFiles.disabled = true;
+      const orig = btnImportBrokerFiles.textContent;
+      btnImportBrokerFiles.textContent = "A importar…";
+      try {
+        await importBrokerFiles(files);
+      } catch (e) {
+        toast("Falha no import das corretoras: " + (e && e.message ? e.message : String(e)), 4500);
+      } finally {
+        btnImportBrokerFiles.disabled = false;
+        btnImportBrokerFiles.textContent = orig;
+      }
+    });
+  }
+  const btnClearBrokerImports = document.getElementById("btnClearBrokerImports");
+  if (btnClearBrokerImports) btnClearBrokerImports.addEventListener("click", clearBrokerImports);
+
   // Importar extracto do banco (universal: CSV, XLSX, PDF)
   const bankFileInput = document.getElementById("bankFile");
   const btnImportBank = document.getElementById("btnImportBank");
@@ -5459,6 +6394,7 @@ function wire() {
   });
   const btnGoImport = document.getElementById("btnGoImport");
   if (btnGoImport) btnGoImport.addEventListener("click", () => setView("import"));
+  renderReturnSettingsCard();
 
   // Worker URL para cotações
   const workerInput = document.getElementById("settingsWorkerUrl");
@@ -5852,10 +6788,10 @@ function exportCashflowCSV() {
 }
 
 function exportPortfolioCSV() {
-  const header = ["Tipo","Classe","Nome","Valor (EUR)","Tipo Yield","Yield Valor","Capitalização","Vencimento","Custo Aquis.","Notas"];
+  const header = ["Tipo","Classe","Nome","Valor (EUR)","Tipo Yield","Yield Valor","Valorização Esperada %","Capitalização","Vencimento","Custo Aquis.","Notas"];
   const rows = [
-    ...state.assets.map(a => ["Ativo", a.class||"", a.name||"", parseNum(a.value).toFixed(2), a.yieldType||"none", parseNum(a.yieldValue).toFixed(4), a.compoundFreq||"", a.maturityDate||"", parseNum(a.costBasis||0).toFixed(2), (a.notes||"").replace(/"/g,"'")]),
-    ...state.liabilities.map(l => ["Passivo", l.class||"", l.name||"", parseNum(l.value).toFixed(2), "","","","","", (l.notes||"").replace(/"/g,"'")])
+    ...state.assets.map(a => ["Ativo", a.class||"", a.name||"", parseNum(a.value).toFixed(2), a.yieldType||"none", parseNum(a.yieldValue).toFixed(4), hasExplicitAppreciationPct(a) ? parseNum(a.appreciationPct).toFixed(4) : "", a.compoundFreq||"", a.maturityDate||"", parseNum(a.costBasis||0).toFixed(2), (a.notes||"").replace(/"/g,"'")]),
+    ...state.liabilities.map(l => ["Passivo", l.class||"", l.name||"", parseNum(l.value).toFixed(2), "","","","","","", (l.notes||"").replace(/"/g,"'")])
   ];
   const csv = [header,...rows].map(r => r.map(c => `"${c}"`).join(";")).join("\n");
   downloadText(csv, `portfolio_${isoToday()}.csv`, "text/csv;charset=utf-8;");
@@ -5865,7 +6801,7 @@ function exportPortfolioCSV() {
 function exportPortfolioXLSX() {
   if (typeof XLSX === "undefined") { toast("XLSX não disponível."); return; }
   const t = calcTotals();
-  const assetRows = state.assets.map(a => ({ Tipo:"Ativo", Classe:a.class||"", Nome:a.name||"", "Valor EUR":parseNum(a.value), "Tipo Yield":a.yieldType||"none", "Yield Valor":parseNum(a.yieldValue), "Capitalização":a.compoundFreq||"", Vencimento:a.maturityDate||"", "Custo Aquis.":parseNum(a.costBasis||0), "Rend. Anual EUR":passiveFromItem(a), Notas:a.notes||"" }));
+  const assetRows = state.assets.map(a => ({ Tipo:"Ativo", Classe:a.class||"", Nome:a.name||"", "Valor EUR":parseNum(a.value), "Tipo Yield":a.yieldType||"none", "Yield Valor":parseNum(a.yieldValue), "Valorização Esperada %": hasExplicitAppreciationPct(a) ? parseNum(a.appreciationPct) : "", "Capitalização":a.compoundFreq||"", Vencimento:a.maturityDate||"", "Custo Aquis.":parseNum(a.costBasis||0), "Rend. Anual EUR":passiveFromItem(a), Notas:a.notes||"" }));
   const liabRows = state.liabilities.map(l => ({ Tipo:"Passivo", Classe:l.class||"", Nome:l.name||"", "Valor EUR":parseNum(l.value), "Tipo Yield":"","Yield Valor":"","Capitalização":"",Vencimento:"","Custo Aquis.":0,"Rend. Anual EUR":0, Notas:l.notes||"" }));
   const txRows = state.transactions.map(tx => ({ Data:tx.date||"", Tipo:tx.type==="in"?"Entrada":"Saída", Categoria:tx.category||"", "Valor EUR":parseNum(tx.amount), Recorrente:tx.recurring||"none", Notas:tx.notes||"" }));
   const wb = XLSX.utils.book_new();
@@ -6125,7 +7061,7 @@ function renderHealthRatios() {
         <div class="kpi__s">&lt;30% excelente · &lt;60% aceitável</div>
       </div>
       <div class="kpi">
-        <div class="kpi__k">Yield médio ponderado ${semaforoInv(passiveRatio, 4, 2)}</div>
+        <div class="kpi__k">Rendimento base ponderado ${semaforoInv(passiveRatio, 4, 2)}</div>
         <div class="kpi__v" style="color:${passiveRatio >= 4 ? '#059669' : passiveRatio >= 2 ? '#d97706' : '#94a3b8'}">${fmtPct(passiveRatio)}</div>
         <div class="kpi__s">Rendimento passivo / activos</div>
       </div>
@@ -7079,7 +8015,7 @@ BALANÇO GLOBAL
 RENDIMENTO PASSIVO
   Anual estimado:    ${fmtEUR(t.passiveAnnual)}
   Mensal estimado:   ${fmtEUR(t.passiveAnnual/12)}
-  Yield médio:       ${fmt(t.assetsTotal>0?t.passiveAnnual/t.assetsTotal*100:0,2)}%
+  Rendimento base:   ${fmt(t.assetsTotal>0?t.passiveAnnual/t.assetsTotal*100:0,2)}%
 
 DISTRIBUIÇÃO POR CLASSE
   ${classBreakdown}
@@ -7810,23 +8746,18 @@ function renderCompoundWithDCAPanel() {
   const inflEl    = document.getElementById("compInflation");
   const inflation = inflEl ? parseNum(inflEl.value) || 2.5 : 2.5;
 
-  // Dividend yield líquido
-  const divYield  = calcDividendYield ? (calcDividendYield().weightedYield || 0) * 0.72 : 0;
+  // A taxa no simulador passa a ser sempre taxa total anual já integrada.
+  const rateReal = (typeof realRate === "function") ? realRate(rateStr, inflation) : (rateStr - inflation);
 
-  // Taxa real = nominal - inflação (Fisher)
-  const realRate  = realRate ? realRate(rateStr, inflation) : rateStr - inflation;
-
-  const results = compoundWithDCA(principal, rateStr, years, dca, divYield);
+  const results = compoundWithDCA(principal, rateStr, years, dca, 0);
   const finalRow = results[results.length - 1];
-  const finalReal = compoundWithDCA(principal, Math.max(0, realRate), years, dca * 0.975 ** years, 0);
+  const finalReal = compoundWithDCA(principal, Math.max(0, rateReal), years, dca, 0);
   const finalRealVal = finalReal[finalReal.length - 1].value;
-
-  const col = finalRow.gain >= 0 ? "var(--green)" : "var(--red)";
 
   el.innerHTML = `
     <div style="background:var(--kpi-net);border-radius:var(--r-sm);padding:12px;margin-top:12px">
       <div style="font-size:11px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">
-        Projecção a ${years} anos (nominal ${fmtPct(rateStr)} + ${fmtPct(divYield)} div líq.)
+        Projecção a ${years} anos (retorno anual total ${fmtPct(rateStr)})
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
         <div>
@@ -7842,58 +8773,20 @@ function renderCompoundWithDCAPanel() {
           <div style="font-size:16px;font-weight:800">${fmtEUR(finalRow.contributed)}</div>
         </div>
         <div>
-          <div style="font-size:11px;color:var(--muted);font-weight:700">Dividendos reinvestidos</div>
-          <div style="font-size:16px;font-weight:800;color:var(--green)">${fmtEUR(finalRow.dividends)}</div>
+          <div style="font-size:11px;color:var(--muted);font-weight:700">Ganho composto</div>
+          <div style="font-size:16px;font-weight:800;color:var(--green)">${fmtEUR(finalRow.gain)}</div>
         </div>
       </div>
       <div style="font-size:12px;color:var(--muted)">
-        DCA: ${fmtEUR(dca)}/mês · Div yield líq.: ${fmtPct(divYield)} · Inflação: ${fmtPct(inflation)}
+        DCA: ${fmtEUR(dca)}/mês · Inflação: ${fmtPct(inflation)}
       </div>
       ${dca > 0 ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">
         💡 O DCA de ${fmtEUR(dca)}/mês contribui com <b>${fmtEUR(dca*12*years)}</b> ao longo de ${years} anos
-        mas gera <b>${fmtEUR(finalRow.value - principal - dca*12*years)}</b> de juros compostos adicionais.
+        e gera <b>${fmtEUR(finalRow.value - principal - dca*12*years)}</b> de crescimento adicional.
       </div>` : ""}
     </div>`;
 }
 
-/* ─── ALERTA: RENTABILIDADE NEGATIVA ────────────────────────── */
-function checkNegativeReturn() {
-  const twr = calcTWR();
-  if (!twr) return;
-  const el = document.getElementById("negReturnAlert");
-  if (!el) return;
-  if (twr.annualised < -5) {
-    el.style.display = "";
-    el.innerHTML = `⚠️ TWR anualizado negativo: <b>${fmt(twr.annualised,1)}%/ano</b> — o portfólio está a perder valor acima da inflação.`;
-  } else {
-    el.style.display = "none";
-  }
-}
-
-/* ─── WIRE v16.1 ─────────────────────────────────────────────── */
-(function wireV16b() {
-  const init = () => {
-    // Render compound DCA quando muda qualquer campo
-    ["compPrincipal","compRate","compYears","compContrib","compInflation"].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.addEventListener("input", () => {
-        renderCompoundWithDCAPanel();
-      });
-    });
-  };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
-  else init();
-})();
-
-/* ═══════════════════════════════════════════════════════════════
-   FUNCIONALIDADES PROFISSIONAIS ADICIONAIS
-   1. Breakdown detalhado do retorno por classe no Compound
-   2. Mapa de calor de rendimento por ativo
-   3. Simulador de reforma antecipada — anos até FIRE com DCA
-   4. Exportação completa do relatório anual
-   ═══════════════════════════════════════════════════════════════ */
-
-/* ─── BREAKDOWN DE RETORNO POR CLASSE ───────────────────────── */
 function renderReturnBreakdown() {
   const el = document.getElementById("returnBreakdownContent");
   if (!el) return;
@@ -7902,31 +8795,26 @@ function renderReturnBreakdown() {
   const t  = calcTotals();
   if (t.assetsTotal === 0) { el.innerHTML = ""; return; }
 
-  // Agrupar por classe
   const byClass = {};
-  for (const a of state.assets) {
-    const cls = a.class || "Outros";
-    const v   = parseNum(a.value);
-    const p   = passiveFromItem(a);
-    if (!byClass[cls]) byClass[cls] = { value: 0, passive: 0, count: 0 };
-    byClass[cls].value   += v;
-    byClass[cls].passive += p;
-    byClass[cls].count++;
+  for (const row of py.assetRows) {
+    const cls = row.cls || "Outros";
+    if (!byClass[cls]) byClass[cls] = { value: 0, passiveAmt: 0, appreciationAmt: 0, explicit: 0, count: 0 };
+    byClass[cls].value += row.value;
+    byClass[cls].passiveAmt += row.value * row.passiveRatePct / 100;
+    byClass[cls].appreciationAmt += row.value * row.appreciationPct / 100;
+    byClass[cls].count += 1;
+    if (row.hasExplicitAppreciation) byClass[cls].explicit += 1;
   }
 
-  // Para acções/ETFs: adicionar retorno de capital estimado
-  const EQUITY_CLS = ["Ações/ETFs","Cripto","Fundos"];
   const rows = Object.entries(byClass)
     .sort((a, b) => b[1].value - a[1].value)
     .map(([cls, d]) => {
-      const isEq = EQUITY_CLS.some(e => cls.includes(e.split("/")[0]));
-      const passiveYield = d.value > 0 ? d.passive / d.value * 100 : 0;
-      const capitalReturn = isEq ? (py.equityReturnAnnual || 7) : 0;
-      const totalReturn   = passiveYield + capitalReturn;
-      const weight        = t.assetsTotal > 0 ? d.value / t.assetsTotal * 100 : 0;
-      const contrib       = totalReturn * weight / 100; // contribuição para retorno blended
-      return { cls, value: d.value, passive: d.passive, passiveYield,
-               capitalReturn, totalReturn, weight, contrib, isEq };
+      const passiveYield = d.value > 0 ? d.passiveAmt / d.value * 100 : 0;
+      const capitalReturn = d.value > 0 ? d.appreciationAmt / d.value * 100 : 0;
+      const totalReturn = passiveYield + capitalReturn;
+      const weight = t.assetsTotal > 0 ? d.value / t.assetsTotal * 100 : 0;
+      const contrib = totalReturn * weight / 100;
+      return { cls, value: d.value, passiveAmt: d.passiveAmt, passiveYield, capitalReturn, totalReturn, weight, contrib, explicit: d.explicit, count: d.count };
     });
 
   const totalContrib = rows.reduce((s, r) => s + r.contrib, 0);
@@ -7934,11 +8822,13 @@ function renderReturnBreakdown() {
   el.innerHTML = `
     <div style="margin-bottom:10px;padding:10px;background:var(--kpi-net);border-radius:var(--r-sm)">
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-size:13px;font-weight:700">Retorno blended total</span>
-        <span style="font-size:20px;font-weight:900;color:var(--vio)">${fmtPct(totalContrib)}</span>
+        <span style="font-size:13px;font-weight:700">Retorno total total</span>
+        <span style="font-size:20px;font-weight:900;color:var(--vio)">${fmtPct(py.totalReturnAnnual)}</span>
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:3px">
-        Yield passivo ${fmtPct(py.weightedYield)} + retorno capital acções ${fmtPct(py.equityReturnAnnual)}${py.twr ? " (TWR real)" : " (estimado)"}
+        ${py.totalReturnSource === "twr"
+          ? `TWR anualizado real da carteira ${fmtPct(py.totalReturnAnnual)} · base projectada ${fmtPct(py.weightedYield)} · passivo actual ${fmtPct(py.actualPassiveYieldPct || 0)}`
+          : `Rendimento base projectado ${fmtPct(py.weightedYield)} + valorização esperada ${fmtPct(py.weightedAppreciationPct)}` }
       </div>
     </div>
     ${rows.map(r => `
@@ -7951,16 +8841,16 @@ function renderReturnBreakdown() {
         </div>
       </div>
       <div style="height:5px;background:var(--line);border-radius:3px;overflow:hidden;margin-bottom:2px">
-        <div style="height:5px;border-radius:3px;background:${r.isEq?"var(--vio)":"var(--green)"};width:${Math.min(100,r.totalReturn/20*100)}%;transition:width .5s"></div>
+        <div style="height:5px;border-radius:3px;background:var(--vio);width:${Math.min(100,Math.max(0,r.totalReturn)/20*100)}%;transition:width .5s"></div>
       </div>
       <div style="font-size:10px;color:var(--muted)">
-        Yield passivo ${fmtPct(r.passiveYield)}${r.capitalReturn>0?" + capital "+fmtPct(r.capitalReturn)+(r.isEq?" (eq.)":""):""}
-        · contribui <b>${fmtPct(r.contrib)}</b> para o retorno global
-        ${r.passive>0?` · ${fmtEUR(r.passive)}/ano`:""}
+        Base ${fmtPct(r.passiveYield)} + valorização ${fmtPct(r.capitalReturn)} · contribui <b>${fmtPct(r.contrib)}</b> para o retorno global
+        ${r.passiveAmt>0?` · ${fmtEUR(r.passiveAmt)}/ano`:""}
+        ${r.explicit < r.count && r.capitalReturn > 0 ? ` · parte da valorização é assumida por classe` : ""}
       </div>
     </div>`).join("")}
     <div style="font-size:11px;color:var(--muted);margin-top:8px;padding:8px;background:var(--note-bg);border-radius:var(--r-xs)">
-      💡 <b>Retorno blended</b> = soma ponderada dos retornos por classe. Inclui yield passivo (juros/rendas/dividendos) e retorno de capital esperado para acções/ETFs. ${!py.twr ? "Sem snapshots suficientes — retorno acções usa estimativa histórica de 7%/ano." : "Retorno acções baseado no TWR real da carteira."}
+      💡 <b>Retorno total</b> = soma ponderada do rendimento base configurado e da valorização esperada por activo. ${py.totalReturnSource === "twr" ? "Quando existe TWR robusto, o total da carteira usa o retorno real observado; o detalhe por classe mantém o motor esperado por activo." : "Sem TWR robusto, o total da carteira usa o mesmo motor ponderado por activo."}
     </div>`;
 }
 
@@ -8007,8 +8897,8 @@ function exportAnnualReport() {
     "═══════════════════════════════════════",
     `Rendimento passivo anual: ${fmtEUR(t.passiveAnnual)}`,
     `Rendimento mensal:        ${fmtEUR(t.passiveAnnual/12)}`,
-    `Yield passivo ponderado:  ${fmtPct(py.weightedYield)}`,
-    `Retorno blended:          ${fmtPct(py.totalReturnBlended)}`,
+    `Rendimento base projectado: ${fmtPct(py.weightedYield)}`,
+    `Retorno total:          ${fmtPct(py.totalReturnBlended)}`,
     twr ? `TWR anualizado:           ${fmtPct(twr.annualised)} (${twr.years} anos)` : "",
     "",
     "═══════════════════════════════════════",
