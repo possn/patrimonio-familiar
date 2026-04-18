@@ -231,6 +231,9 @@
       <div id="whatIfResult" style="margin-top:12px;display:none"></div>
     </div>
 
+    <!-- v16.1: alerta rentabilidade negativa -->
+    <div id="negReturnAlert" style="display:none;padding:10px 14px;background:#fef2f2;border-left:3px solid var(--red);border-radius:var(--r-sm);margin-bottom:12px;font-size:13px;color:#dc2626"></div>
+
     <!-- v15: IRS estimado -->
     <div class="card" id="irsEstCard" style="display:none;border-left:4px solid #f59e0b;background:#fffbeb">
       <div class="card__head">
@@ -770,9 +773,11 @@
         <div class="note" style="margin-top:10px;font-size:13px">
           💡 Em modo <b>Carteira completa</b> os campos são preenchidos com o capital investido e yield ponderado.<br>
           <button class="btn btn--primary btn--sm" onclick="usePnLInCompound()" style="margin-top:8px;width:100%">
-            📊 Usar retorno real do P&L de acções
+            📊 Usar retorno real (TWR + dividendos)
           </button>
         </div>
+        <!-- Projecção DCA + dividendos -->
+        <div id="compoundDCAResult"></div>
       </div>
       <div id="compoundTable" class="card" style="padding:16px"></div>
       <div class="card"><div class="card__title" style="margin-bottom:10px">Evolução do capital</div><div class="chartWrap"><canvas id="compoundChart" height="240"></canvas></div></div>

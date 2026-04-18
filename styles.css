@@ -750,14 +750,23 @@ select.input   { cursor: pointer; }
    ═══════════════════════════════════════════════════════ */
 
 .analysis-tabs-wrap {
-  /* Sticky logo abaixo da topbar */
+  /* Sticky abaixo da topbar — compensar safe-area iOS */
   position: sticky;
-  top: 68px;
+  top: 68px;                                   /* topbar height */
   z-index: 40;
-  margin: 0 -12px 12px;
+  margin: 0 -12px 0;
   padding: 0 12px;
   background: var(--bg);
   border-bottom: 1px solid var(--line);
+  /* Garantir que o fundo cobre o conteúdo que passa por baixo */
+  isolation: isolate;
+}
+
+/* Padding extra para o conteúdo de análise não ficar sob as tabs */
+.analysisPanelTab {
+  padding-top: 12px;
+  /* scroll-margin evita que o conteúdo fique tapado */
+  scroll-margin-top: 130px;
 }
 
 .analysis-tabs {

@@ -1151,6 +1151,7 @@ function renderDashboard() {
   renderMilestones();
   renderMaturityAlerts();
   renderPortfolioQuality();
+  checkNegativeReturn();
 }
 
 function renderSummary() {
@@ -3360,60 +3361,93 @@ function syncCompoundFromAsset(portfolioData, avgSavings) {
 }
 
 /* ─── INTEGRAÇÃO P&L → COMPOUND + FIRE ─────────────────────── */
+/* ─── CAGR por posição (retorno anualizado real) ─────────────── */
+function calcPositionCAGR(pos, asset) {
+  // Usar TWR do portfólio se disponível — é o mais rigoroso
+  const twr = calcTWR();
+  if (twr && Math.abs(twr.annualised) < 100 && twr.years >= 0.5) {
+    return twr.annualised; // já anualizado e time-weighted
+  }
+  // Fallback: CAGR da posição individual
+  // gainPct é ganho total acumulado. Precisa da duração em anos.
+  // Temos lastUpdated mas não a data de compra — usar 1 ano como estimativa conservadora
+  // se não há data. Isto sub-estima o CAGR (mais conservador que sobre-estimar).
+  const years = asset.buyDate
+    ? (new Date() - new Date(asset.buyDate)) / (365.25 * 86400000)
+    : 1; // conservador: assume 1 ano se sem data
+  const yrs = Math.max(years, 0.5); // mínimo 6 meses
+  const totalReturn = pos.gainPct / 100;
+  const cagr = (Math.pow(1 + totalReturn, 1 / yrs) - 1) * 100;
+  return Math.max(-50, Math.min(cagr, 100)); // cap ±100% para segurança
+}
+
 function usePnLInCompound() {
   const pnl = calcEquityPortfolioPnL();
   const t   = calcTotals();
 
-  // Capital = net worth total (não só equity)
+  // Capital = net worth total
   $("compPrincipal").value = String(Math.round(t.net));
 
-  // Taxa = média de retorno das posições com P&L real
-  // Fallback: yield médio ponderado da carteira
-  const withLive = pnl.positions.filter(p => p.pos.hasLivePrice);
-  let rate;
-  if (withLive.length >= 3) {
-    // Média ponderada por custo
-    const totalCost = withLive.reduce((s, p) => s + p.pos.costBasis, 0);
-    rate = totalCost > 0
-      ? withLive.reduce((s, p) => s + p.pos.gainPct * (p.pos.costBasis / totalCost), 0)
-      : withLive.reduce((s, p) => s + p.pos.gainPct, 0) / withLive.length;
+  // Taxa = TWR anualizado do portfólio (métrica correcta)
+  // Fallback em cascata: TWR → CAGR médio ponderado → yield passivo
+  const twr = calcTWR();
+  let rate, rateSource;
+
+  if (twr && twr.years >= 0.5 && Math.abs(twr.annualised) < 80) {
+    // TWR anualizado — elimina efeito dos depósitos/levantamentos
+    rate = twr.annualised;
+    rateSource = `TWR anualizado (${twr.years} anos)`;
   } else {
-    // Fallback: yield ponderado de todos os activos
+    // Sem snapshots suficientes → yield passivo ponderado
     const py = calcPortfolioYield();
     rate = py.weightedYield;
+    rateSource = "yield passivo ponderado";
   }
-  $("compRate").value = fmt(Math.max(0, rate), 2);
 
-  // Contribuição = poupança média últimos 6 meses
+  // Incluir dividend yield nas acções/ETFs (reinvestimento)
+  const divYield = calcDividendYield ? calcDividendYield().weightedYield || 0 : 0;
+  const totalRate = rate + (divYield > 0 ? divYield * 0.72 : 0); // 72% = após IRS 28%
+
+  $("compRate").value = fmt(Math.max(0.1, Math.min(totalRate, 50)), 2);
+
+  // DCA = poupança mensal + investimento programado
   const savings = calcAvgMonthlySavings(6);
-  $("compContrib").value = String(Math.round(savings));
+  const monthlyInvest = parseNum((document.getElementById("fireMonthlyInvest")||{}).value || 0);
+  $("compContrib").value = String(Math.round(savings + monthlyInvest));
 
-  // Seleccionar "carteira completa"
   const sel = $("compAsset");
   if (sel) sel.value = "__portfolio__";
 
-  toast("✅ Preenchido com dados reais do portfólio");
+  toast(`✅ Taxa: ${fmt(Math.min(totalRate,50),2)}% (${rateSource}${divYield > 0 ? ` + ${fmt(divYield*0.72,1)}% div líquido` : ""})`);
   calcAndRenderCompound();
+  renderCompoundWithDCAPanel();
 }
 
 function usePnLInFIRE() {
   const pnl = calcEquityPortfolioPnL();
   const withLive = pnl.positions.filter(p => p.pos.hasLivePrice);
 
-  if (withLive.length >= 3) {
-    // Taxa de retorno real do portfólio de equity
-    const totalCost = withLive.reduce((s, p) => s + p.pos.costBasis, 0);
-    const weightedReturn = totalCost > 0
-      ? withLive.reduce((s, p) => s + p.pos.gainPct * (p.pos.costBasis / totalCost), 0)
-      : withLive.reduce((s, p) => s + p.pos.gainPct, 0) / withLive.length;
+  // Usar TWR anualizado — a métrica correcta para FIRE
+  const twr = calcTWR();
+  const retEl = document.getElementById("fireCustomReturn");
 
-    const retEl = document.getElementById("fireCustomReturn");
-    if (retEl && weightedReturn > 0) {
-      retEl.value = fmt(Math.min(weightedReturn, 30), 2); // cap 30% para segurança
-      toast(`✅ Retorno FIRE definido para ${fmt(Math.min(weightedReturn,30),2)}% (P&L real)`);
-    }
+  if (twr && twr.years >= 0.5 && Math.abs(twr.annualised) < 80) {
+    // TWR anualizado + dividend yield líquido
+    const divYield = calcDividendYield ? calcDividendYield().weightedYield || 0 : 0;
+    const totalRate = twr.annualised + divYield * 0.72;
+    const safeRate = Math.max(0.1, Math.min(totalRate, 50));
+    if (retEl) retEl.value = fmt(safeRate, 2);
+    toast(`✅ FIRE: ${fmt(safeRate,2)}%/ano (TWR ${twr.years}a${divYield > 0 ? ` + div líq.` : ""})`);
+  } else if (withLive.length >= 3) {
+    // Fallback: CAGR conservador (assume 1 ano de holding)
+    const totalCost = withLive.reduce((s,p) => s + p.pos.costBasis, 0);
+    const wReturn   = withLive.reduce((s,p) => s + p.pos.gainPct * (p.pos.costBasis/totalCost), 0);
+    // Converter ganho total em CAGR conservador (1 ano) — sub-estima propositadamente
+    const conserv   = Math.max(0, Math.min(wReturn, 30));
+    if (retEl) retEl.value = fmt(conserv, 2);
+    toast(`⚠️ Sem TWR suficiente. Taxa conservadora ${fmt(conserv,2)}% — revê manualmente.`);
   } else {
-    toast("⚡ Actualiza cotações primeiro para usar o P&L real no FIRE.");
+    toast("⚡ Precisas de pelo menos 2 snapshots para o TWR. Regista o mês no Dashboard.");
     return;
   }
 
@@ -7663,6 +7697,138 @@ function renderEquityPnL() {
   const init = () => {
     // Renderizar P&L quando entra na tab "assets" e quando cotações são actualizadas
     document.addEventListener("quotesUpdated", renderEquityPnL);
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();
+
+/* ═══════════════════════════════════════════════════════════════
+   MELHORIAS ADICIONAIS v16.1
+   1. Compound com DCA explícito (reinvestimento dividendos separado)
+   2. Projecção FIRE com 3 taxas de retorno baseadas em TWR real
+   3. Alerta de rentabilidade negativa na carteira
+   4. Contexto expandido para a IA (inclui P&L e TWR reais)
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── PROJECÇÃO COMPOSTA COM DCA + DIVIDENDOS ───────────────── */
+// Versão melhorada do compound que separa:
+//   - Capital inicial
+//   - Contribuições mensais (DCA)
+//   - Reinvestimento de dividendos (taxa separada)
+function compoundWithDCA(principal, rateAnnual, years, monthlyDCA, divYieldNet) {
+  // rateAnnual = valorização do capital (ex: 8%)
+  // divYieldNet = yield dividendos após IRS (ex: 2% × 0.72 = 1.44%)
+  // monthlyDCA = contribuição mensal fixa
+  const monthlyRate    = rateAnnual / 100 / 12;
+  const monthlyDivRate = divYieldNet / 100 / 12;
+  const results = [];
+  let cap = principal;
+  let totalContrib = 0;
+  let totalDivReceived = 0;
+
+  for (let m = 0; m <= years * 12; m++) {
+    if (m % 12 === 0) {
+      const yr = m / 12;
+      results.push({
+        year: yr,
+        value: cap,
+        contributed: principal + totalContrib,
+        dividends: totalDivReceived,
+        gain: cap - principal - totalContrib
+      });
+    }
+    if (m < years * 12) {
+      const divMonth = cap * monthlyDivRate;
+      totalDivReceived += divMonth;
+      cap = cap * (1 + monthlyRate) + divMonth + monthlyDCA;
+      totalContrib += monthlyDCA;
+    }
+  }
+  return results;
+}
+
+/* ─── RENDER: COMPOUND MELHORADO COM DCA + DIVIDENDOS ───────── */
+function renderCompoundWithDCAPanel() {
+  const el = document.getElementById("compoundDCAResult");
+  if (!el) return;
+
+  const principal = parseNum($("compPrincipal").value) || calcTotals().net;
+  const rateStr   = parseNum($("compRate").value);
+  const years     = parseInt($("compYears").value) || 20;
+  const dca       = parseNum($("compContrib").value);
+  const inflEl    = document.getElementById("compInflation");
+  const inflation = inflEl ? parseNum(inflEl.value) || 2.5 : 2.5;
+
+  // Dividend yield líquido
+  const divYield  = calcDividendYield ? (calcDividendYield().weightedYield || 0) * 0.72 : 0;
+
+  // Taxa real = nominal - inflação (Fisher)
+  const realRate  = realRate ? realRate(rateStr, inflation) : rateStr - inflation;
+
+  const results = compoundWithDCA(principal, rateStr, years, dca, divYield);
+  const finalRow = results[results.length - 1];
+  const finalReal = compoundWithDCA(principal, Math.max(0, realRate), years, dca * 0.975 ** years, 0);
+  const finalRealVal = finalReal[finalReal.length - 1].value;
+
+  const col = finalRow.gain >= 0 ? "var(--green)" : "var(--red)";
+
+  el.innerHTML = `
+    <div style="background:var(--kpi-net);border-radius:var(--r-sm);padding:12px;margin-top:12px">
+      <div style="font-size:11px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">
+        Projecção a ${years} anos (nominal ${fmtPct(rateStr)} + ${fmtPct(divYield)} div líq.)
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div>
+          <div style="font-size:11px;color:var(--muted);font-weight:700">Capital final</div>
+          <div style="font-size:22px;font-weight:900;color:var(--vio)">${fmtEUR(finalRow.value)}</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);font-weight:700">Em valores reais (−${fmtPct(inflation)} inf.)</div>
+          <div style="font-size:22px;font-weight:900;color:var(--muted)">${fmtEUR(finalRealVal)}</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);font-weight:700">Total investido</div>
+          <div style="font-size:16px;font-weight:800">${fmtEUR(finalRow.contributed)}</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);font-weight:700">Dividendos reinvestidos</div>
+          <div style="font-size:16px;font-weight:800;color:var(--green)">${fmtEUR(finalRow.dividends)}</div>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--muted)">
+        DCA: ${fmtEUR(dca)}/mês · Div yield líq.: ${fmtPct(divYield)} · Inflação: ${fmtPct(inflation)}
+      </div>
+      ${dca > 0 ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">
+        💡 O DCA de ${fmtEUR(dca)}/mês contribui com <b>${fmtEUR(dca*12*years)}</b> ao longo de ${years} anos
+        mas gera <b>${fmtEUR(finalRow.value - principal - dca*12*years)}</b> de juros compostos adicionais.
+      </div>` : ""}
+    </div>`;
+}
+
+/* ─── ALERTA: RENTABILIDADE NEGATIVA ────────────────────────── */
+function checkNegativeReturn() {
+  const twr = calcTWR();
+  if (!twr) return;
+  const el = document.getElementById("negReturnAlert");
+  if (!el) return;
+  if (twr.annualised < -5) {
+    el.style.display = "";
+    el.innerHTML = `⚠️ TWR anualizado negativo: <b>${fmt(twr.annualised,1)}%/ano</b> — o portfólio está a perder valor acima da inflação.`;
+  } else {
+    el.style.display = "none";
+  }
+}
+
+/* ─── WIRE v16.1 ─────────────────────────────────────────────── */
+(function wireV16b() {
+  const init = () => {
+    // Render compound DCA quando muda qualquer campo
+    ["compPrincipal","compRate","compYears","compContrib","compInflation"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener("input", () => {
+        renderCompoundWithDCAPanel();
+      });
+    });
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();
