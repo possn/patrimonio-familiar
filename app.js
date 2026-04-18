@@ -535,9 +535,10 @@ function setDividendYieldDisplayMode(mode) {
 }
 
 function getDividendSourceLabel(source) {
-  if (source === 'summary') return 'Resumo anual';
-  if (source === 'individual') return 'Dividendos importados/registados';
-  if (source === 'estimated') return 'Estimativa pelos activos';
+  if (source === 'broker_ttm')  return 'Corretora (TTM real)';
+  if (source === 'summary')     return 'Resumo anual manual';
+  if (source === 'individual')  return 'Dividendos registados (TTM)';
+  if (source === 'estimated')   return 'Estimativa pelos activos';
   return 'Automático';
 }
 
@@ -2218,109 +2219,210 @@ function saveDivSummary() {
 function renderDivSummaryKPIs() {
   const el = $("divSummaryKPIs");
   if (!el) return;
-  const summaries = (state.divSummaries || []).slice().sort((a, b) => b.year - a.year);
+
   const pref = getPreferredDividendYieldData();
   const divPortfolioVal = pref.divPortfolioVal;
-  const sourceLabel = pref.sourceLabel;
-  const selectedYield = pref.selectedYieldPct;
-  const selectedLabel = pref.selectedModeLabel;
+  const selectedYield   = pref.selectedYieldPct;
+  const selectedLabel   = pref.selectedModeLabel;
+  const selectedMode    = pref.selectedMode;
+  const sourceLabel     = pref.sourceLabel;
 
-  if (!summaries.length) {
-    el.innerHTML = `
-      <div class="card" style="margin-top:0;padding:14px 14px 12px">
-        <div class="card__head" style="margin-bottom:10px;gap:10px;align-items:flex-start;flex-wrap:wrap">
-          <div>
-            <div class="card__title" style="margin-bottom:2px">Yield automático</div>
-            <div class="card__muted">Escolhe bruto ou líquido para a leitura automática</div>
-          </div>
-          <button class="btn btn--ghost btn--sm" type="button" onclick="applyPreferredDividendYieldToProjection()">Usar na projeção</button>
-        </div>
-        <div class="seg" style="margin-bottom:10px;max-width:320px">
-          <button class="seg__btn ${pref.selectedMode === 'gross' ? 'seg__btn--active' : ''}" type="button" onclick="setDividendYieldDisplayMode('gross')">Yield bruto TTM</button>
-          <button class="seg__btn ${pref.selectedMode === 'net' ? 'seg__btn--active' : ''}" type="button" onclick="setDividendYieldDisplayMode('net')">Yield líquido TTM</button>
-        </div>
-        <div class="note" style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
-          <span>Fonte automática: <b>${escapeHtml(sourceLabel)}</b> · Carteira de dividendos: <b>${fmtEUR2(divPortfolioVal)}</b></span>
-          <span>Yield ${selectedLabel}: <b>${fmtPct(selectedYield)}</b></span>
-        </div>
-      </div>`;
-    return;
-  }
+  // Real dividend stats from imported data (all years)
+  const realStats = calcDividendStatsByYear();
+  const hasRealData = realStats.length > 0 && realStats[0].gross > 0;
 
-  const latest = summaries[0];
-  const net = parseNum(latest.gross) - parseNum(latest.tax);
+  // Annual summaries (mix of auto-generated and manual)
+  const summaries = (state.divSummaries || []).slice().sort((a, b) => b.year - a.year);
+  const latest    = summaries[0];
 
-  const impliedYield = divPortfolioVal > 0
-    ? (parseNum(latest.gross) / divPortfolioVal * 100)
-    : parseNum(latest.yieldPct);
+  // Key metrics for the hero card
+  const now    = new Date();
+  const curY   = now.getFullYear();
+  const curYSt = realStats.find(s => s.year === curY);
+  const prevYSt= realStats.find(s => s.year === curY - 1);
 
+  // TTM = last 12 months (rolling)
+  const cutoff12m = new Date(now.getFullYear()-1, now.getMonth(), now.getDate()).toISOString().slice(0,10);
+  const ttmDivs   = (state.dividends||[]).filter(d => String(d.date||"") >= cutoff12m);
+  const ttmGross  = ttmDivs.reduce((s,d) => s + getDividendGross(d), 0);
+  const ttmNet    = ttmDivs.reduce((s,d) => s + getDividendNet(d), 0);
+  const ttmWh     = ttmGross - ttmNet;
+  const ttmYieldG = divPortfolioVal > 0 ? (ttmGross / divPortfolioVal * 100) : selectedYield;
+  const ttmYieldN = divPortfolioVal > 0 ? (ttmNet   / divPortfolioVal * 100) : 0;
+  const ttmYield  = selectedMode === "net" ? ttmYieldN : ttmYieldG;
+
+  // YoY growth (last full year vs year before)
   let yoyGrowth = null;
-  if (summaries.length >= 2) {
-    const prev = summaries[1];
-    yoyGrowth = ((parseNum(latest.gross) - parseNum(prev.gross)) / Math.max(1, parseNum(prev.gross))) * 100;
+  if (prevYSt && curYSt) {
+    // Compare current YTD annualised vs prev full year
+    const monthsIn = now.getMonth() + 1;
+    const curAnnual = curYSt.gross * (12 / monthsIn);
+    yoyGrowth = prevYSt.gross > 0 ? ((curAnnual - prevYSt.gross) / prevYSt.gross * 100) : null;
+  } else if (summaries.length >= 2) {
+    yoyGrowth = parseNum(summaries[1].gross) > 0
+      ? ((parseNum(latest.gross) - parseNum(summaries[1].gross)) / parseNum(summaries[1].gross) * 100) : null;
   }
+
+  // Source badge
+  const isAutoData = hasRealData;
+  const sourceBadge = isAutoData
+    ? `<span style="background:#d1fae5;color:#065f46;font-size:10px;font-weight:800;padding:2px 7px;border-radius:999px;margin-left:6px">✅ Dados reais da corretora</span>`
+    : `<span style="background:#fef3c7;color:#92400e;font-size:10px;font-weight:800;padding:2px 7px;border-radius:999px;margin-left:6px">Manual</span>`;
 
   el.innerHTML = `
-    <div class="card" style="margin-top:0;padding:14px 14px 12px">
-      <div class="card__head" style="margin-bottom:10px;gap:10px;align-items:flex-start;flex-wrap:wrap">
-        <div>
-          <div class="card__title" style="margin-bottom:2px">Yield automático</div>
-          <div class="card__muted">Leitura TTM a partir da melhor fonte disponível</div>
+    <!-- HERO: dividendos TTM -->
+    <div class="card" style="margin-top:0;padding:0;overflow:hidden">
+      <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:16px 16px 14px;color:#fff">
+        <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;opacity:.75;margin-bottom:8px">
+          Rendimento de dividendos · TTM${sourceBadge}
         </div>
-        <button class="btn btn--ghost btn--sm" type="button" onclick="applyPreferredDividendYieldToProjection()">Usar na projeção</button>
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
+          <div style="font-size:36px;font-weight:900;letter-spacing:-1px;line-height:1">${fmtEUR(ttmNet)}</div>
+          <div>
+            <div style="font-size:14px;font-weight:800">líquido / 12 meses</div>
+            <div style="font-size:11px;opacity:.7">${fmtEUR(ttmNet/12)}/mês estimado</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px">
+          <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:7px 8px">
+            <div style="font-size:9px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Bruto TTM</div>
+            <div style="font-size:13px;font-weight:900;margin-top:1px">${fmtEUR(ttmGross)}</div>
+          </div>
+          <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:7px 8px">
+            <div style="font-size:9px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Retenção</div>
+            <div style="font-size:13px;font-weight:900;margin-top:1px">-${fmtEUR(ttmWh)}</div>
+          </div>
+          <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:7px 8px">
+            <div style="font-size:9px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Yield ${selectedLabel}</div>
+            <div style="font-size:13px;font-weight:900;margin-top:1px">${fmtPct(ttmYield)}</div>
+          </div>
+          <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:7px 8px">
+            <div style="font-size:9px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Crescim. YoY</div>
+            <div style="font-size:13px;font-weight:900;margin-top:1px;color:${yoyGrowth===null?"#fff":yoyGrowth>=0?"#a7f3d0":"#fca5a5"}">
+              ${yoyGrowth===null?"—":(yoyGrowth>=0?"+":"")+fmtPct(yoyGrowth)}
+            </div>
+          </div>
+        </div>
+        <div style="font-size:11px;opacity:.65">
+          Carteira de dividendos: ${fmtEUR(divPortfolioVal)} · ${ttmDivs.length} pagamentos TTM
+        </div>
       </div>
-      <div class="seg" style="margin-bottom:10px;max-width:320px">
-        <button class="seg__btn ${pref.selectedMode === 'gross' ? 'seg__btn--active' : ''}" type="button" onclick="setDividendYieldDisplayMode('gross')">Yield bruto TTM</button>
-        <button class="seg__btn ${pref.selectedMode === 'net' ? 'seg__btn--active' : ''}" type="button" onclick="setDividendYieldDisplayMode('net')">Yield líquido TTM</button>
-      </div>
-      <div class="note" style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:0">
-        <span>Fonte automática: <b>${escapeHtml(sourceLabel)}</b> · Carteira de dividendos: <b>${fmtEUR2(divPortfolioVal)}</b></span>
-        <span>Yield ${selectedLabel}: <b>${fmtPct(selectedYield)}</b></span>
+
+      <!-- Selector yield modo + botão projeção -->
+      <div style="padding:12px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line)">
+        <div class="seg" style="margin:0;flex:1;min-width:200px;max-width:280px">
+          <button class="seg__btn ${selectedMode==='gross'?'seg__btn--active':''}" type="button" onclick="setDividendYieldDisplayMode('gross');renderDividends()">Yield bruto TTM</button>
+          <button class="seg__btn ${selectedMode==='net'?'seg__btn--active':''}" type="button" onclick="setDividendYieldDisplayMode('net');renderDividends()">Yield líquido TTM</button>
+        </div>
+        <button class="btn btn--primary btn--sm" type="button" onclick="applyPreferredDividendYieldToProjection()">📈 Usar na projeção</button>
       </div>
     </div>
-    <div class="kpiRow" style="margin-top:10px">
-      <div class="kpi kpi--in">
-        <div class="kpi__k">Recebido ${latest.year} (líquido)</div>
-        <div class="kpi__v">${fmtEUR2(net)}</div>
-        <div class="kpi__s">Bruto ${fmtEUR2(parseNum(latest.gross))}</div>
+
+    <!-- Por ano (todos os anos com dados) -->
+    ${realStats.length > 0 ? `
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="padding:12px 16px 8px;font-weight:800;font-size:13px">
+        📅 Por ano — dados reais
       </div>
-      <div class="kpi">
-        <div class="kpi__k">Yield TTM (${selectedLabel})</div>
-        <div class="kpi__v">${fmtPct(selectedYield)}</div>
-        <div class="kpi__s">Fonte: ${escapeHtml(sourceLabel)}</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:var(--card2);color:var(--muted);font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.4px">
+              <th style="padding:8px 16px;text-align:left">Ano</th>
+              <th style="padding:8px 8px;text-align:right">Bruto</th>
+              <th style="padding:8px 8px;text-align:right">Retenção</th>
+              <th style="padding:8px 8px;text-align:right">Líquido</th>
+              <th style="padding:8px 8px;text-align:right">Yield</th>
+              <th style="padding:8px 16px;text-align:right">Pagamentos</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${realStats.map((s, i) => {
+              const yld = divPortfolioVal > 0 ? (s.gross/divPortfolioVal*100) : 0;
+              const isCurrentYear = s.year === new Date().getFullYear();
+              const prev = realStats[i+1];
+              const yoy = prev && prev.gross > 0 ? ((s.gross - prev.gross)/prev.gross*100) : null;
+              const rowStyle = i % 2 === 0 ? "" : "background:var(--card2)";
+              return `<tr style="${rowStyle}">
+                <td style="padding:9px 16px;font-weight:800">
+                  ${s.year}
+                  ${isCurrentYear ? '<span style="font-size:9px;background:#ede9fe;color:#6d28d9;padding:1px 5px;border-radius:999px;font-weight:700;margin-left:4px">YTD</span>' : ''}
+                </td>
+                <td style="padding:9px 8px;text-align:right;font-weight:700">${fmtEUR2(s.gross)}</td>
+                <td style="padding:9px 8px;text-align:right;color:var(--red)">-${fmtEUR2(s.wh)}</td>
+                <td style="padding:9px 8px;text-align:right;color:var(--green);font-weight:900">${fmtEUR2(s.net)}</td>
+                <td style="padding:9px 8px;text-align:right">${yld>0?fmtPct(yld):"—"}</td>
+                <td style="padding:9px 16px;text-align:right;color:var(--muted)">${s.count}${yoy!==null?` <span style="font-size:10px;color:${yoy>=0?"var(--green)":"var(--red)"}">${yoy>=0?"+":""}${yoy.toFixed(0)}%</span>`:""}</td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+          <tfoot>
+            <tr style="background:var(--card2);font-weight:900;border-top:2px solid var(--line)">
+              <td style="padding:9px 16px">Total</td>
+              <td style="padding:9px 8px;text-align:right">${fmtEUR2(realStats.reduce((s,r)=>s+r.gross,0))}</td>
+              <td style="padding:9px 8px;text-align:right;color:var(--red)">-${fmtEUR2(realStats.reduce((s,r)=>s+r.wh,0))}</td>
+              <td style="padding:9px 8px;text-align:right;color:var(--green)">${fmtEUR2(realStats.reduce((s,r)=>s+r.net,0))}</td>
+              <td style="padding:9px 8px;text-align:right">—</td>
+              <td style="padding:9px 16px;text-align:right;color:var(--muted)">${realStats.reduce((s,r)=>s+r.count,0)}</td>
+            </tr>
+          </tfoot>
+        </table>
       </div>
-      <div class="kpi kpi--out">
-        <div class="kpi__k">Retenção ${latest.year}</div>
-        <div class="kpi__v">${fmtEUR2(parseNum(latest.tax))}</div>
-        <div class="kpi__s">${parseNum(latest.gross) > 0 ? fmtPct(parseNum(latest.tax)/parseNum(latest.gross)*100) : "—"} do bruto</div>
-      </div>
-    </div>
-    <div class="kpiRow" style="margin-top:10px">
-      <div class="kpi kpi--net">
-        <div class="kpi__k">Mensal médio (líquido)</div>
-        <div class="kpi__v">${fmtEUR2(net / 12)}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi__k">Yield implícito do resumo</div>
-        <div class="kpi__v">${fmtPct(impliedYield)}</div>
-        <div class="kpi__s">Bruto resumo / valor actual</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi__k">Crescimento YoY</div>
-        <div class="kpi__v" style="color:${yoyGrowth === null ? '#667085' : yoyGrowth >= 0 ? '#059669' : '#dc2626'}">
-          ${yoyGrowth === null ? "—" : (yoyGrowth >= 0 ? "+" : "") + fmtPct(yoyGrowth)}
+    </div>` : `
+    <div class="note" style="margin-top:10px">
+      Sem dados de dividendos importados. Importa o CSV da corretora (Trading 212, XTB) em <b>Importar → Importar corretoras</b>.
+    </div>`}
+
+    <!-- Top tickers por dividendo (all time) -->
+    ${(function() {
+      const byTicker = {};
+      for (const d of (state.dividends || [])) {
+        const tk = String(d.assetName || d.assetId || "").trim();
+        if (!tk) continue;
+        if (!byTicker[tk]) byTicker[tk] = { gross: 0, net: 0, count: 0 };
+        byTicker[tk].gross += getDividendGross(d);
+        byTicker[tk].net   += getDividendNet(d);
+        byTicker[tk].count++;
+      }
+      const sorted = Object.entries(byTicker)
+        .sort((a,b) => b[1].gross - a[1].gross)
+        .slice(0, 10);
+      if (!sorted.length) return "";
+      return `<div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:12px 16px 8px;font-weight:800;font-size:13px">🏆 Top 10 pagadores (todo o período)</div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead><tr style="background:var(--card2);color:var(--muted);font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.4px">
+              <th style="padding:7px 16px;text-align:left">Ticker</th>
+              <th style="padding:7px 8px;text-align:right">Bruto</th>
+              <th style="padding:7px 8px;text-align:right">Líquido</th>
+              <th style="padding:7px 16px;text-align:right">Pagam.</th>
+            </tr></thead>
+            <tbody>
+              ${sorted.map(([tk, d], i) => `<tr style="${i%2===0?"":"background:var(--card2)"}">
+                <td style="padding:8px 16px;font-weight:800">${escapeHtml(tk)}</td>
+                <td style="padding:8px 8px;text-align:right;font-weight:700">${fmtEUR2(d.gross)}</td>
+                <td style="padding:8px 8px;text-align:right;color:var(--green)">${fmtEUR2(d.net)}</td>
+                <td style="padding:8px 16px;text-align:right;color:var(--muted)">${d.count}</td>
+              </tr>`).join("")}
+            </tbody>
+          </table>
         </div>
-        <div class="kpi__s">${summaries.length} ano${summaries.length !== 1 ? 's' : ''} registado${summaries.length !== 1 ? 's' : ''}</div>
-      </div>
-    </div>`;
+      </div>`;
+    })()}`;
 }
 
 function renderDivSummaryList() {
   const list = $("divSummaryList");
   if (!list) return;
-  const summaries = (state.divSummaries || []).slice().sort((a, b) => b.year - a.year);
+  // Only show manual (non-auto-generated) summaries in this list
+  const allSummaries = (state.divSummaries || []).slice().sort((a, b) => b.year - a.year);
+  const summaries = allSummaries.filter(s => !s.generatedFromBroker);
+  // Show/hide the card
+  const card = document.getElementById("divSummaryListCard");
+  if (card) card.style.display = summaries.length ? "" : "none";
   if (!summaries.length) {
-    list.innerHTML = `<div class="item" style="cursor:default"><div class="item__l"><div class="item__t">Sem resumos registados</div><div class="item__s">Preenche o formulário acima com os dados da corretora.</div></div></div>`;
+    list.innerHTML = "";
     return;
   }
   const DIVSUM_LIMIT = 10;
@@ -2383,14 +2485,26 @@ function renderDivSummaryChart() {
   if (!ctx) return;
   if (divSummaryChart) divSummaryChart.destroy();
 
-  const summaries = (state.divSummaries || []).slice().sort((a, b) => a.year - b.year);
+  // Prefer real data from imports over manual summaries
+  const realStats = calcDividendStatsByYear();
+  const manualSummaries = (state.divSummaries || []).slice().sort((a, b) => a.year - b.year);
+  const useReal = realStats.length > 0;
+
+  const summaries = useReal
+    ? realStats.slice().sort((a,b) => a.year - b.year).map(s => ({ year: s.year, gross: s.gross, tax: s.wh, net: s.net }))
+    : manualSummaries.map(s => ({ year: s.year, gross: parseNum(s.gross), tax: parseNum(s.tax), net: parseNum(s.gross)-parseNum(s.tax) }));
+
   if (!summaries.length) return;
 
   const labels = summaries.map(s => String(s.year));
-  const grossData = summaries.map(s => parseNum(s.gross));
-  const netData = summaries.map(s => parseNum(s.gross) - parseNum(s.tax));
-  const taxData = summaries.map(s => parseNum(s.tax));
-  const yieldData = summaries.map(s => parseNum(s.yieldPct));
+  const grossData = summaries.map(s => +(parseNum(s.gross||0)).toFixed(2));
+  const netData   = summaries.map(s => +(parseNum(s.net || (s.gross - (s.tax||s.wh||0)))).toFixed(2));
+  const taxData   = summaries.map(s => +(parseNum(s.tax || s.wh || 0)).toFixed(2));
+  // yieldPct may be missing in real stats - compute if possible
+  const divPV = getPreferredDividendYieldData().divPortfolioVal;
+  const yieldData = summaries.map(s =>
+    parseNum(s.yieldPct) || (divPV > 0 && s.gross > 0 ? +(s.gross/divPV*100).toFixed(2) : 0)
+  );
 
   divSummaryChart = new Chart(ctx, {
     type: "bar",
@@ -2687,8 +2801,98 @@ function deleteDivEntry() {
   toast("Dividendo apagado.");
 }
 
+
+/* ─── DIVIDEND STATS BY YEAR ─────────────────────────────────
+   Computes real dividend statistics directly from imported data.
+   Works with both manually added dividends and broker imports.
+──────────────────────────────────────────────────────────────── */
+function calcDividendStatsByYear() {
+  const byYear = {};
+  const divs = state.dividends || [];
+
+  for (const d of divs) {
+    const year = String(d.date || "").slice(0, 4);
+    if (!year || year.length < 4) continue;
+    if (!byYear[year]) byYear[year] = {
+      year: parseInt(year), gross: 0, net: 0, wh: 0, count: 0, tickers: new Set()
+    };
+    const gross = getDividendGross(d);
+    const net   = getDividendNet(d);
+    const wh    = Math.max(0, gross - net);
+    byYear[year].gross += gross;
+    byYear[year].net   += net;
+    byYear[year].wh    += wh;
+    byYear[year].count++;
+    const tk = String(d.assetName || d.assetId || "").trim();
+    if (tk) byYear[year].tickers.add(tk);
+  }
+
+  // Convert Sets to counts and sort descending
+  return Object.values(byYear)
+    .map(y => ({ ...y, tickerCount: y.tickers.size, tickers: [...y.tickers] }))
+    .sort((a, b) => b.year - a.year);
+}
+
+/* Auto-generate divSummaries from real imported data.
+   Called after broker import rebuild. Safe to call multiple times — idempotent.
+   Only creates/updates entries marked generatedFromBroker=true; manual entries are preserved. */
+function autoSyncDivSummariesFromImportedData() {
+  const stats = calcDividendStatsByYear();
+  if (!stats.length) return;
+
+  // Only process years where we have broker-imported dividends
+  const brokerDivYears = new Set();
+  for (const d of (state.dividends || [])) {
+    if (d.generatedFromBroker && d.date) brokerDivYears.add(String(d.date).slice(0, 4));
+  }
+  if (!brokerDivYears.size) return;
+
+  if (!Array.isArray(state.divSummaries)) state.divSummaries = [];
+
+  const divPortfolioVal = (() => {
+    const divClasses = ["acoes/etfs", "fundos", "obrigacoes"];
+    return state.assets
+      .filter(a => {
+        const cls = normStr(a.class || "").replace(/ç/g,"c").replace(/[ãõ]/g,"").replace(/[áàâä]/g,"a");
+        return divClasses.some(c => cls.includes(c.split("/")[0]));
+      })
+      .reduce((s, a) => s + parseNum(a.value), 0);
+  })();
+
+  for (const stat of stats) {
+    const y = String(stat.year);
+    if (!brokerDivYears.has(y)) continue; // only sync broker years
+    if (stat.gross <= 0) continue;
+
+    const yieldPct = divPortfolioVal > 0 ? (stat.gross / divPortfolioVal * 100) : 0;
+    const existing = state.divSummaries.find(s => String(s.year) === y);
+
+    if (existing) {
+      // Only overwrite if it was auto-generated (not manually entered)
+      if (existing.generatedFromBroker) {
+        existing.gross   = +stat.gross.toFixed(4);
+        existing.tax     = +stat.wh.toFixed(4);
+        existing.yieldPct = +yieldPct.toFixed(4);
+        existing.notes   = `Auto · ${stat.count} dividendos · ${stat.tickerCount} tickers`;
+      }
+      // Manual entries are left untouched
+    } else {
+      state.divSummaries.push({
+        id: uid(),
+        year: stat.year,
+        gross: +stat.gross.toFixed(4),
+        tax:   +stat.wh.toFixed(4),
+        yieldPct: +yieldPct.toFixed(4),
+        notes: `Auto · ${stat.count} dividendos · ${stat.tickerCount} tickers`,
+        generatedFromBroker: true
+      });
+    }
+  }
+}
 function renderDividends() {
   if (divMode === "summary") {
+    // Auto-sync from broker data before rendering
+    autoSyncDivSummariesFromImportedData();
     initDivSummaryYearSelect();
     renderDivSummaryKPIs();
     renderDivSummaryList();
@@ -3579,9 +3783,26 @@ function calcDividendYield() {
   const divAssets = state.assets.filter(a => isDivLike(a));
   const divPortfolioVal = divAssets.reduce((s, a) => s + parseNum(a.value), 0);
 
-  // 1) Resumo anual recente
+  // 0) Real imported dividends take priority over manual summaries
+  // Use TTM (trailing 12 months) from state.dividends when available
+  const cutoffTTM = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
+  const ttmDivs = (state.dividends || []).filter(d => String(d.date || "") >= cutoffTTM);
+  if (ttmDivs.length > 0) {
+    const gross = ttmDivs.reduce((s, d) => s + getDividendGross(d), 0);
+    const net   = ttmDivs.reduce((s, d) => s + getDividendNet(d),   0);
+    if (gross > 0) {
+      const grossYieldPct = divPortfolioVal > 0 ? (gross / divPortfolioVal * 100) : 0;
+      const netYieldPct   = divPortfolioVal > 0 ? (net   / divPortfolioVal * 100) : 0;
+      return { gross, net, yieldPct: grossYieldPct, grossYieldPct, netYieldPct,
+        weightedYield: grossYieldPct, divPortfolioVal,
+        source: ttmDivs.some(d => d.generatedFromBroker) ? "broker_ttm" : "individual",
+        period: "ttm" };
+    }
+  }
+
+  // 1) Manual annual summary (fallback when no imported data)
   const latestSummary = (state.divSummaries || [])
-    .filter(s => s.year >= now.getFullYear() - 1)
+    .filter(s => !s.generatedFromBroker && s.year >= now.getFullYear() - 1)
     .sort((a, b) => b.year - a.year)[0];
   if (latestSummary) {
     const gross = parseNum(latestSummary.gross);
@@ -5847,6 +6068,7 @@ async function importBrokerFiles(files) {
   bd.files = Array.from(uniqueFiles.values());
 
   rebuildBrokerGeneratedData();
+  autoSyncDivSummariesFromImportedData(); // auto-fill annual summaries from real data
   await saveStateAsync();
   renderAll();
 
@@ -5863,6 +6085,8 @@ function clearBrokerImports() {
   state.assets = (state.assets || []).filter(a => !a.generatedFromBroker);
   state.dividends = (state.dividends || []).filter(d => !d.generatedFromBroker);
   state.transactions = (state.transactions || []).filter(t => !t.generatedFromBroker);
+  // Also clear auto-generated annual summaries
+  state.divSummaries = (state.divSummaries || []).filter(s => !s.generatedFromBroker);
   state.brokerData = { files: [], events: [], positions: [] };
   saveState();
   renderAll();

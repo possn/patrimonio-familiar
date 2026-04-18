@@ -26,7 +26,7 @@
       document.head.appendChild(s);
     })();
   </script>
-  <script defer src="app.js?v=20260418g"></script>
+  <script defer src="app.js?v=20260418h"></script>
 </head>
 <body>
 
@@ -488,11 +488,21 @@
 
     <!-- MODO 1: Resumo anual (dados da corretora) -->
     <div id="paneDivSummary">
-      <div class="card">
+      <!-- KPIs do resumo — agora vêm PRIMEIRO (auto-calculados) -->
+      <div id="divSummaryKPIs"></div>
+
+      <!-- Formulário manual — colapsável, secundário -->
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;padding:12px 16px;background:var(--card2);border-radius:var(--r-sm);border:1px solid var(--line);font-weight:700;font-size:13px;color:var(--muted);list-style:none;display:flex;justify-content:space-between;align-items:center">
+          <span>✏️ Ajuste manual / entrada de dados da corretora</span>
+          <span style="font-size:11px;font-weight:500">▼ expandir</span>
+        </summary>
+        <div style="border:1px solid var(--line);border-top:none;border-radius:0 0 var(--r-sm) var(--r-sm);padding:0">
+      <div class="card" style="border-radius:0;border:none;border-bottom:1px solid var(--line)">
         <div class="card__head">
           <div>
-            <div class="card__title">Rendimento de dividendos</div>
-            <div class="card__muted">Introduz os dados da tua corretora</div>
+            <div class="card__title">Ajuste manual de dividendos</div>
+            <div class="card__muted">Usa apenas se a corretora não foi importada ou para corrigir valores</div>
           </div>
           <button class="info-btn" onclick="openTip('divSummary')" style="font-size:20px">ℹ️</button>
         </div>
@@ -603,14 +613,13 @@
           <button class="btn btn--danger" id="btnDeleteDivSummary" style="display:none">Apagar</button>
         </div>
       </div>
+        </div><!-- /.details inner -->
+      </details><!-- /.manual form collapsible -->
 
-      <!-- KPIs do resumo -->
-      <div id="divSummaryKPIs"></div>
-
-      <!-- Histórico de resumos anuais -->
-      <div class="card">
+      <!-- Histórico de resumos anuais (manual entries) -->
+      <div class="card" id="divSummaryListCard" style="display:none">
         <div class="card__head">
-          <div><div class="card__title">Histórico anual</div><div class="card__muted">Clica para editar</div></div>
+          <div><div class="card__title">Resumos manuais</div><div class="card__muted">Clica para editar</div></div>
         </div>
         <div id="divSummaryList" class="list"></div>
       </div>
@@ -1239,7 +1248,7 @@
 
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Sobre</div>
-        <div class="card__muted">Património Familiar <b>v16.10</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v16.10:</b> P&L total real = latente + realizado (vendas) + dividendos recebidos · Yield verdadeiro por ativo (dividendos 12m ÷ custo) · Decomposição visual por posição · Ordenação por retorno total/realizado/dividendos/yield · Relatório anual actualizado · Todos os tipos T212 verificados com ficheiros reais<br><br><b>Novidades v16.9:</b> XTB: detecção colunas PT (Símbolo/Tipo/Lucro/Montante/Data de abertura…) · Swap overhead → custo, não rendimento · Yield automático por ativo calculado dos dividendos reais importados · importJSON preserva histórico de preços e FX · Alocação FIRE com class matching corrigido<br><br><b>Novidades v16.8:</b> Parser XTB (CSV trades, posições, operações de caixa) · Histórico de cotações por ticker (tab Análise → 📉 Cotações) · Multi-moeda real com conversão automática no modal · Alocação Alvo FIRE com 3 fases (tab 🎯 Alocação) · FX taxas em tempo real guardadas localmente<br><br><b>Novidades v16.7:</b> Saúde Financeira com explicações detalhadas e sugestões contextuais por métrica · Barra de cobertura passiva · 6 indicadores com dicas de melhoria<br><br><b>Novidades v16.6:</b> Todas as listas com "▼ Ver mais / ▲ Ver menos" limitadas a 10 itens · Bug crítico na edição de resumos de dividendos corrigido · Limite de movimentos aumentado (5→10)<br><br><b>Novidades v16.5:</b> Motor de retorno unificado · valorização esperada por activo · pressupostos editáveis por classe · FIRE/Compound/Previsão coerentes<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
+        <div class="card__muted">Património Familiar <b>v16.11</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v16.11:</b> Tab Dividendos totalmente automático: hero card TTM, tabela por ano com bruto/líquido/yield/YoY, Top 10 pagadores — tudo calculado dos imports T212/XTB sem formulário manual · calcDividendYield usa dados reais em primeiro lugar · Formulário manual colapsado (secundário) · Limpar imports remove resumos auto-gerados<br><br><b>Novidades v16.10:</b> P&L total real = latente + realizado (vendas) + dividendos recebidos · Yield verdadeiro por ativo (dividendos 12m ÷ custo) · Decomposição visual por posição · Ordenação por retorno total/realizado/dividendos/yield · Relatório anual actualizado · Todos os tipos T212 verificados com ficheiros reais<br><br><b>Novidades v16.9:</b> XTB: detecção colunas PT (Símbolo/Tipo/Lucro/Montante/Data de abertura…) · Swap overhead → custo, não rendimento · Yield automático por ativo calculado dos dividendos reais importados · importJSON preserva histórico de preços e FX · Alocação FIRE com class matching corrigido<br><br><b>Novidades v16.8:</b> Parser XTB (CSV trades, posições, operações de caixa) · Histórico de cotações por ticker (tab Análise → 📉 Cotações) · Multi-moeda real com conversão automática no modal · Alocação Alvo FIRE com 3 fases (tab 🎯 Alocação) · FX taxas em tempo real guardadas localmente<br><br><b>Novidades v16.7:</b> Saúde Financeira com explicações detalhadas e sugestões contextuais por métrica · Barra de cobertura passiva · 6 indicadores com dicas de melhoria<br><br><b>Novidades v16.6:</b> Todas as listas com "▼ Ver mais / ▲ Ver menos" limitadas a 10 itens · Bug crítico na edição de resumos de dividendos corrigido · Limite de movimentos aumentado (5→10)<br><br><b>Novidades v16.5:</b> Motor de retorno unificado · valorização esperada por activo · pressupostos editáveis por classe · FIRE/Compound/Previsão coerentes<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
       </div>
     </div>
     <div id="paneFire" style="display:none">
