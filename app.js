@@ -7927,11 +7927,37 @@ async function refreshLiveQuotes() {
   // Convert local / broker tickers into Yahoo candidates.
   // Several imports keep a stale ISIN→Yahoo guess; try that first, then sensible fallbacks.
   const SKIP_TICKERS = new Set(["WBA","14","DN3.DE","OD7F.DE","U9UA.DE"]);
-  const ALT_EXCHANGE_SUFFIXES = [".DE", ".AS", ".L", ".MI", ".PA", ".SW", ".MC", ".LS", ".VI", ".BR"];
+  const ALT_EXCHANGE_SUFFIXES = [".TO", ".V", ".NE", ".F", ".DE", ".AS", ".L", ".MI", ".PA", ".SW", ".MC", ".LS", ".VI", ".BR", ".T"];
+  const YAHOO_TICKER_OVERRIDES = {
+    "WCP": "WCP.TO",
+    "GRA": "GRA.TO",
+    "FRU": "FRU.TO",
+    "ISO": "ISO.TO",
+    "DN3": "DN3.F",
+    "U9UA": "U9UA.F",
+  };
+
+  function normalizeTickerLookupKey(v) {
+    return String(v || "")
+      .trim()
+      .toUpperCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "");
+  }
+
+  function isManualNonMarketAsset(asset) {
+    const cls = normalizeTickerLookupKey(asset.class || "");
+    const name = normalizeTickerLookupKey(asset.name || "");
+    const raw = normalizeTickerLookupKey(asset.ticker || asset.name || "");
+    if (name.includes("CERTIFICADOS AFORRO")) return true;
+    if ((cls === "DEPOSITOS" || cls === "OBRIGACOES") && /^\d{1,6}$/.test(raw)) return true;
+    return false;
+  }
 
   function toYahooTicker(raw) {
     const t = (raw||"").trim().toUpperCase();
     if (!t || SKIP_TICKERS.has(t)) return null;
+    if (YAHOO_TICKER_OVERRIDES[t]) return YAHOO_TICKER_OVERRIDES[t];
     if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD");
     const xmap = {".PT":".LS",".GB":".L",".PL":".WA",".CH":".SW",
       ".DK":".CO",".SE":".ST",".NO":".OL",".FI":".HE",
@@ -7960,6 +7986,7 @@ async function refreshLiveQuotes() {
   }
 
   function buildYahooTickerCandidates(asset) {
+    if (isManualNonMarketAsset(asset)) return [];
     const out = [];
     const push = tk => {
       const val = toYahooTicker(tk);
