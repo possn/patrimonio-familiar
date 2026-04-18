@@ -1052,16 +1052,31 @@ function renderGoal() {
   const breakEl = document.getElementById("goalBreakdown");
   if (breakEl && t.passiveBreakdown) {
     const entries = Object.entries(t.passiveBreakdown).sort((a,b) => b[1]-a[1]);
-    let html = entries.map(([cls, v]) => `${escapeHtml(cls)}: <b>${fmtEUR(v)}</b>`).join(" &nbsp;·&nbsp; ");
-    if (t.realDividends12m > 0) {
-      html += ` &nbsp;·&nbsp; <span style="color:#059669">Dividendos: <b>${fmtEUR(t.realDividends12m)}</b>/ano</span>`;
+    if (!entries.length) { breakEl.style.display = "none"; }
+    else {
+      // Compact 2-column grid — no run-on inline text
+      const rows = entries.map(([cls, v]) => {
+        const pct = t.passiveAnnual > 0 ? (v / t.passiveAnnual * 100) : 0;
+        const barW = Math.round(pct);
+        return `<div style="display:flex;align-items:center;justify-content:space-between;
+            padding:4px 0;border-bottom:1px solid var(--line);gap:6px">
+          <div style="font-size:11px;color:var(--muted);flex:1;min-width:0;white-space:nowrap;
+              overflow:hidden;text-overflow:ellipsis">${escapeHtml(cls)}</div>
+          <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+            <div style="width:40px;height:4px;background:var(--line);border-radius:2px;overflow:hidden">
+              <div style="height:4px;background:#6366f1;border-radius:2px;width:${barW}%"></div>
+            </div>
+            <div style="font-size:12px;font-weight:700;color:var(--text);min-width:50px;text-align:right">
+              ${fmtEUR(v)}</div>
+          </div>
+        </div>`;
+      }).join("");
+      const totalRow = `<div style="display:flex;justify-content:space-between;padding:5px 0;font-weight:800;font-size:12px">
+        <span>Total anual</span><span style="color:#6366f1">${fmtEUR(t.passiveAnnual)}</span>
+      </div>`;
+      breakEl.innerHTML = rows + totalRow;
+      breakEl.style.display = "";
     }
-    if (html) {
-      const totalShown = entries.reduce((s,[,v])=>s+v,0) + (t.realDividends12m > 0 && !entries.find(([k])=>k.includes("Dividendo")) ? t.realDividends12m : 0);
-      html += ` &nbsp;·&nbsp; <b>Total: ${fmtEUR(t.passiveAnnual)}/ano</b>`;
-    }
-    breakEl.innerHTML = html;
-    breakEl.style.display = html ? "" : "none";
   }
 
   // update settings input
@@ -1489,8 +1504,17 @@ function renderSummary() {
     row.addEventListener("click", () => { setView("assets"); editItem(it.id); });
     list.appendChild(row);
   }
-  $("btnSummaryToggle").style.display = items.length > 10 ? "inline-flex" : "none";
-  $("btnSummaryToggle").textContent = summaryExpanded ? "▲ Ver menos" : "▼ Ver mais ("+items.length+")";
+  const toggleBtn = $("btnSummaryToggle");
+  if (toggleBtn) {
+    toggleBtn.style.display = items.length > 10 ? "inline-flex" : "none";
+    toggleBtn.textContent = summaryExpanded
+      ? "▲ Ver menos"
+      : `▼ Ver mais (${items.length - 10} de ${items.length} ativos)`;
+  }
+  // Update subtitle with total count
+  const sub = document.getElementById("itemsSub") || document.querySelector("#viewDashboard .card__muted");
+  const dashSub = document.querySelector("#summaryList")?.closest(".card")?.querySelector(".card__muted");
+  if (dashSub) dashSub.textContent = `Por valor · ${items.length} ativos · clica para editar`;
 }
 
 const PALETTE = ["#5b5ce6","#3b82f6","#39d6d8","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899","#06b6d4","#84cc16","#f97316","#64748b"];
@@ -10554,173 +10578,180 @@ function renderAllocationPanel() {
   const gapEl   = document.getElementById("allocationGapContent");
   if (!el) return;
 
-  // Auto-detect phase if not set by user
-  const savedPreset = (state.settings && state.settings.allocationPreset) || null;
-  if (savedPreset) _allocPreset = savedPreset;
-  else _allocPreset = detectFIREPhase();
+  try {
+    // Phase detection
+    const savedPreset = (state.settings && state.settings.allocationPreset) || null;
+    if (savedPreset) _allocPreset = savedPreset;
+    else _allocPreset = detectFIREPhase();
 
-  const custom = (state.settings && state.settings.targetAllocation) || null;
-  const preset = FIRE_ALLOCATION_PRESETS[_allocPreset];
-  const alloc  = custom || preset.classes;
+    const custom = (state.settings && state.settings.targetAllocation) || null;
+    const preset = FIRE_ALLOCATION_PRESETS[_allocPreset];
+    const alloc  = custom || preset.classes;
+    const t      = calcTotals();
 
-  const t = calcTotals();
+    const CLASS_KEY_MAP = {
+      "Ações/ETFs":"acoes/etfs","Imobiliário":"imobiliario","Obrigações/Fundos":"obrigacoes",
+      "PPR":"ppr","Depósitos a prazo":"depositos","Metais Preciosos":"ouro"
+    };
 
-  const CLASS_KEY_MAP = {
-    "Ações/ETFs":"acoes/etfs", "Imobiliário":"imobiliario", "Obrigações/Fundos":"obrigacoes",
-    "PPR":"ppr", "Depósitos a prazo":"depositos", "Metais Preciosos":"ouro"
-  };
+    function getActualForClass(a) {
+      const targetKey = CLASS_KEY_MAP[a.class] || normStr(a.class);
+      return state.assets.filter(x => {
+        const k = assetClassKey(x);
+        if (a.class === "Obrigações/Fundos") return k === "obrigacoes" || k === "fundos";
+        if (a.class === "Metais Preciosos")  return k === "ouro" || k === "prata";
+        return k === targetKey;
+      }).reduce((s,x) => s + parseNum(x.value), 0);
+    }
 
-  function getActualForClass(a) {
-    const targetKey = CLASS_KEY_MAP[a.class] || normStr(a.class);
-    return state.assets.filter(x => {
-      const k = assetClassKey(x);
-      if (a.class === "Obrigações/Fundos") return k === "obrigacoes" || k === "fundos";
-      if (a.class === "Metais Preciosos") return k === "ouro" || k === "prata";
-      return k === targetKey;
-    }).reduce((s,x)=>s+parseNum(x.value),0);
-  }
+    // Real metrics — safe call
+    let m = { hasData:false, grandTotalReturn:0, grandTotalReturnPct:0, ttmYieldNet:0, totalRealizedPnL:0 };
+    try { m = calcPortfolioRealMetrics(); } catch(e) { /* silent */ }
 
-  const m = calcPortfolioRealMetrics();
+    // ── Build HTML using string concat (avoids nested template literal crashes on iOS)
+    let html = "";
 
-  el.innerHTML = `
-    <!-- Phase selector with FIRE context -->
-    <div style="margin-bottom:14px">
-      <div style="font-size:11px;color:var(--muted);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.4px">
-        Fase FIRE — selecciona a tua situação actual
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
-        ${Object.entries(FIRE_ALLOCATION_PRESETS).map(([key, p]) => `
-          <button class="btn ${_allocPreset===key?"btn--primary":"btn--outline"}"
-            style="font-size:11px;padding:8px 6px;text-align:center;line-height:1.3"
-            onclick="window._allocPreset='${key}';renderAllocationPanel()">
-            ${p.label}<br><span style="font-size:9px;opacity:.75">${p.firePhase}</span>
-          </button>`).join("")}
-      </div>
-      <div style="background:var(--card2);border-radius:var(--r-sm);padding:10px 12px;border:1px solid var(--line)">
-        <div style="font-size:12px;line-height:1.6;color:var(--muted)">${preset.desc}</div>
-        <div style="margin-top:6px;display:flex;gap:12px;font-size:11px;flex-wrap:wrap">
-          <span style="color:#6366f1;font-weight:700">📈 Retorno esperado: ${preset.expectedReturn}</span>
-        </div>
-      </div>
-    </div>
+    // Phase selector
+    html += "<div style='margin-bottom:14px'>";
+    html += "<div style='font-size:11px;color:var(--muted);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.4px'>Fase FIRE — selecciona a tua situação</div>";
+    html += "<div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px'>";
+    Object.entries(FIRE_ALLOCATION_PRESETS).forEach(([key, p]) => {
+      const active = _allocPreset === key;
+      html += "<button class='btn " + (active ? "btn--primary" : "btn--outline") + " js-alloc-phase'"
+        + " style='font-size:11px;padding:8px 6px;text-align:center;line-height:1.3'"
+        + " data-phase='" + key + "'>"
+        + escapeHtml(p.label) + "<br><span style='font-size:9px;opacity:.75'>" + escapeHtml(p.firePhase) + "</span>"
+        + "</button>";
+    });
+    html += "</div>";
+    // Phase description card
+    html += "<div style='background:var(--card2);border-radius:var(--r-sm);padding:10px 12px;border:1px solid var(--line)'>";
+    html += "<div style='font-size:12px;line-height:1.6;color:var(--muted)'>" + escapeHtml(preset.desc) + "</div>";
+    html += "<div style='margin-top:6px;font-size:11px;color:#6366f1;font-weight:700'>📈 Retorno esperado: " + escapeHtml(preset.expectedReturn) + "</div>";
+    html += "</div></div>";
 
-    <!-- Allocation bars with rationale -->
-    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
-      ${alloc.map(a => {
-        const actual    = getActualForClass(a);
-        const actualPct = t.assetsTotal > 0 ? actual/t.assetsTotal*100 : 0;
-        const gap       = a.pct - actualPct;
-        const gapAbs    = Math.abs(gap);
-        const gapCol    = gapAbs < 3 ? "#059669" : gapAbs < 10 ? "#d97706" : "#dc2626";
-        const gapText   = gapAbs < 3 ? "✅ Em linha" :
-                          gap > 0 ? `📈 Aumentar ${fmtEUR(t.assetsTotal * gap/100)}` :
-                                    `📉 Reduzir ${fmtEUR(t.assetsTotal * (-gap)/100)}`;
-        const barPct    = Math.min(100, t.assetsTotal > 0 ? (actual / (t.assetsTotal * a.pct/100)) * 100 : 0);
-        const hasSugg   = !!a.examples;
-        return `<div style="background:var(--card2);border-radius:var(--r-sm);border:1px solid var(--line);overflow:hidden">
-          <!-- Header row -->
-          <div style="padding:12px 14px 8px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-            <div style="flex:1;min-width:0">
-              <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
-                <span style="font-weight:900;font-size:14px">${escapeHtml(a.class)}</span>
-                <span style="font-size:10px;background:${gapAbs<3?"#d1fae5":gapAbs<10?"#fef3c7":"#fef2f2"};color:${gapCol};padding:2px 6px;border-radius:999px;font-weight:700;white-space:nowrap">${gapText}</span>
-              </div>
-              <div style="font-size:11px;color:var(--muted)">${escapeHtml(a.riskReturn||a.tip)}</div>
-            </div>
-            <div style="text-align:right;flex-shrink:0">
-              <div style="font-size:20px;font-weight:900">${a.pct}%</div>
-              <div style="font-size:10px;color:var(--muted)">actual ${fmtPct(actualPct)}</div>
-            </div>
-          </div>
-          <!-- Progress bar: actual vs target -->
-          <div style="padding:0 14px 8px">
-            <div style="height:6px;background:var(--line);border-radius:3px;overflow:hidden">
-              <div style="height:6px;background:${gapAbs<3?"#10b981":gapAbs<10?"#f59e0b":"#6366f1"};border-radius:3px;width:${barPct}%;transition:width .6s"></div>
-            </div>
-            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
-              <span>${fmtEUR(actual)}</span><span>alvo: ${fmtEUR(t.assetsTotal * a.pct/100)}</span>
-            </div>
-          </div>
-          <!-- Rationale (expandable) -->
-          ${a.rationale ? `<details style="border-top:1px solid var(--line)">
-            <summary style="padding:8px 14px;font-size:11px;font-weight:700;color:#6366f1;cursor:pointer;list-style:none">
-              💡 Porquê ${a.pct}%? · ${escapeHtml(a.tip)}
-            </summary>
-            <div style="padding:8px 14px 12px;font-size:11px;color:var(--muted);line-height:1.6">
-              ${escapeHtml(a.rationale)}
-              ${a.examples ? `<div style="margin-top:6px;font-weight:700;color:var(--text)">📋 Exemplos: ${escapeHtml(a.examples)}</div>` : ""}
-            </div>
-          </details>` : ""}
-        </div>`;
-      }).join("")}
-    </div>
+    // Allocation bars
+    html += "<div style='display:flex;flex-direction:column;gap:10px;margin-bottom:14px'>";
+    alloc.forEach(a => {
+      const actual    = getActualForClass(a);
+      const actualPct = t.assetsTotal > 0 ? actual / t.assetsTotal * 100 : 0;
+      const gap       = a.pct - actualPct;
+      const gapAbs    = Math.abs(gap);
+      const gapCol    = gapAbs < 3 ? "#059669" : gapAbs < 10 ? "#d97706" : "#dc2626";
+      const gapBg     = gapAbs < 3 ? "#d1fae5" : gapAbs < 10 ? "#fef3c7" : "#fef2f2";
+      const gapText   = gapAbs < 3 ? "✅ Em linha"
+        : gap > 0 ? "📈 +" + fmtEUR(t.assetsTotal * gap / 100)
+        : "📉 -" + fmtEUR(t.assetsTotal * (-gap) / 100);
+      const barPct    = Math.min(100, t.assetsTotal > 0 ? (actual / Math.max(1, t.assetsTotal * a.pct / 100)) * 100 : 0);
+      const barCol    = gapAbs < 3 ? "#10b981" : gapAbs < 10 ? "#f59e0b" : "#6366f1";
 
-    <!-- Performance real integrada -->
-    ${m.hasData ? `<div style="background:var(--card2);border-radius:var(--r-sm);padding:12px 14px;border:1px solid var(--line);margin-bottom:14px">
-      <div style="font-weight:800;font-size:13px;margin-bottom:8px">📊 Performance real do teu portfólio</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
-        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
-          <div style="font-size:9px;color:var(--muted);font-weight:700">Retorno total</div>
-          <div style="font-size:14px;font-weight:900;color:${m.grandTotalReturn>=0?"#059669":"#dc2626"}">${m.grandTotalReturn>=0?"+":""}${fmtPct(m.grandTotalReturnPct)}</div>
-        </div>
-        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
-          <div style="font-size:9px;color:var(--muted);font-weight:700">Yield dividendos</div>
-          <div style="font-size:14px;font-weight:900;color:#6366f1">${fmtPct(m.ttmYieldNet)}</div>
-        </div>
-        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
-          <div style="font-size:9px;color:var(--muted);font-weight:700">Mais-valias</div>
-          <div style="font-size:14px;font-weight:900;color:${m.totalRealizedPnL>=0?"#059669":"#dc2626"}">${m.totalRealizedPnL>=0?"+":""}${fmtEUR(m.totalRealizedPnL)}</div>
-        </div>
-      </div>
-    </div>` : ""}`;
+      html += "<div style='background:var(--card2);border-radius:var(--r-sm);border:1px solid var(--line);overflow:hidden'>";
+      // Header
+      html += "<div style='padding:12px 14px 8px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px'>";
+      html += "<div style='flex:1;min-width:0'>";
+      html += "<div style='display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap'>";
+      html += "<span style='font-weight:900;font-size:14px'>" + escapeHtml(a.class) + "</span>";
+      html += "<span style='font-size:10px;background:" + gapBg + ";color:" + gapCol + ";padding:2px 6px;border-radius:999px;font-weight:700'>" + gapText + "</span>";
+      html += "</div>";
+      html += "<div style='font-size:11px;color:var(--muted)'>" + escapeHtml(a.riskReturn || a.tip) + "</div>";
+      html += "</div>";
+      html += "<div style='text-align:right;flex-shrink:0'>";
+      html += "<div style='font-size:20px;font-weight:900'>" + a.pct + "%</div>";
+      html += "<div style='font-size:10px;color:var(--muted)'>actual " + fmtPct(actualPct) + "</div>";
+      html += "</div></div>";
+      // Progress bar
+      html += "<div style='padding:0 14px 8px'>";
+      html += "<div style='height:6px;background:var(--line);border-radius:3px;overflow:hidden'>";
+      html += "<div style='height:6px;background:" + barCol + ";border-radius:3px;width:" + barPct + "%;transition:width .6s'></div>";
+      html += "</div>";
+      html += "<div style='display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px'>";
+      html += "<span>" + fmtEUR(actual) + "</span><span>alvo: " + fmtEUR(t.assetsTotal * a.pct / 100) + "</span>";
+      html += "</div></div>";
+      // Rationale (expandable details)
+      if (a.rationale) {
+        html += "<details style='border-top:1px solid var(--line)'>";
+        html += "<summary style='padding:8px 14px;font-size:11px;font-weight:700;color:#6366f1;cursor:pointer;list-style:none'>";
+        html += "💡 Porquê " + a.pct + "%? · " + escapeHtml(a.tip);
+        html += "</summary>";
+        html += "<div style='padding:8px 14px 12px;font-size:11px;color:var(--muted);line-height:1.6'>";
+        html += escapeHtml(a.rationale);
+        if (a.examples) {
+          html += "<div style='margin-top:6px;font-weight:700;color:var(--text)'>📋 Exemplos: " + escapeHtml(a.examples) + "</div>";
+        }
+        html += "</div></details>";
+      }
+      html += "</div>"; // end card
+    });
+    html += "</div>"; // end allocation bars
 
-  // Gap analysis
-  if (t.assetsTotal > 0 && gapCard && gapEl) {
-    gapCard.style.display = "";
-    const gaps = alloc.map(a => {
-      const CLASS_KEY_MAP2 = {
-        "Ações/ETFs":"acoes/etfs", "Imobiliário":"imobiliario", "Obrigações/Fundos":"obrigacoes",
-        "PPR":"ppr", "Depósitos a prazo":"depositos", "Metais Preciosos":"ouro"
-      };
-      const tKey = CLASS_KEY_MAP2[a.class] || normStr(a.class);
-      const actual = state.assets
-        .filter(x => {
+    // Real performance block
+    if (m.hasData) {
+      html += "<div style='background:var(--card2);border-radius:var(--r-sm);padding:12px 14px;border:1px solid var(--line);margin-bottom:14px'>";
+      html += "<div style='font-weight:800;font-size:13px;margin-bottom:8px'>📊 Performance real do teu portfólio</div>";
+      html += "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:6px'>";
+      const rc = m.grandTotalReturn >= 0 ? "#059669" : "#dc2626";
+      const rp = (m.grandTotalReturn >= 0 ? "+" : "") + fmtPct(m.grandTotalReturnPct);
+      html += "<div style='background:var(--card);border-radius:8px;padding:8px;text-align:center'><div style='font-size:9px;color:var(--muted);font-weight:700'>Retorno total</div><div style='font-size:14px;font-weight:900;color:" + rc + "'>" + rp + "</div></div>";
+      html += "<div style='background:var(--card);border-radius:8px;padding:8px;text-align:center'><div style='font-size:9px;color:var(--muted);font-weight:700'>Yield (distrib.)</div><div style='font-size:14px;font-weight:900;color:#6366f1'>" + fmtPct(m.ttmYieldNet) + "</div></div>";
+      const pc = m.totalRealizedPnL >= 0 ? "#059669" : "#dc2626";
+      const pp = (m.totalRealizedPnL >= 0 ? "+" : "") + fmtEUR(m.totalRealizedPnL);
+      html += "<div style='background:var(--card);border-radius:8px;padding:8px;text-align:center'><div style='font-size:9px;color:var(--muted);font-weight:700'>Mais-valias</div><div style='font-size:14px;font-weight:900;color:" + pc + "'>" + pp + "</div></div>";
+      html += "</div></div>";
+    }
+
+    el.innerHTML = html;
+    // Wire phase-select buttons (use data-phase to avoid onclick quoting issues)
+    el.querySelectorAll(".js-alloc-phase").forEach(btn => {
+      btn.addEventListener("click", () => {
+        window._allocPreset = btn.dataset.phase;
+        renderAllocationPanel();
+      });
+    });
+
+    // Gap analysis
+    if (t.assetsTotal > 0 && gapCard && gapEl) {
+      gapCard.style.display = "";
+      const gaps = alloc.map(a => {
+        const tKey = CLASS_KEY_MAP[a.class] || normStr(a.class);
+        const actual = state.assets.filter(x => {
           const k = assetClassKey(x);
           if (a.class === "Obrigações/Fundos") return k === "obrigacoes" || k === "fundos";
-          if (a.class === "Metais Preciosos") return k === "ouro" || k === "prata";
+          if (a.class === "Metais Preciosos")  return k === "ouro" || k === "prata";
           return k === tKey;
-        })
-        .reduce((s,x)=>s+parseNum(x.value),0);
-      const target = t.assetsTotal * a.pct / 100;
-      return { class: a.class, actual, target, gap: target - actual, pct: a.pct };
-    }).sort((a,b) => b.gap - a.gap);
+        }).reduce((s,x) => s + parseNum(x.value), 0);
+        return { class:a.class, actual, target: t.assetsTotal * a.pct / 100, gap: t.assetsTotal * a.pct / 100 - actual, pct: a.pct };
+      }).sort((a,b) => b.gap - a.gap);
 
-    gapEl.innerHTML = gaps.map(g => {
-      const col = g.gap > 0 ? "#059669" : g.gap < 0 ? "#dc2626" : "#94a3b8";
-      const action = g.gap > 1000 ? `📈 Aumentar ${fmtEUR(g.gap)}` : g.gap < -1000 ? `📉 Reduzir ${fmtEUR(Math.abs(g.gap))}` : "✅ Em linha";
-      return `<div class="item" style="cursor:default">
-        <div class="item__l">
-          <div class="item__t">${escapeHtml(g.class)}</div>
-          <div class="item__s">${fmtEUR(g.actual)} actual → ${fmtEUR(g.target)} alvo (${g.pct}%)</div>
-        </div>
-        <div style="text-align:right">
-          <div style="font-weight:800;color:${col};font-size:14px">${action}</div>
-        </div>
-      </div>`;
-    }).join("");
-  } else if (gapCard) { gapCard.style.display = "none"; }
+      gapEl.innerHTML = gaps.map(g => {
+        const col    = g.gap > 0 ? "#059669" : g.gap < 0 ? "#dc2626" : "#94a3b8";
+        const action = g.gap > 1000 ? "📈 Aumentar " + fmtEUR(g.gap)
+          : g.gap < -1000 ? "📉 Reduzir " + fmtEUR(Math.abs(g.gap)) : "✅ Em linha";
+        return "<div class='item' style='cursor:default'>"
+          + "<div class='item__l'>"
+          + "<div class='item__t'>" + escapeHtml(g.class) + "</div>"
+          + "<div class='item__s'>" + fmtEUR(g.actual) + " actual → " + fmtEUR(g.target) + " alvo (" + g.pct + "%)</div>"
+          + "</div>"
+          + "<div style='text-align:right'><div style='font-weight:800;color:" + col + ";font-size:14px'>" + action + "</div></div>"
+          + "</div>";
+      }).join("");
+    } else if (gapCard) { gapCard.style.display = "none"; }
 
-  // Wire save button
-  const btn = document.getElementById("btnSaveAllocation");
-  if (btn) {
-    btn.onclick = () => {
+    // Wire save button
+    const btn = document.getElementById("btnSaveAllocation");
+    if (btn) btn.onclick = () => {
       if (!state.settings) state.settings = {};
       state.settings.allocationPreset = _allocPreset;
       saveState();
-      toast(`Alocação ${FIRE_ALLOCATION_PRESETS[_allocPreset].label} guardada ✅`);
+      toast("Alocação " + FIRE_ALLOCATION_PRESETS[_allocPreset].label + " guardada ✅");
     };
+
+  } catch(err) {
+    console.error("renderAllocationPanel error:", err);
+    const el2 = document.getElementById("allocationContent");
+    if (el2) el2.innerHTML = "<div class='note'>Erro ao carregar alocação: " + escapeHtml(String(err)) + "</div>";
   }
 }
+
 
 /** XTB PDF Account Statement – text extraction fallback
  *  XTB PDFs are typically not machine-readable tables; we do a best-effort
