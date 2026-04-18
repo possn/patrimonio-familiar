@@ -26,7 +26,7 @@
       document.head.appendChild(s);
     })();
   </script>
-  <script defer src="app.js?v=20260418e"></script>
+  <script defer src="app.js?v=20260418f"></script>
 </head>
 <body>
 
@@ -341,8 +341,11 @@
         <button class="btn btn--primary" id="btnImportBrokerFiles" disabled>Importar ficheiros</button>
       </div>
       <div class="note">
-        Junta vários ficheiros anuais (ex: 2023, 2024, 2025) e até corretoras diferentes. Reconhece <b>ledger</b> tipo <i>Action/Time/Total</i>, <b>posições</b> tipo <i>Ticker/Quantity/Cost Per Share</i> e <b>PDF de confirmação de posses</b>.<br>
-        A app cruza histórico, posições e snapshots, deduplica sobreposições e reconstrói a parte importada da carteira. Para o mesmo broker, o ledger alimenta custo/dividendos e o snapshot actualiza quantidades/valor actual.
+        Junta vários ficheiros de anos diferentes e corretoras. <b>Formatos suportados:</b><br>
+        • <b>Trading 212</b> — CSV "Activity" + PDF "Confirmation of Holdings"<br>
+        • <b>XTB</b> — CSV "Historial de negociações" + CSV "Posições abertas" + CSV "Operações de caixa" + PDF<br>
+        • <b>Genérico</b> — CSV com Ticker/Quantity/Cost_per_share ou Symbol/Action/Total<br>
+        Deduplicação automática: reimportar o mesmo ficheiro substitui, não duplica.
       </div>
       <div id="brokerImportResult" style="display:none;margin-top:10px"></div>
       <div id="brokerImportAudit" style="display:none;margin-top:10px"></div>
@@ -1236,7 +1239,7 @@
 
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Sobre</div>
-        <div class="card__muted">Património Familiar <b>v16.8</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v16.8:</b> Parser XTB (CSV trades, posições, operações de caixa) · Histórico de cotações por ticker (tab Análise → 📉 Cotações) · Multi-moeda real com conversão automática no modal · Alocação Alvo FIRE com 3 fases (tab 🎯 Alocação) · FX taxas em tempo real guardadas localmente<br><br><b>Novidades v16.7:</b> Saúde Financeira com explicações detalhadas e sugestões contextuais por métrica · Barra de cobertura passiva · 6 indicadores com dicas de melhoria<br><br><b>Novidades v16.6:</b> Todas as listas com "▼ Ver mais / ▲ Ver menos" limitadas a 10 itens · Bug crítico na edição de resumos de dividendos corrigido · Limite de movimentos aumentado (5→10)<br><br><b>Novidades v16.5:</b> Motor de retorno unificado · valorização esperada por activo · pressupostos editáveis por classe · FIRE/Compound/Previsão coerentes<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
+        <div class="card__muted">Património Familiar <b>v16.9</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v16.9:</b> XTB: detecção colunas PT (Símbolo/Tipo/Lucro/Montante/Data de abertura…) · Swap overhead → custo, não rendimento · Yield automático por ativo calculado dos dividendos reais importados · importJSON preserva histórico de preços e FX · Alocação FIRE com class matching corrigido<br><br><b>Novidades v16.8:</b> Parser XTB (CSV trades, posições, operações de caixa) · Histórico de cotações por ticker (tab Análise → 📉 Cotações) · Multi-moeda real com conversão automática no modal · Alocação Alvo FIRE com 3 fases (tab 🎯 Alocação) · FX taxas em tempo real guardadas localmente<br><br><b>Novidades v16.7:</b> Saúde Financeira com explicações detalhadas e sugestões contextuais por métrica · Barra de cobertura passiva · 6 indicadores com dicas de melhoria<br><br><b>Novidades v16.6:</b> Todas as listas com "▼ Ver mais / ▲ Ver menos" limitadas a 10 itens · Bug crítico na edição de resumos de dividendos corrigido · Limite de movimentos aumentado (5→10)<br><br><b>Novidades v16.5:</b> Motor de retorno unificado · valorização esperada por activo · pressupostos editáveis por classe · FIRE/Compound/Previsão coerentes<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
       </div>
     </div>
     <div id="paneFire" style="display:none">

@@ -1421,7 +1421,7 @@ function renderSummary() {
     const sourceBadge = it.generatedFromBroker
       ? `<span class="badge" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe">Corretora</span>`
       : ``;
-    row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(it.name || "—")} ${badge} ${sourceBadge}</div><div class="item__s">${escapeHtml(it.class || "")}</div></div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
+    row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(it.name || "—")} ${badge} ${sourceBadge}${ccyBadge(it)}</div><div class="item__s">${escapeHtml(it.class || "")}</div></div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
     row.addEventListener("click", () => { setView("assets"); editItem(it.id); });
     list.appendChild(row);
   }
@@ -4550,6 +4550,7 @@ function csvToObjects(text) {
 
 function normKey(k) {
   return String(k || "").trim().toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // strip accents: símbolo→simbolo
     .replace(/[\u00A0]/g, " ").replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "");
 }
 
@@ -4820,21 +4821,38 @@ function detectBrokerRowsFormat(rows) {
   // Generic positions CSV (cost per share)
   if (has("ticker", "symbol") && has("quantity", "qty", "shares", "no_of_shares") && has("cost_per_share", "price_share", "price", "preco")) return "positions";
   // XTB trade history CSV (closed trades)
-  // Columns: Symbol, Type, Open time, Close time, Open price, Close price, Volume, Profit, Commission, Swap
-  if (has("symbol") && has("type") && (has("open_time","open time") || has("opentime")) && (has("close_time","close time") || has("closetime")) && has("volume")) return "xtb_trades";
+  // EN cols: Symbol,Type,Open time,Close time,Open price,Close price,Volume,Profit,Commission,Swap
+  // PT cols (after normKey accent strip): simbolo,tipo,data_de_abertura,data_de_fecho,preco_de_abertura,preco_de_fecho,volume,lucro,comissao,swap
+  const hasSymbolOrSimb = has("symbol","simbolo","instrumento");
+  const hasOpenTime  = has("open_time","opentime","data_de_abertura","data_abertura","abertura");
+  const hasCloseTime = has("close_time","closetime","data_de_fecho","data_fecho","fecho");
+  const hasVolume    = has("volume","qty","quantity","quantidade");
+  const hasProfit    = has("profit","lucro","resultado","pl","profit_loss");
+  if (hasSymbolOrSimb && has("type","tipo") && hasOpenTime && hasCloseTime && hasVolume) return "xtb_trades";
   // XTB open positions / portfolio snapshot
-  // Columns: Symbol, Volume, Open price, Market price, Profit/Loss
-  if (has("symbol") && has("volume") && (has("open_price","open price") || has("openprice")) && (has("market_price","market price") || has("marketprice"))) return "xtb_positions";
-  // XTB cash operations / history (Tipo/Tipo de operação, Símbolo, Montante, Comentário)
-  if ((has("tipo","type") || has("tipo_de_operacao","tipo de operacao")) && (has("montante","amount","valor") || has("profit")) && has("simbolo","symbol","ticker")) return "xtb_cash";
+  // EN: Symbol,Volume,Open price,Market price  PT: simbolo,volume,preco_de_abertura,preco_atual
+  const hasOpenPx  = has("open_price","openprice","preco_de_abertura","preco_abertura","preco_entrada");
+  const hasMktPx   = has("market_price","marketprice","preco_atual","preco_mercado","current_price");
+  if (hasSymbolOrSimb && hasVolume && hasOpenPx && hasMktPx) return "xtb_positions";
+  // XTB cash operations (Tipo, Símbolo/Comentário, Montante, Data)
+  // PT: tipo,simbolo,montante,comentario,data  EN: type,symbol,amount,comment,date
+  if ((has("tipo","type")) && has("montante","amount","valor") && (hasSymbolOrSimb || has("comentario","comment"))) return "xtb_cash";
   return "unknown";
 }
 
 function detectBrokerTextFormat(text) {
   const n = normStr(text || "");
   if (!n) return "unknown";
+  // Trading 212 holdings PDF
   if ((n.includes("confirmacao de ativos") || n.includes("confirmation of holdings") || n.includes("trading 212 invest")) && n.includes("valor dos ativos") && n.includes("isin") && n.includes("quantity") && n.includes("price")) {
     return "holdings_pdf";
+  }
+  // XTB account statement / trade confirmation PDF
+  // XTB PDFs typically contain "xtb" in header and have Symbol/Volume/Open/Close columns
+  if ((n.includes("xtb") || n.includes("x-trade brokers")) &&
+      (n.includes("symbol") || n.includes("simbolo") || n.includes("instrumento")) &&
+      (n.includes("volume") || n.includes("profit") || n.includes("lucro"))) {
+    return "xtb_pdf";
   }
   return "unknown";
 }
@@ -5001,14 +5019,21 @@ function parseXTBNormalizeAction(type, comment) {
   const t = normStr(type || "");
   const c = normStr(comment || "");
   // Closed trade types
-  if (t === "buy" || t === "compra" || t === "bought") return "BUY";
-  if (t === "sell" || t === "venda" || t === "sold") return "SELL";
-  // Cash ops
+  if (t === "buy" || t === "compra" || t === "bought" || t === "compra_mercado" || t === "compra_limite") return "BUY";
+  if (t === "sell" || t === "venda" || t === "sold" || t === "venda_mercado" || t === "venda_limite") return "SELL";
+  // Cash operations
   if (t.includes("deposit") || t.includes("deposito") || c.includes("deposit")) return "DEPOSIT";
-  if (t.includes("withdraw") || t.includes("levantamento")) return "WITHDRAWAL";
-  if (t.includes("dividend") || t.includes("dividendo") || c.includes("dividend")) return "DIVIDEND";
-  if (t.includes("interest") || t.includes("juro") || c.includes("interest")) return "CASH_INTEREST";
-  if (t.includes("commission") || t.includes("comissao")) return "OTHER"; // absorb into trade cost
+  if (t.includes("withdraw") || t.includes("levantamento") || t.includes("retirada")) return "WITHDRAWAL";
+  if (t.includes("dividend") || t.includes("dividendo") || c.includes("dividend") || c.includes("dividendo")) return "DIVIDEND";
+  // Swap = overnight financing cost for leveraged CFD positions → WITHDRAWAL (expense)
+  if (t === "swap" || t.includes("rollover") || t.includes("overnight") || t.includes("financiamento")) return "WITHDRAWAL";
+  // Interest income (on cash balance, not swap)
+  if (t.includes("interest") && !t.includes("swap") || t.includes("juro") && !t.includes("swap")) return "CASH_INTEREST";
+  if (c.includes("interest on") && !c.includes("swap")) return "CASH_INTEREST";
+  // Commission as separate cash op (not embedded in trade)
+  if (t.includes("commission") || t.includes("comissao") || t.includes("taxa")) return "OTHER";
+  // Stock/ETF/Fund operations
+  if (t.includes("stock") || t.includes("acao") || t.includes("etf")) return "BUY";
   return "OTHER";
 }
 
@@ -5031,17 +5056,18 @@ function parseXTBTradesRows(rows, meta) {
   const events = [];
   for (const raw of (rows || [])) {
     const r = normalizeRow(raw);
-    // Column aliases (PT/EN mixed)
-    const symbol   = String(r.symbol || r.simbolo || r.instrumento || "").trim();
-    const typeRaw  = String(r.type || r.tipo || r.direction || "").trim();
-    const openTime = String(r.open_time || r["open time"] || r.opentime || r.data_abertura || "").trim();
-    const closeTime= String(r.close_time || r["close time"] || r.closetime || r.data_fecho || "").trim();
-    const openPx   = parseNumberSmart(r.open_price || r["open price"] || r.openprice || r.preco_abertura);
-    const closePx  = parseNumberSmart(r.close_price || r["close price"] || r.closeprice || r.preco_fecho);
-    const vol      = parseNumberSmart(r.volume || r.qty || r.quantity || r.units);
-    const profit   = parseNumberSmart(r.profit || r.resultado || r.pl || r["profit/loss"]);
-    const commission = parseNumberSmart(r.commission || r.comissao || 0);
-    const comment  = String(r.comment || r.comentario || r.comments || "").trim();
+    // Column aliases (PT/EN — normKey already stripped accents)
+    const symbol   = String(r.symbol || r.simbolo || r.instrumento || r.ticker || "").trim();
+    const typeRaw  = String(r.type || r.tipo || r.direction || r.direcao || "").trim();
+    const openTime = String(r.open_time || r.opentime || r.data_de_abertura || r.data_abertura || r.abertura || "").trim();
+    const closeTime= String(r.close_time || r.closetime || r.data_de_fecho || r.data_fecho || r.fecho || "").trim();
+    const openPx   = parseNumberSmart(r.open_price || r.openprice || r.preco_de_abertura || r.preco_abertura || r.preco_entrada);
+    const closePx  = parseNumberSmart(r.close_price || r.closeprice || r.preco_de_fecho || r.preco_fecho || r.preco_saida);
+    const vol      = parseNumberSmart(r.volume || r.qty || r.quantity || r.quantidade || r.units);
+    const profit   = parseNumberSmart(r.profit || r.lucro || r.resultado || r.pl || r.profit_loss);
+    const commission = parseNumberSmart(r.commission || r.comissao || r.comissoes || 0);
+    const swap     = parseNumberSmart(r.swap || r.swap_points || 0); // overnight cost (negative = expense)
+    const comment  = String(r.comment || r.comentario || r.comments || r.descricao || "").trim();
 
     if (!symbol || !Number.isFinite(vol) || vol <= 0) continue;
     const type = parseXTBNormalizeAction(typeRaw, comment);
@@ -5055,7 +5081,9 @@ function parseXTBTradesRows(rows, meta) {
     const totalEUR = Math.abs(Number.isFinite(profit) ? profit : 0) + Math.abs(commission);
     // Reconstruct approximate cost EUR = vol * openPx (best we have from CSV)
     const costEUR  = vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : pricePerShare);
-    const feeEUR   = Math.abs(commission);
+    // swap is a financing cost when negative (leveraged positions), add to fees
+    const swapCost = Number.isFinite(swap) && swap < 0 ? Math.abs(swap) : 0;
+    const feeEUR   = Math.abs(commission) + swapCost;
 
     const evt = {
       id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
@@ -5114,11 +5142,11 @@ function parseXTBCashRows(rows, meta) {
   const events = [];
   for (const raw of (rows || [])) {
     const r = normalizeRow(raw);
-    const typeRaw = String(r.tipo || r.type || r.tipo_de_operacao || r["tipo de operacao"] || "").trim();
-    const symbol  = String(r.simbolo || r.symbol || r.ticker || "").trim();
-    const amount  = parseNumberSmart(r.montante || r.amount || r.valor || r.profit || r.resultado);
-    const comment = String(r.comentario || r.comment || r.comments || r.descricao || "").trim();
-    const dateRaw = String(r.data || r.date || r.datetime || r.time || "").trim();
+    const typeRaw = String(r.tipo || r.type || r.tipo_de_operacao || r.tipo_operacao || r.descricao_tipo || "").trim();
+    const symbol  = String(r.simbolo || r.symbol || r.ticker || r.instrumento || r.ativo || "").trim();
+    const amount  = parseNumberSmart(r.montante || r.amount || r.valor || r.lucro || r.profit || r.resultado);
+    const comment = String(r.comentario || r.comment || r.comments || r.descricao || r.observacoes || "").trim();
+    const dateRaw = String(r.data || r.date || r.datetime || r.time || r.hora || r.data_operacao || "").trim();
 
     if (!Number.isFinite(amount) || amount === 0) continue;
     const type = parseXTBNormalizeAction(typeRaw, comment);
@@ -5367,9 +5395,32 @@ function rebuildBrokerGeneratedData() {
     if (p.costBasis > 0) noteBits.push(`Custo=${fmtEUR2(p.costBasis)}`);
     if (p.hasSnapshot && p.marketValueEUR > 0) noteBits.push(`Valor snapshot=${fmtEUR2(p.marketValueEUR)}${p.snapshotDate ? ` @ ${p.snapshotDate}` : ""}`);
     noteBits.push(`Fontes=${Array.from(p.sourceNames || []).join(", ") || "import"}`);
+    // ── Compute annualised dividend yield from imported dividend events
+    const secKey  = makeBrokerSecurityKey(p);
+    const now     = new Date();
+    const curYear = now.getFullYear();
+    const cutoff  = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
+
+    // Collect dividend events for this security (last 12 months)
+    const divEvts = (bd.events || []).filter(e =>
+      (e.type === "DIVIDEND" || e.type === "ROC" || e.type === "DIVIDEND_ADJ") &&
+      makeBrokerSecurityKey(e) === secKey &&
+      String(e.date || "") >= cutoff
+    );
+    const totalDivEUR12m = divEvts.reduce((s, e) => s + Math.max(0, parseNum(e.totalEUR) - parseNum(e.taxEUR)), 0);
+
+    // Annualised yield = net dividends last 12m / current value
+    let assetYieldType = "none", assetYieldValue = 0;
+    if (totalDivEUR12m > 0 && finalValue > 0) {
+      assetYieldType  = "yield_eur_year";
+      assetYieldValue = +totalDivEUR12m.toFixed(4);
+      noteBits.push(`Div(12m)=${fmtEUR2(totalDivEUR12m)}/ano · Yield≈${fmtPct(totalDivEUR12m / finalValue * 100)}`);
+    }
+
     state.assets.push({
       id: uid(), class: p.class || brokerPositionClassFromTicker(p.ticker), name: displayName, value: finalValue,
-      yieldType: "none", yieldValue: 0, compoundFreq: 12, notes: `Gerado por importação de corretora. ${noteBits.join(" · ")}`,
+      yieldType: assetYieldType, yieldValue: assetYieldValue, compoundFreq: 12,
+      notes: `Gerado por importação de corretora. ${noteBits.join(" · ")}`,
       qty: finalQty, costBasis: p.costBasis, pmOriginal: finalQty > 0 && p.costBasis > 0 ? p.costBasis / finalQty : 0, pmCcy: "EUR",
       ticker: p.ticker || "", isin: p.isin || "", brokerMarketSnapshot: !!p.hasSnapshot, brokerSnapshotDate: p.snapshotDate || "",
       generatedFromBroker: true
@@ -5752,6 +5803,23 @@ async function importBrokerFiles(files) {
         existingEventKeys.add(evt.key); bd.events.push(evt); addedEvents++;
       }
       meta.events = evts.length;
+      bd.files.push(meta); addedFiles++;
+      continue;
+    }
+    // ── XTB PDF account statement (text extracted)
+    if (format === "xtb_pdf") {
+      // Parse as text — extract tabular lines with symbol/volume/profit pattern
+      const xtbRows = parseXTBPdfText(parsed.text || "", meta);
+      for (const evt of xtbRows.events || []) {
+        if (existingEventKeys.has(evt.key)) continue;
+        existingEventKeys.add(evt.key); bd.events.push(evt); addedEvents++;
+      }
+      for (const pos of xtbRows.positions || []) {
+        if (existingPosKeys.has(pos.key)) continue;
+        existingPosKeys.add(pos.key); bd.positions.push(pos); addedPositions++;
+      }
+      meta.events = (xtbRows.events||[]).length;
+      meta.positions = (xtbRows.positions||[]).length;
       bd.files.push(meta); addedFiles++;
       continue;
     }
@@ -6651,7 +6719,14 @@ async function importJSON(file) {
     transactions: Array.isArray(p.transactions) ? p.transactions : [],
     dividends: Array.isArray(p.dividends) ? p.dividends : [],
     divSummaries: Array.isArray(p.divSummaries) ? p.divSummaries : [],
-    history: Array.isArray(p.history) ? p.history : []
+    history: Array.isArray(p.history) ? p.history : [],
+    priceHistory: (p.priceHistory && typeof p.priceHistory === "object") ? p.priceHistory : {},
+    fxHistory: (p.fxHistory && typeof p.fxHistory === "object") ? p.fxHistory : {},
+    brokerData: {
+      files: Array.isArray(p.brokerData && p.brokerData.files) ? p.brokerData.files : [],
+      events: Array.isArray(p.brokerData && p.brokerData.events) ? p.brokerData.events : [],
+      positions: Array.isArray(p.brokerData && p.brokerData.positions) ? p.brokerData.positions : []
+    }
   };
   saveState();
   renderAll();
@@ -7296,7 +7371,7 @@ async function refreshLiveQuotes() {
 
   // Fetch FX rates via Worker (EURUSD=X, EURGBP=X, etc.)
   const fxRates = {};
-  const FX_FALLBACK = {USD:0.92,GBP:1.17,DKK:0.134,CHF:1.05,PLN:0.23,
+  const FX_FALLBACK_LOCAL = {USD:0.92,GBP:1.17,DKK:0.134,CHF:1.05,PLN:0.23,
     SEK:0.087,NOK:0.085,CAD:0.68,AUD:0.59,JPY:0.006,HKD:0.118};
   await Promise.allSettled([...ccysNeeded].map(async ccy => {
     try {
@@ -7304,7 +7379,7 @@ async function refreshLiveQuotes() {
       if (fq && fq.price > 0) fxRates[ccy] = 1 / fq.price;
     } catch(_) {}
   }));
-  for (const c of ccysNeeded) if (!fxRates[c]) fxRates[c] = FX_FALLBACK[c] || 1;
+  for (const c of ccysNeeded) if (!fxRates[c]) fxRates[c] = FX_FALLBACK_LOCAL[c] || 1;
 
   // ── Store latest FX rates for offline/display use
   if (!state.settings) state.settings = {};
@@ -7329,7 +7404,7 @@ async function refreshLiveQuotes() {
       failed++; errors.push(raw); continue;
     }
     const ccy = (q.currency||"EUR").toUpperCase();
-    const fxToEur = ccy === "EUR" ? 1 : (fxRates[ccy] || FX_FALLBACK[ccy] || 1);
+    const fxToEur = ccy === "EUR" ? 1 : (fxRates[ccy] || FX_FALLBACK_LOCAL[ccy] || FX_FALLBACK_STATIC[ccy] || 1);
     const priceEur = q.price * fxToEur;
 
     const qtyMatch = (asset.notes||"").match(/Qty=([\d.,]+)/);
@@ -7344,6 +7419,11 @@ async function refreshLiveQuotes() {
       .replace(/\s*·?\s*Preço:[^·]*/g,"")
       .replace(/\s*·?\s*⚠️ Custo histórico[^·]*/g,"").trim();
     asset.value = newValue;
+    // Keep valueLocal in sync for multi-currency display
+    if (ccy !== "EUR") {
+      asset.currency   = ccy;
+      asset.valueLocal = qty ? +(qty * q.price).toFixed(6) : +q.price.toFixed(6);
+    }
     asset.notes = `${noteBase}${noteBase?" · ":""}Preço: ${priceLabel} (${today})`;
     // Guardar qty e pm como campos dedicados para P&L
     if (qty) asset.qty = qty;
@@ -9660,8 +9740,21 @@ function renderAllocationPanel() {
     <div style="display:flex;flex-direction:column;gap:10px">
       ${alloc.map(a => {
         // Find current value for this class
-        const actual = state.assets
-          .filter(x => (x.class||"").toLowerCase().includes(a.class.toLowerCase().split("/")[0].toLowerCase()))
+        // Map allocation class names to assetClassKey values
+      const CLASS_KEY_MAP = {
+        "Ações/ETFs":"acoes/etfs", "Imobiliário":"imobiliario", "Obrigações/Fundos":"obrigacoes",
+        "PPR":"ppr", "Depósitos a prazo":"depositos", "Metais Preciosos":"ouro"
+      };
+      const targetKey = CLASS_KEY_MAP[a.class] || normStr(a.class);
+      const actual = state.assets
+          .filter(x => {
+            const k = assetClassKey(x);
+            // Obrigações/Fundos includes both
+            if (a.class === "Obrigações/Fundos") return k === "obrigacoes" || k === "fundos";
+            // Metais includes gold and silver
+            if (a.class === "Metais Preciosos") return k === "ouro" || k === "prata";
+            return k === targetKey;
+          })
           .reduce((s,x)=>s+parseNum(x.value),0);
         const actualPct = t.assetsTotal > 0 ? actual/t.assetsTotal*100 : 0;
         const gap = a.pct - actualPct;
@@ -9698,8 +9791,18 @@ function renderAllocationPanel() {
   if (t.assetsTotal > 0 && gapCard && gapEl) {
     gapCard.style.display = "";
     const gaps = alloc.map(a => {
+      const CLASS_KEY_MAP2 = {
+        "Ações/ETFs":"acoes/etfs", "Imobiliário":"imobiliario", "Obrigações/Fundos":"obrigacoes",
+        "PPR":"ppr", "Depósitos a prazo":"depositos", "Metais Preciosos":"ouro"
+      };
+      const tKey = CLASS_KEY_MAP2[a.class] || normStr(a.class);
       const actual = state.assets
-        .filter(x => (x.class||"").toLowerCase().includes(a.class.toLowerCase().split("/")[0].toLowerCase()))
+        .filter(x => {
+          const k = assetClassKey(x);
+          if (a.class === "Obrigações/Fundos") return k === "obrigacoes" || k === "fundos";
+          if (a.class === "Metais Preciosos") return k === "ouro" || k === "prata";
+          return k === tKey;
+        })
         .reduce((s,x)=>s+parseNum(x.value),0);
       const target = t.assetsTotal * a.pct / 100;
       return { class: a.class, actual, target, gap: target - actual, pct: a.pct };
@@ -9730,6 +9833,47 @@ function renderAllocationPanel() {
       toast(`Alocação ${FIRE_ALLOCATION_PRESETS[_allocPreset].label} guardada ✅`);
     };
   }
+}
+
+/** XTB PDF Account Statement – text extraction fallback
+ *  XTB PDFs are typically not machine-readable tables; we do a best-effort
+ *  line-by-line parse looking for: Symbol Volume OpenPrice ClosePrice Profit patterns */
+function parseXTBPdfText(text, meta) {
+  const events = [], positions = [];
+  const lines = String(text||"").split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  // Pattern: SYMBOL   BUY/SELL   DATE   DATE   OPEN   CLOSE   VOL   PROFIT
+  // We look for lines that start with a known ticker-like pattern
+  const tradeRe = /^([A-Z0-9._\-]{2,12})\s+(buy|sell|compra|venda)\s+/i;
+  const numRe = /([\-+]?\d[\d\s.,]*)/g;
+
+  for (const line of lines) {
+    const m = line.match(tradeRe);
+    if (!m) continue;
+    const symbol = m[1].toUpperCase().trim();
+    const typeRaw = m[2].toLowerCase();
+    const type = typeRaw === "buy" || typeRaw === "compra" ? "BUY" : "SELL";
+    const nums = [...line.matchAll(numRe)].map(x => parseNumberSmart(x[1].replace(/\s/g,"")));
+    const validNums = nums.filter(n => Number.isFinite(n) && Math.abs(n) > 0);
+    if (validNums.length < 2) continue;
+    const vol = validNums[0];
+    const profit = validNums[validNums.length - 1];
+    const ticker = xtbTickerToYahoo(symbol);
+    const evt = {
+      id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
+      type, actionRaw: typeRaw,
+      date: isoToday(), dateTime: isoToday(),
+      ticker, isin: "", name: symbol,
+      qty: Math.abs(vol), pricePerShare: 0,
+      totalEUR: 0, totalCurrency: "EUR",
+      grossLocal: 0, localCurrency: "EUR",
+      taxEUR: 0, feeEUR: 0, resultEUR: profit,
+      notes: "XTB PDF (texto)", key: ""
+    };
+    evt.key = brokerEventKey(evt);
+    events.push(evt);
+  }
+  return { events, positions };
 }
 /* ─── HISTÓRICO DE COTAÇÕES ─────────────────────────────────── */
 function renderPriceHistoryPanel() {
@@ -9851,38 +9995,38 @@ function wireCurrencyModal() {
   const fxNote = document.getElementById("mFxNote");
   if (!curSel || !vlEl || !eurEl || !fxNote) return;
 
+  // Use a named handler stored on the element to allow clean removal
   const update = () => {
-    const ccy = curSel.value || "EUR";
+    const ccy = (curSel.value || "EUR").toUpperCase();
     const vl  = parseNum(vlEl.value);
     if (ccy === "EUR") {
       fxNote.style.display = "none";
-      if (vl > 0) eurEl.value = String(vl.toFixed(2));
+      if (vl > 0) eurEl.value = vl.toFixed(2);
       return;
     }
-    const rate = brokerApproxFxToEUR(ccy);
-    const live = state && state.settings && state.settings.lastFxRates && state.settings.lastFxRates[ccy];
-    const src  = live ? "cotação actual" : "taxa aproximada";
+    const rate    = brokerApproxFxToEUR(ccy);
+    const isLive  = !!(state && state.settings && state.settings.lastFxRates && state.settings.lastFxRates[ccy]);
+    const srcLabel = isLive ? "cotação actual" : "taxa aproximada";
     if (vl > 0) {
       const eur = vl * rate;
-      eurEl.value = String(eur.toFixed(2));
+      eurEl.value = eur.toFixed(2);
       fxNote.style.display = "";
-      fxNote.textContent = `1 ${ccy} = ${rate.toFixed(4)} EUR (${src}) → ${fmtEUR2(eur)}`;
+      fxNote.textContent = `1 ${ccy} = ${rate.toFixed(4)} EUR (${srcLabel}) → ${fmtEUR2(eur)}`;
     } else if (parseNum(eurEl.value) > 0) {
       fxNote.style.display = "";
-      fxNote.textContent = `Taxa ${ccy}/EUR: ${rate.toFixed(4)} (${src}). Preenche o valor em ${ccy} para converter automaticamente.`;
+      fxNote.textContent = `Taxa ${ccy}/EUR: ${rate.toFixed(4)} (${srcLabel}). Introduz o valor em ${ccy} para converter.`;
     } else {
       fxNote.style.display = "none";
     }
   };
 
-  // Remove old listeners by cloning
-  const curSelNew = curSel.cloneNode(true);
-  const vlElNew   = vlEl.cloneNode(true);
-  curSel.parentNode.replaceChild(curSelNew, curSel);
-  vlEl.parentNode.replaceChild(vlElNew, vlEl);
-
-  curSelNew.addEventListener("change", update);
-  vlElNew.addEventListener("input", update);
+  // Remove previous listeners if any (stored on element)
+  if (curSel._ccyHandler) curSel.removeEventListener("change", curSel._ccyHandler);
+  if (vlEl._ccyHandler)   vlEl.removeEventListener("input",    vlEl._ccyHandler);
+  curSel._ccyHandler = update;
+  vlEl._ccyHandler   = update;
+  curSel.addEventListener("change", update);
+  vlEl.addEventListener("input",    update);
 }
 /* ─── WIRE P&L ───────────────────────────────────────────────── */
 (function wirePnL() {
