@@ -3252,16 +3252,61 @@ function calcDividendYield() {
 
 // Rendimento passivo total de TODOS os ativos (dividendos + rendas + depósitos + PPR + obrigações)
 // Usado no simulador de Juro Composto
+// Separa yield passivo (juros/rendas/dividendos) do retorno total (inclui valorização acções)
 function calcPortfolioYield() {
   let totalValue = 0, totalPassive = 0;
+  let equityValue = 0, nonEquityWithYieldValue = 0, nonEquityWithYieldPassive = 0;
+
+  const EQUITY_CLS = ["acoes/etfs", "cripto", "fundos"];
+  function isEquity(a) {
+    const c = (a.class||"").toLowerCase()
+      .replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o")
+      .replace(/á|à|â/g,"a").replace(/é|è|ê/g,"e").replace(/í/g,"i")
+      .replace(/ó|ô/g,"o").replace(/ú/g,"u");
+    return EQUITY_CLS.some(e => c.includes(e.split("/")[0]));
+  }
+
   for (const a of state.assets) {
     const v = parseNum(a.value);
     const p = passiveFromItem(a);
     totalValue += v;
     totalPassive += p;
+    if (isEquity(a)) {
+      equityValue += v;
+    } else if (p > 0) {
+      nonEquityWithYieldValue += v;
+      nonEquityWithYieldPassive += p;
+    }
   }
+
+  // yield passivo = apenas rendimentos configurados / total activos
+  // (o que o utilizador realmente recebe em cash: juros, rendas, dividendos registados)
   const weightedYield = totalValue > 0 ? (totalPassive / totalValue) * 100 : 0;
-  return { totalValue, totalPassive, weightedYield };
+
+  // yield passivo dos activos não-equity com yield configurado (yield "limpo")
+  // Ex: depósito 200k@3% + obrigação 100k@3% → yield não-equity = 3%
+  const nonEquityYield = nonEquityWithYieldValue > 0
+    ? (nonEquityWithYieldPassive / nonEquityWithYieldValue) * 100 : 0;
+
+  // retorno total esperado = yield passivo + retorno de capital das acções
+  // Para as acções/ETFs, usar TWR anualizado se disponível, senão estimativa histórica
+  const twr = calcTWR ? calcTWR() : null;
+  const equityReturnAnnual = (twr && twr.years >= 0.5 && Math.abs(twr.annualised) < 80)
+    ? twr.annualised
+    : 7; // estimativa histórica conservadora se sem dados
+
+  const equityWeight = totalValue > 0 ? equityValue / totalValue : 0;
+  const nonEquityWeight = totalValue > 0 ? (totalValue - equityValue) / totalValue : 1;
+  const totalReturnBlended =
+    equityWeight * equityReturnAnnual +
+    nonEquityWeight * (nonEquityYield > 0 ? nonEquityYield : weightedYield);
+
+  return {
+    totalValue, totalPassive, weightedYield,
+    nonEquityYield, equityReturnAnnual, equityWeight, nonEquityWeight,
+    totalReturnBlended, equityValue,
+    twr: twr ? twr.annualised : null
+  };
 }
 
 // Estima contribuição mensal média dos últimos 6 meses de cashflow
@@ -3322,7 +3367,11 @@ function renderCompoundPanel() {
           a.yieldType === "yield_eur_year" ? parseNum(a.yieldValue)/Math.max(1,parseNum(a.value))*100 :
           a.yieldType === "rent_month" ? parseNum(a.yieldValue)*12/Math.max(1,parseNum(a.value))*100 : 0
         )})`).join(", ");
-      note.innerHTML = `📊 <b>Capital total:</b> ${fmtEUR(portfolio.totalValue)} · Yield médio ponderado <b>${fmtPct(portfolio.weightedYield)}</b> · Rendimento passivo anual <b>${fmtEUR(portfolio.totalPassive)}</b><br>
+      note.innerHTML = `📊 <b>Capital total:</b> ${fmtEUR(portfolio.totalValue)} · Retorno blended <b>${fmtPct(portfolio.totalReturnBlended)}</b>
+        <span style="font-size:11px;color:var(--muted)">
+          (Yield passivo ${fmtPct(portfolio.weightedYield)} + acções ${fmtPct(portfolio.equityReturnAnnual)}${portfolio.twr ? " via TWR" : " estimado"})
+        </span>
+        · Rendimento passivo anual <b>${fmtEUR(portfolio.totalPassive)}</b><br>
         <span style="font-size:12px;color:#667085">Inclui: ${breakdown || "nenhum ativo com rendimento"}</span>${avgSavings > 0 ? `<br><span style="font-size:12px;color:#667085">Poupança média mensal: <b>${fmtEUR(avgSavings)}</b></span>` : ""}`;
     } else {
       note.style.display = "none";
@@ -3340,7 +3389,8 @@ function syncCompoundFromAsset(portfolioData, avgSavings) {
     const p = portfolioData || calcPortfolioYield();
     const s = avgSavings !== undefined ? avgSavings : calcAvgMonthlySavings(6);
     $("compPrincipal").value = String(Math.round(p.totalValue));
-    $("compRate").value = fmt(p.weightedYield, 2);
+    // Usar retorno blended: yield passivo + retorno capital acções ponderado
+    $("compRate").value = fmt(p.totalReturnBlended, 2);
     $("compFreq").value = "12"; // mensal por defeito para carteira
     $("compContrib").value = String(Math.round(s));
     return;
@@ -3421,6 +3471,7 @@ function usePnLInCompound() {
   toast(`✅ Taxa: ${fmt(Math.min(totalRate,50),2)}% (${rateSource}${divYield > 0 ? ` + ${fmt(divYield*0.72,1)}% div líquido` : ""})`);
   calcAndRenderCompound();
   renderCompoundWithDCAPanel();
+  renderReturnBreakdown();
 }
 
 function usePnLInFIRE() {
@@ -7833,3 +7884,164 @@ function checkNegativeReturn() {
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();
 })();
+
+/* ═══════════════════════════════════════════════════════════════
+   FUNCIONALIDADES PROFISSIONAIS ADICIONAIS
+   1. Breakdown detalhado do retorno por classe no Compound
+   2. Mapa de calor de rendimento por ativo
+   3. Simulador de reforma antecipada — anos até FIRE com DCA
+   4. Exportação completa do relatório anual
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── BREAKDOWN DE RETORNO POR CLASSE ───────────────────────── */
+function renderReturnBreakdown() {
+  const el = document.getElementById("returnBreakdownContent");
+  if (!el) return;
+
+  const py = calcPortfolioYield();
+  const t  = calcTotals();
+  if (t.assetsTotal === 0) { el.innerHTML = ""; return; }
+
+  // Agrupar por classe
+  const byClass = {};
+  for (const a of state.assets) {
+    const cls = a.class || "Outros";
+    const v   = parseNum(a.value);
+    const p   = passiveFromItem(a);
+    if (!byClass[cls]) byClass[cls] = { value: 0, passive: 0, count: 0 };
+    byClass[cls].value   += v;
+    byClass[cls].passive += p;
+    byClass[cls].count++;
+  }
+
+  // Para acções/ETFs: adicionar retorno de capital estimado
+  const EQUITY_CLS = ["Ações/ETFs","Cripto","Fundos"];
+  const rows = Object.entries(byClass)
+    .sort((a, b) => b[1].value - a[1].value)
+    .map(([cls, d]) => {
+      const isEq = EQUITY_CLS.some(e => cls.includes(e.split("/")[0]));
+      const passiveYield = d.value > 0 ? d.passive / d.value * 100 : 0;
+      const capitalReturn = isEq ? (py.equityReturnAnnual || 7) : 0;
+      const totalReturn   = passiveYield + capitalReturn;
+      const weight        = t.assetsTotal > 0 ? d.value / t.assetsTotal * 100 : 0;
+      const contrib       = totalReturn * weight / 100; // contribuição para retorno blended
+      return { cls, value: d.value, passive: d.passive, passiveYield,
+               capitalReturn, totalReturn, weight, contrib, isEq };
+    });
+
+  const totalContrib = rows.reduce((s, r) => s + r.contrib, 0);
+
+  el.innerHTML = `
+    <div style="margin-bottom:10px;padding:10px;background:var(--kpi-net);border-radius:var(--r-sm)">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:13px;font-weight:700">Retorno blended total</span>
+        <span style="font-size:20px;font-weight:900;color:var(--vio)">${fmtPct(totalContrib)}</span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:3px">
+        Yield passivo ${fmtPct(py.weightedYield)} + retorno capital acções ${fmtPct(py.equityReturnAnnual)}${py.twr ? " (TWR real)" : " (estimado)"}
+      </div>
+    </div>
+    ${rows.map(r => `
+    <div style="margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
+        <span style="font-weight:700">${escapeHtml(r.cls)}</span>
+        <div style="text-align:right">
+          <span style="font-weight:900;color:${r.totalReturn>3?"var(--green)":r.totalReturn>1?"var(--amber)":"var(--muted)"}">${fmtPct(r.totalReturn)}</span>
+          <span style="font-size:11px;color:var(--muted);margin-left:6px">${fmtEUR(r.value)} · ${fmtPct(r.weight)} da carteira</span>
+        </div>
+      </div>
+      <div style="height:5px;background:var(--line);border-radius:3px;overflow:hidden;margin-bottom:2px">
+        <div style="height:5px;border-radius:3px;background:${r.isEq?"var(--vio)":"var(--green)"};width:${Math.min(100,r.totalReturn/20*100)}%;transition:width .5s"></div>
+      </div>
+      <div style="font-size:10px;color:var(--muted)">
+        Yield passivo ${fmtPct(r.passiveYield)}${r.capitalReturn>0?" + capital "+fmtPct(r.capitalReturn)+(r.isEq?" (eq.)":""):""}
+        · contribui <b>${fmtPct(r.contrib)}</b> para o retorno global
+        ${r.passive>0?` · ${fmtEUR(r.passive)}/ano`:""}
+      </div>
+    </div>`).join("")}
+    <div style="font-size:11px;color:var(--muted);margin-top:8px;padding:8px;background:var(--note-bg);border-radius:var(--r-xs)">
+      💡 <b>Retorno blended</b> = soma ponderada dos retornos por classe. Inclui yield passivo (juros/rendas/dividendos) e retorno de capital esperado para acções/ETFs. ${!py.twr ? "Sem snapshots suficientes — retorno acções usa estimativa histórica de 7%/ano." : "Retorno acções baseado no TWR real da carteira."}
+    </div>`;
+}
+
+/* ─── ANOS ATÉ FIRE COM DCA ──────────────────────────────────── */
+function calcYearsToFIRE(capital, annualSavings, returnRate, expenses) {
+  const fireNumber = expenses / 0.04; // regra 4% SWR
+  if (capital >= fireNumber) return 0;
+
+  const monthlyRate = returnRate / 100 / 12;
+  const monthlyDCA  = annualSavings / 12;
+  let cap = capital;
+  let months = 0;
+  const MAX_MONTHS = 600; // 50 anos
+
+  while (cap < fireNumber && months < MAX_MONTHS) {
+    cap = cap * (1 + monthlyRate) + monthlyDCA;
+    months++;
+  }
+  return months < MAX_MONTHS ? months / 12 : null;
+}
+
+/* ─── EXPORTAR RELATÓRIO ANUAL ───────────────────────────────── */
+function exportAnnualReport() {
+  const t    = calcTotals();
+  const py   = calcPortfolioYield();
+  const twr  = calcTWR();
+  const div  = calcDiversificationScore();
+  const pnl  = calcEquityPortfolioPnL();
+  const year = new Date().getFullYear();
+
+  const lines = [
+    `RELATÓRIO PATRIMONIAL ${year}`,
+    `Gerado em: ${new Date().toLocaleDateString("pt-PT")}`,
+    "",
+    "═══════════════════════════════════════",
+    "BALANÇO GLOBAL",
+    "═══════════════════════════════════════",
+    `Activos totais:       ${fmtEUR(t.assetsTotal)}`,
+    `Passivos totais:      ${fmtEUR(t.liabsTotal)}`,
+    `Património líquido:   ${fmtEUR(t.net)}`,
+    "",
+    "═══════════════════════════════════════",
+    "RENDIMENTO & RETORNO",
+    "═══════════════════════════════════════",
+    `Rendimento passivo anual: ${fmtEUR(t.passiveAnnual)}`,
+    `Rendimento mensal:        ${fmtEUR(t.passiveAnnual/12)}`,
+    `Yield passivo ponderado:  ${fmtPct(py.weightedYield)}`,
+    `Retorno blended:          ${fmtPct(py.totalReturnBlended)}`,
+    twr ? `TWR anualizado:           ${fmtPct(twr.annualised)} (${twr.years} anos)` : "",
+    "",
+    "═══════════════════════════════════════",
+    "PORTFÓLIO DE ACÇÕES/ETFs",
+    "═══════════════════════════════════════",
+    `Investido:    ${fmtEUR(pnl.totalCost)}`,
+    `Valor actual: ${fmtEUR(pnl.totalCurrent)}`,
+    `Ganho/Perda:  ${pnl.totalGain>=0?"+":""}${fmtEUR(pnl.totalGain)} (${pnl.totalGain>=0?"+":""}${fmtPct(pnl.totalGainPct)})`,
+    "",
+    "POSIÇÕES:",
+    ...pnl.positions.map(({asset,pos}) =>
+      `  ${String(asset.name).padEnd(10)} ${fmtPct(pos.gainPct).padStart(8)} ${pos.gain>=0?"+":""}${fmtEUR(pos.gain)}`
+    ),
+    "",
+    "═══════════════════════════════════════",
+    "ANÁLISE DE RISCO",
+    "═══════════════════════════════════════",
+    `Score diversificação: ${div.score}/100 (${div.label})`,
+    `Rácio dívida/activos: ${fmtPct(t.assetsTotal>0?t.liabsTotal/t.assetsTotal*100:0)}`,
+    "",
+    "DISTRIBUIÇÃO POR CLASSE:",
+    ...div.breakdown.map(b =>
+      `  ${String(b.cls).padEnd(20)} ${fmtPct(b.pct).padStart(7)} (${fmtEUR(b.val)})`
+    ),
+    "",
+    "═══════════════════════════════════════",
+    "AVISO LEGAL",
+    "═══════════════════════════════════════",
+    "Este relatório é meramente informativo.",
+    "Consulta sempre um TOC para matérias fiscais",
+    "e um consultor financeiro para decisões de investimento.",
+  ].filter(l => l !== null && l !== undefined);
+
+  downloadText(lines.join("\n"), `relatorio_patrimonial_${year}.txt`, "text/plain;charset=utf-8;");
+  toast("✅ Relatório exportado.");
+}

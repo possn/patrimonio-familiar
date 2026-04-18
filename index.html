@@ -776,6 +776,8 @@
             📊 Usar retorno real (TWR + dividendos)
           </button>
         </div>
+        <!-- Breakdown de retorno por classe -->
+        <div id="returnBreakdownContent" style="margin-top:12px"></div>
         <!-- Projecção DCA + dividendos -->
         <div id="compoundDCAResult"></div>
       </div>
@@ -1146,6 +1148,14 @@
           <div style="font-size:12px;color:var(--muted)">Claude Sonnet · console.anthropic.com</div>
           <div id="anthropicKeyStatus" style="font-size:11px;margin-top:4px;color:var(--green)"></div>
         </div>
+      </div>
+
+      <div class="card">
+        <div class="card__title" style="margin-bottom:8px">📄 Relatório Anual</div>
+        <div class="card__muted" style="margin-bottom:10px">Exporta um relatório completo do portfólio em texto</div>
+        <button class="btn btn--primary btn--sm" onclick="exportAnnualReport()" style="width:100%">
+          📥 Exportar relatório patrimonial
+        </button>
       </div>
 
       <div class="card">
