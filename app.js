@@ -595,6 +595,37 @@ function getDividendSourceLabel(source) {
   return 'Automático';
 }
 
+function getRealDividendRecords(opts = {}) {
+  const all = Array.isArray(state.dividends) ? state.dividends.slice() : [];
+  const broker = all.filter(d => d && d.generatedFromBroker);
+  if (opts.source === 'broker') return broker;
+  if (opts.source === 'all') return all;
+  return broker.length ? broker : all;
+}
+
+function getDividendBaseAssetsForRecords(divRecords, opts = {}) {
+  const records = Array.isArray(divRecords) ? divRecords.filter(Boolean) : [];
+  const assets = Array.isArray(state.assets) ? state.assets : [];
+  const brokerOnly = !!opts.brokerOnly;
+  const allowConfigured = opts.allowConfigured !== false;
+  return assets.filter(a => {
+    if (!isDividendAsset(a) || parseNum(a.value) <= 0) return false;
+    if (brokerOnly && !a.generatedFromBroker) return false;
+    const hasRecord = records.some(d => assetMatchesDividend(a, d));
+    const yt = a.yieldType || 'none';
+    const hasConfiguredDividend = allowConfigured && (yt === 'yield_eur_year') && parseNum(a.yieldValue) > 0;
+    return hasRecord || hasConfiguredDividend;
+  });
+}
+
+function pruneGeneratedDividendSummaries() {
+  if (!Array.isArray(state.divSummaries)) state.divSummaries = [];
+  const validYears = new Set(getRealDividendRecords({ source: 'broker' }).map(d => String(d.date || '').slice(0, 4)).filter(Boolean));
+  const before = state.divSummaries.length;
+  state.divSummaries = state.divSummaries.filter(s => !s.generatedFromBroker || validYears.has(String(s.year)));
+  return state.divSummaries.length !== before;
+}
+
 function getPreferredDividendYieldData() {
   const d = calcDividendYield();
   const mode = getDividendYieldDisplayMode();
@@ -752,7 +783,7 @@ function setView(view) {
   document.querySelectorAll(".view").forEach(s => { s.hidden = s.dataset.view !== view; });
   document.querySelectorAll(".navbtn").forEach(b => { b.classList.toggle("navbtn--active", b.dataset.view === view); });
   if (view === "dashboard") renderDashboard();
-  if (view === "assets") { renderItems(); renderEquityPnL(); }
+  if (view === "assets") { renderItems(); renderEquityPnL(); updateQuoteErrorIndicator(); }
   if (view === "cashflow") renderCashflow();
   if (view === "analysis") { renderAnalysis(); }
   if (view === "dividends") renderDividends();
@@ -950,6 +981,7 @@ function renderAll() {
   renderDividends();
   updatePassiveBar();
   renderBrokerImportStatus();
+  updateQuoteErrorIndicator();
   if (currentView === "analysis") { renderSectorChart(); renderGeoChart(); }
   if (currentView === "settings") renderReturnSettingsCard();
 }
@@ -2254,7 +2286,8 @@ function renderDivSummaryKPIs() {
   const sourceLabel     = pref.sourceLabel;
 
   // Real dividend stats from imported data (all years)
-  const realStats = calcDividendStatsByYear();
+  const sourceDivs = getRealDividendRecords();
+  const realStats = calcDividendStatsByYear(sourceDivs);
   const hasRealData = realStats.length > 0 && realStats[0].gross > 0;
 
   // Annual summaries (mix of auto-generated and manual)
@@ -2269,7 +2302,7 @@ function renderDivSummaryKPIs() {
 
   // TTM = last 12 months (rolling)
   const cutoff12m = new Date(now.getFullYear()-1, now.getMonth(), now.getDate()).toISOString().slice(0,10);
-  const ttmDivs   = (state.dividends||[]).filter(d => String(d.date||"") >= cutoff12m);
+  const ttmDivs   = sourceDivs.filter(d => String(d.date||"") >= cutoff12m);
   const ttmGross  = ttmDivs.reduce((s,d) => s + getDividendGross(d), 0);
   const ttmNet    = ttmDivs.reduce((s,d) => s + getDividendNet(d), 0);
   const ttmWh     = ttmGross - ttmNet;
@@ -2290,10 +2323,12 @@ function renderDivSummaryKPIs() {
   }
 
   // Source badge
-  const isAutoData = hasRealData;
-  const sourceBadge = isAutoData
+  const usingBrokerReal = sourceDivs.length > 0 && sourceDivs.every(d => d && d.generatedFromBroker);
+  const sourceBadge = usingBrokerReal
     ? `<span style="background:#d1fae5;color:#065f46;font-size:10px;font-weight:800;padding:2px 7px;border-radius:999px;margin-left:6px">✅ Dados reais da corretora</span>`
-    : `<span style="background:#fef3c7;color:#92400e;font-size:10px;font-weight:800;padding:2px 7px;border-radius:999px;margin-left:6px">Manual</span>`;
+    : hasRealData
+      ? `<span style="background:#dbeafe;color:#1d4ed8;font-size:10px;font-weight:800;padding:2px 7px;border-radius:999px;margin-left:6px">📒 Dividendos registados</span>`
+      : `<span style="background:#fef3c7;color:#92400e;font-size:10px;font-weight:800;padding:2px 7px;border-radius:999px;margin-left:6px">Manual</span>`;
 
   el.innerHTML = `
     <!-- HERO: dividendos TTM -->
@@ -2329,18 +2364,19 @@ function renderDivSummaryKPIs() {
             </div>
           </div>
         </div>
-        <div style="font-size:11px;opacity:.65">
-          Carteira de dividendos: ${fmtEUR(divPortfolioVal)} · ${ttmDivs.length} pagamentos TTM
+        <div style="font-size:11px;opacity:.78;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span>Carteira de dividendos: <b>${fmtEUR(divPortfolioVal)}</b> · ${ttmDivs.length} pagamentos TTM</span>
+          <button class="btn btn--outline btn--sm" type="button" onclick="openDividendBaseModal()" style="padding:4px 8px;font-size:11px;border-color:rgba(255,255,255,.35);color:#fff;background:rgba(255,255,255,.08)">Ver base</button>
         </div>
       </div>
 
       <!-- Selector yield modo + botão projeção -->
       <div style="padding:12px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line)">
         <div class="seg" style="margin:0;flex:1;min-width:200px;max-width:280px">
-          <button class="seg__btn ${selectedMode==='gross'?'seg__btn--active':''}" type="button" onclick="setDividendYieldDisplayMode('gross');renderDividends()">Yield bruto TTM</button>
-          <button class="seg__btn ${selectedMode==='net'?'seg__btn--active':''}" type="button" onclick="setDividendYieldDisplayMode('net');renderDividends()">Yield líquido TTM</button>
+          <button class="seg__btn ${selectedMode==='gross'?'seg__btn--active':''}" type="button" onclick="window.setDividendYieldDisplayMode('gross'); window.renderDividends(); return false;">Yield bruto TTM</button>
+          <button class="seg__btn ${selectedMode==='net'?'seg__btn--active':''}" type="button" onclick="window.setDividendYieldDisplayMode('net'); window.renderDividends(); return false;">Yield líquido TTM</button>
         </div>
-        <button class="btn btn--primary btn--sm" type="button" onclick="applyPreferredDividendYieldToProjection()">📈 Usar na projeção</button>
+        <button class="btn btn--primary btn--sm" type="button" onclick="window.applyPreferredDividendYieldToProjection(); return false;">📈 Usar na projeção</button>
       </div>
     </div>
 
@@ -2402,7 +2438,7 @@ function renderDivSummaryKPIs() {
     <!-- Top tickers por dividendo (all time) -->
     ${(function() {
       const byTicker = {};
-      for (const d of (state.dividends || [])) {
+      for (const d of sourceDivs) {
         const rawTk = String(d.assetName || d.assetId || "").trim();
         const tk = rawTk.split(" — ")[0].trim();
         if (!tk) continue;
@@ -2846,12 +2882,12 @@ function deleteDivEntry() {
    Computes real dividend statistics directly from imported data.
    Works with both manually added dividends and broker imports.
 ──────────────────────────────────────────────────────────────── */
-function calcDividendStatsByYear() {
+function calcDividendStatsByYear(divRecords = null) {
   const byYear = {};
-  const divs = state.dividends || [];
+  const divs = Array.isArray(divRecords) ? divRecords : getRealDividendRecords();
 
   for (const d of divs) {
-    const year = String(d.date || "").slice(0, 4);
+    const year = String(d.date || '').slice(0, 4);
     if (!year || year.length < 4) continue;
     if (!byYear[year]) byYear[year] = {
       year: parseInt(year), gross: 0, net: 0, wh: 0, count: 0, tickers: new Set()
@@ -2863,11 +2899,10 @@ function calcDividendStatsByYear() {
     byYear[year].net   += net;
     byYear[year].wh    += wh;
     byYear[year].count++;
-    const tk = String(d.assetName || d.assetId || "").trim();
+    const tk = String(d.assetName || d.assetId || '').trim();
     if (tk) byYear[year].tickers.add(tk);
   }
 
-  // Convert Sets to counts and sort descending
   return Object.values(byYear)
     .map(y => ({ ...y, tickerCount: y.tickers.size, tickers: [...y.tickers] }))
     .sort((a, b) => b.year - a.year);
@@ -2877,7 +2912,7 @@ function calcDividendStatsByYear() {
    Called after broker import rebuild. Safe to call multiple times — idempotent.
    Only creates/updates entries marked generatedFromBroker=true; manual entries are preserved. */
 function autoSyncDivSummariesFromImportedData() {
-  const stats = calcDividendStatsByYear();
+  const stats = calcDividendStatsByYear(getRealDividendRecords({ source: 'broker' }));
   if (!stats.length) return;
 
   // Only process years where we have broker-imported dividends
@@ -2889,7 +2924,7 @@ function autoSyncDivSummariesFromImportedData() {
 
   if (!Array.isArray(state.divSummaries)) state.divSummaries = [];
 
-  const linkedAssets = getDividendLinkedAssets();
+  const linkedAssets = getDividendLinkedAssets({ source: 'broker', period: 'all' });
   const divPortfolioVal = linkedAssets.reduce((s, a) => s + parseNum(a.value), 0);
 
   for (const stat of stats) {
@@ -3955,34 +3990,36 @@ function assetMatchesDividend(asset, dividend) {
   return false;
 }
 
-function getDividendLinkedAssets() {
-  return (state.assets || []).filter(a => {
-    if (!isDividendAsset(a) || parseNum(a.value) <= 0) return false;
-    const hasRealDivs = (state.dividends || []).some(d => assetMatchesDividend(a, d));
-    const yt = a.yieldType || "none";
-    const hasConfiguredYield = ["yield_pct", "yield_eur_year"].includes(yt) && parseNum(a.yieldValue) > 0;
-    return hasRealDivs || hasConfiguredYield;
-  });
+function getDividendLinkedAssets(opts = {}) {
+  const sourceRecords = getRealDividendRecords(opts);
+  const now = new Date();
+  const cutoffTTM = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
+  const relevant = opts.period === 'all'
+    ? sourceRecords
+    : sourceRecords.filter(d => String(d.date || '') >= cutoffTTM);
+  const brokerOnly = (opts.source === 'broker') || (!opts.source && sourceRecords.some(d => d && d.generatedFromBroker));
+  return getDividendBaseAssetsForRecords(relevant, { brokerOnly, allowConfigured: true });
 }
 
 // Rendimento anual de dividendos (bruto) da carteira
-// Usa divSummaries se existirem, senão estima pelos yields dos ativos
+// Usa dividendos reais da corretora quando existem; caso contrário, summaries manuais ou estimativa conservadora.
 function calcDividendYield() {
   const now = new Date();
-  const linkedAssets = getDividendLinkedAssets();
-  let divPortfolioVal = linkedAssets.reduce((s, a) => s + parseNum(a.value), 0);
-
   const cutoffTTM = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
-  const ttmDivs = (state.dividends || []).filter(d => String(d.date || "") >= cutoffTTM);
+
+  const sourceDivs = getRealDividendRecords();
+  const brokerOnly = sourceDivs.length > 0 && sourceDivs.every(d => d && d.generatedFromBroker);
+  const ttmDivs = sourceDivs.filter(d => String(d.date || '') >= cutoffTTM);
   const ttmGross = ttmDivs.reduce((s, d) => s + getDividendGross(d), 0);
   const ttmNet = ttmDivs.reduce((s, d) => s + getDividendNet(d), 0);
 
-  const latestSummary = (state.divSummaries || []).slice().sort((a, b) => parseNum(b.year) - parseNum(a.year))[0];
-  if (divPortfolioVal <= 0 && latestSummary) {
-    const gross = parseNum(latestSummary.gross);
-    const yieldPct = parseNum(latestSummary.yieldPct);
-    if (gross > 0 && yieldPct > 0) divPortfolioVal = gross / (yieldPct / 100);
-  }
+  const baseAssetsTTM = getDividendBaseAssetsForRecords(ttmDivs.length ? ttmDivs : sourceDivs, { brokerOnly, allowConfigured: true });
+  let divPortfolioVal = baseAssetsTTM.reduce((s, a) => s + parseNum(a.value), 0);
+
+  const latestSummary = (state.divSummaries || [])
+    .filter(s => !s.generatedFromBroker)
+    .slice()
+    .sort((a, b) => parseNum(b.year) - parseNum(a.year))[0];
 
   if (ttmGross > 0) {
     const grossYieldPct = divPortfolioVal > 0 ? (ttmGross / divPortfolioVal * 100) : 0;
@@ -3995,15 +4032,39 @@ function calcDividendYield() {
       netYieldPct,
       weightedYield: grossYieldPct,
       divPortfolioVal,
-      source: ttmDivs.some(d => d.generatedFromBroker) ? "broker_ttm" : "individual",
-      period: "ttm"
+      source: brokerOnly ? 'broker_ttm' : 'individual',
+      period: 'ttm',
+      linkedAssets: baseAssetsTTM,
+      linkedDividends: ttmDivs
+    };
+  }
+
+  if (sourceDivs.length > 0) {
+    const grossAll = sourceDivs.reduce((s, d) => s + getDividendGross(d), 0);
+    const netAll = sourceDivs.reduce((s, d) => s + getDividendNet(d), 0);
+    const baseAssetsAll = getDividendBaseAssetsForRecords(sourceDivs, { brokerOnly, allowConfigured: true });
+    const baseAll = baseAssetsAll.reduce((s, a) => s + parseNum(a.value), 0);
+    const grossYieldPct = baseAll > 0 ? (grossAll / baseAll * 100) : 0;
+    const netYieldPct = baseAll > 0 ? (netAll / baseAll * 100) : 0;
+    return {
+      gross: grossAll,
+      net: netAll,
+      yieldPct: grossYieldPct,
+      grossYieldPct,
+      netYieldPct,
+      weightedYield: grossYieldPct,
+      divPortfolioVal: baseAll,
+      source: brokerOnly ? 'broker_ttm' : 'individual',
+      period: 'all',
+      linkedAssets: baseAssetsAll,
+      linkedDividends: sourceDivs
     };
   }
 
   if (latestSummary) {
     const gross = parseNum(latestSummary.gross);
     const net = gross - parseNum(latestSummary.tax);
-    const inferredBase = divPortfolioVal > 0 ? divPortfolioVal : (parseNum(latestSummary.yieldPct) > 0 ? gross / (parseNum(latestSummary.yieldPct) / 100) : 0);
+    const inferredBase = parseNum(latestSummary.yieldPct) > 0 ? gross / (parseNum(latestSummary.yieldPct) / 100) : 0;
     const grossYieldPct = inferredBase > 0 ? (gross / inferredBase * 100) : parseNum(latestSummary.yieldPct);
     const netYieldPct = inferredBase > 0 ? (net / inferredBase * 100) : 0;
     return {
@@ -4014,18 +4075,24 @@ function calcDividendYield() {
       netYieldPct,
       weightedYield: grossYieldPct,
       divPortfolioVal: inferredBase,
-      source: latestSummary.generatedFromBroker ? "broker_ttm" : "summary",
-      period: latestSummary.generatedFromBroker ? "annual_auto" : "annual_summary"
+      source: 'summary',
+      period: 'annual_summary',
+      linkedAssets: [],
+      linkedDividends: []
     };
   }
 
-  const estimatedGross = linkedAssets.reduce((s, a) => {
-    if ((a.yieldType || "none") !== "yield_pct") return s;
-    return s + parseNum(a.value) * (parseNum(a.yieldValue) / 100);
+  const estimatedAssets = (state.assets || []).filter(a => isDividendAsset(a) && parseNum(a.value) > 0 && ['yield_eur_year','yield_pct'].includes(a.yieldType || 'none'));
+  const estimatedGross = estimatedAssets.reduce((s, a) => {
+    const yt = a.yieldType || 'none';
+    if (yt === 'yield_eur_year') return s + parseNum(a.yieldValue);
+    if (yt === 'yield_pct') return s + parseNum(a.value) * (parseNum(a.yieldValue) / 100);
+    return s;
   }, 0);
-  const grossYieldPct = divPortfolioVal > 0 ? (estimatedGross / divPortfolioVal * 100) : 0;
+  const estimatedBase = estimatedAssets.reduce((s, a) => s + parseNum(a.value), 0);
+  const grossYieldPct = estimatedBase > 0 ? (estimatedGross / estimatedBase * 100) : 0;
   const estimatedNet = estimatedGross * 0.72;
-  const netYieldPct = divPortfolioVal > 0 ? (estimatedNet / divPortfolioVal * 100) : 0;
+  const netYieldPct = estimatedBase > 0 ? (estimatedNet / estimatedBase * 100) : 0;
   return {
     gross: estimatedGross,
     net: estimatedNet,
@@ -4033,9 +4100,11 @@ function calcDividendYield() {
     grossYieldPct,
     netYieldPct,
     weightedYield: grossYieldPct,
-    divPortfolioVal,
-    source: "estimated",
-    period: "estimated"
+    divPortfolioVal: estimatedBase,
+    source: 'estimated',
+    period: 'estimated',
+    linkedAssets: estimatedAssets,
+    linkedDividends: []
   };
 }
 
@@ -4043,6 +4112,7 @@ function calcDividendYield() {
 // Usado no simulador de Juro Composto
 // Separa yield passivo (juros/rendas/dividendos) do retorno total (inclui valorização acções)
 function calcPortfolioYield() {
+
   const totals = calcTotals();
   const assetRows = state.assets.map(a => {
     const value = parseNum(a.value);
@@ -6165,6 +6235,7 @@ function renderBrokerImportStatus() {
     btn.querySelector("button").addEventListener("click", () => {
       window._brokerListExpanded = !window._brokerListExpanded;
       renderBrokerImportStatus();
+  updateQuoteErrorIndicator();
     });
     list.appendChild(btn);
   }
@@ -7416,6 +7487,12 @@ function wire() {
   // Quote refresh button
   const btnRefresh = $("btnRefreshQuotes");
   if (btnRefresh) btnRefresh.addEventListener("click", refreshLiveQuotes);
+  const btnQuoteErrors = document.getElementById('btnQuoteErrors');
+  if (btnQuoteErrors) btnQuoteErrors.addEventListener('click', () => {
+    const report = (((state || {}).settings || {}).lastQuoteRefresh) || { updated:0, failed:0, errors:[] };
+    showQuoteErrors(report.updated || 0, report.failed || 0, report.errors || [], report.updated || 0, report.failed || 0);
+    openModal('modalQuoteErrors');
+  });
 
   // Sync compound fields from asset
   const compAsset = document.getElementById("compAsset");
@@ -7970,6 +8047,8 @@ function toYahooTicker(raw) {
     updated++;
   }
 
+  if (!state.settings) state.settings = {};
+  state.settings.lastQuoteRefresh = { updated, failed, errors, ts: new Date().toISOString() };
   await saveStateAsync();
   renderAll();
   renderEquityPnL();
@@ -7994,6 +8073,56 @@ function toYahooTicker(raw) {
       () => openModal("modalQuoteErrors"), 8000
     );
   }
+}
+
+
+function renderDividendBaseModal() {
+  const summaryEl = document.getElementById('dividendBaseSummary');
+  const listEl = document.getElementById('dividendBaseList');
+  if (!summaryEl || !listEl) return;
+  const pref = getPreferredDividendYieldData();
+  const assets = Array.isArray(pref.linkedAssets) ? pref.linkedAssets.slice().sort((a,b) => parseNum(b.value) - parseNum(a.value)) : [];
+  const divs = Array.isArray(pref.linkedDividends) ? pref.linkedDividends : [];
+  summaryEl.innerHTML = `${escapeHtml(getDividendSourceLabel(pref.source))} · base actual ${fmtEUR(pref.divPortfolioVal || 0)} · ${assets.length} ativo${assets.length !== 1 ? 's' : ''}`;
+  if (!assets.length) {
+    listEl.innerHTML = `<div class="note">Sem ativos ligados ao cálculo do yield nesta sessão.</div>`;
+    return;
+  }
+  listEl.innerHTML = assets.map(a => {
+    const hits = divs.filter(d => assetMatchesDividend(a, d));
+    const ttmGross = hits.reduce((s, d) => s + getDividendGross(d), 0);
+    const ttmNet = hits.reduce((s, d) => s + getDividendNet(d), 0);
+    const grossYield = parseNum(a.value) > 0 ? (ttmGross / parseNum(a.value) * 100) : 0;
+    return `<div class="item" style="cursor:default;align-items:flex-start">
+      <div class="item__l">
+        <div class="item__t">${escapeHtml(a.name || a.ticker || 'Ativo')}</div>
+        <div class="item__s" style="margin-top:4px;line-height:1.5">
+          <div><b>Classe:</b> ${escapeHtml(a.class || '—')}</div>
+          <div><b>Valor atual:</b> ${fmtEUR(parseNum(a.value))}</div>
+          <div><b>Dividendos TTM:</b> ${fmtEUR(ttmGross)} bruto · ${fmtEUR(ttmNet)} líquido</div>
+          <div><b>Yield bruto próprio:</b> ${fmtPct(grossYield)}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function openDividendBaseModal() {
+  renderDividendBaseModal();
+  openModal('modalDividendBase');
+}
+
+function updateQuoteErrorIndicator() {
+  const btn = document.getElementById('btnQuoteErrors');
+  if (!btn) return;
+  const report = (((state || {}).settings || {}).lastQuoteRefresh) || null;
+  if (!report || !Array.isArray(report.errors) || !report.errors.length) {
+    btn.style.display = 'none';
+    btn.textContent = '⚠️ Ver erros';
+    return;
+  }
+  btn.style.display = '';
+  btn.textContent = `⚠️ ${report.errors.length} erro${report.errors.length !== 1 ? 's' : ''}`;
 }
 
 // Populate the quote errors modal
@@ -8033,7 +8162,7 @@ function toastClickable(msg, onClick, duration = 5000) {
   if (!el) {
     el = document.createElement("div");
     el.id = "toastEl";
-    el.style.cssText = "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;padding:10px 20px;border-radius:20px;font-weight:700;font-size:14px;z-index:999;max-width:90vw;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,.2);transition:opacity .3s;cursor:pointer";
+    el.style.cssText = "position:fixed;bottom:140px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;padding:10px 20px;border-radius:20px;font-weight:700;font-size:14px;z-index:999;max-width:90vw;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,.2);transition:opacity .3s;cursor:pointer;pointer-events:auto";
     document.body.appendChild(el);
   }
   el.textContent = msg;
@@ -8045,6 +8174,8 @@ function toastClickable(msg, onClick, duration = 5000) {
   newEl.textContent = msg;
   newEl.style.opacity = "1";
   newEl.style.cursor = "pointer";
+  newEl.style.pointerEvents = "auto";
+  newEl.style.bottom = "140px";
   if (onClick) newEl.addEventListener("click", onClick);
   clearTimeout(newEl._t);
   newEl._t = setTimeout(() => { newEl.style.opacity = "0"; }, duration);
@@ -8075,12 +8206,27 @@ document.addEventListener("DOMContentLoaded", async () => {
     console.error("Falha ao carregar estado; a usar estado por defeito.", e);
     state = safeClone(DEFAULT_STATE);
   }
-  try { if (migrateDividendRecords()) await saveStateAsync(); } catch (e) { console.error("Falha na migração de dividendos", e); }
-  try { autoSyncDivSummariesFromImportedData(); await saveStateAsync(); } catch (e) { console.error("Falha na sincronização automática dos resumos de dividendos", e); }
+  try {
+    let changed = false;
+    if (migrateDividendRecords()) changed = true;
+    const bd = ensureBrokerData();
+    if ((bd.files||[]).length || (bd.events||[]).length || (bd.positions||[]).length) {
+      rebuildBrokerGeneratedData();
+      changed = true;
+    }
+    autoSyncDivSummariesFromImportedData();
+    if (pruneGeneratedDividendSummaries()) changed = true;
+    if (changed) await saveStateAsync();
+  } catch (e) { console.error("Falha na reconciliação inicial dos dividendos/corretoras", e); }
   try { wire(); } catch (e) { console.error("Falha no binding dos botões", e); }
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
   try { autoSnapshotIfNeeded(); } catch (e) { console.error("Falha no auto snapshot", e); }
   try { setTimeout(() => checkAndNotifyMaturities(), 2000); } catch (e) { console.error("Falha nas notificações de vencimento", e); }
+  window.openDividendBaseModal = openDividendBaseModal;
+  window.setDividendYieldDisplayMode = setDividendYieldDisplayMode;
+  window.applyPreferredDividendYieldToProjection = applyPreferredDividendYieldToProjection;
+  window.renderDividends = renderDividends;
+  window.renderAllocationPanel = renderAllocationPanel;
 });
 
 // Guarantee state is saved when app goes to background or is closed
@@ -10594,12 +10740,11 @@ function renderAllocationPanel() {
     // Phase selector
     html += "<div style='margin-bottom:14px'>";
     html += "<div style='font-size:11px;color:var(--muted);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.4px'>Fase FIRE — selecciona a tua situação</div>";
-    html += "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:10px'>";
+    html += "<div class='alloc-phase-grid'>";
     Object.entries(FIRE_ALLOCATION_PRESETS).forEach(([key, p]) => {
       const active = _allocPreset === key;
-      html += "<button class='btn " + (active ? "btn--primary" : "btn--outline") + " js-alloc-phase'"
-        + " style='font-size:10px;padding:8px 6px;text-align:center;line-height:1.25;white-space:normal;word-break:break-word;min-height:54px;display:flex;align-items:center;justify-content:center;flex-direction:column'"
-        + " data-phase='" + key + "'>"
+      html += "<button class='btn " + (active ? "btn--primary" : "btn--outline") + " js-alloc-phase alloc-phase-btn'"
+        + " type='button' data-phase='" + key + "' onclick='window._allocPreset=this.dataset.phase; renderAllocationPanel(); return false;'>"
         + escapeHtml(p.label) + "<br><span style='font-size:9px;opacity:.75'>" + escapeHtml(p.firePhase) + "</span>"
         + "</button>";
     });

@@ -832,6 +832,31 @@ select.input   { cursor: pointer; }
 }
 .analysis-tabs::-webkit-scrollbar { display: none; }
 
+
+.alloc-phase-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.alloc-phase-btn {
+  font-size: 10px !important;
+  padding: 8px 6px !important;
+  text-align: center;
+  line-height: 1.25;
+  white-space: normal;
+  word-break: break-word;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+@media (max-width: 480px) {
+  .alloc-phase-grid { grid-template-columns: 1fr; }
+  .alloc-phase-btn { min-height: 52px; }
+}
+
 .analysis-tab {
   flex-shrink: 0;
   scroll-snap-align: start;

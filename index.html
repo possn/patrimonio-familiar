@@ -8,7 +8,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="icon192.png">
-  <link rel="stylesheet" href="styles.css?v=20260416b">
+  <link rel="stylesheet" href="styles.css?v=20260418m">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
@@ -26,7 +26,7 @@
       document.head.appendChild(s);
     })();
   </script>
-  <script defer src="app.js?v=20260418l"></script>
+  <script defer src="app.js?v=20260418m"></script>
 </head>
 <body>
 
@@ -269,8 +269,9 @@
     <div class="card">
       <div class="card__head">
         <div><div class="card__title" id="itemsTitle">Ativos</div><div class="card__muted" id="itemsSub">Imobiliário, liquidez, ações/ETFs, metais, cripto, fundos, PPR, depósitos…</div></div>
-        <div style="display:flex;gap:6px;align-items:center">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
           <button class="btn btn--outline" id="btnRefreshQuotes" title="Actualizar cotações de acções e ETFs" style="font-size:13px;padding:6px 10px">⟳ Cotações</button>
+          <button class="btn btn--outline" id="btnQuoteErrors" type="button" style="display:none;font-size:13px;padding:6px 10px">⚠️ Erros</button>
           <button class="btn btn--primary" id="btnAddItem">Adicionar</button>
         </div>
       </div>
@@ -1236,6 +1237,28 @@
       <div class="note">A projeção FIRE está em <b>Análise → FIRE</b>.</div>
     </div>
   </section>
+
+
+<!-- Modal: Dividend Base -->
+<div class="modal" id="modalDividendBase" aria-hidden="true">
+  <div class="modal__bg" data-close="modalDividendBase"></div>
+  <div class="modal__box">
+    <div class="modal__head">
+      <div class="modal__title">📦 Base do yield de dividendos</div>
+      <button class="modal__close" data-close="modalDividendBase">Fechar</button>
+    </div>
+    <div style="padding:0 16px 8px">
+      <div class="card__muted" style="margin-bottom:12px" id="dividendBaseSummary"></div>
+      <div id="dividendBaseList"></div>
+      <div class="note" style="margin-top:12px;font-size:12px">
+        Aqui vês exactamente que activos estão a entrar no denominador do yield de dividendos e quanto cada um pesa.
+      </div>
+    </div>
+    <div style="padding:12px 16px">
+      <button class="btn btn--primary" style="width:100%" data-close="modalDividendBase">Fechar</button>
+    </div>
+  </div>
+</div>
 
 <!-- Modal: Quote Errors -->
 <div class="modal" id="modalQuoteErrors" aria-hidden="true">
