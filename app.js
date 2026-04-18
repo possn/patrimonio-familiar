@@ -8639,7 +8639,10 @@ function renderHealthRatios() {
 
   const debtRatio = t.liabsTotal / t.assetsTotal * 100;
   const leverageRatio = t.assetsTotal / Math.max(1, t.net);
-  const passiveRatio = t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0;
+  const py = calcPortfolioYield();
+  const passiveRatioActual = t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0;
+  const passiveRatioProjected = parseNum(py && py.weightedProjectedPassivePct);
+  const passiveRatio = passiveRatioProjected > 0 ? passiveRatioProjected : passiveRatioActual;
 
   // Fluxo mensal médio (últimos 6 meses)
   const byMonth = new Map();
@@ -8741,8 +8744,8 @@ function renderHealthRatios() {
     ? "Prioriza amortizar o passivo mais caro"
     : debtRatio > 30 ? "Margem de melhoria: amortizações antecipadas" : "Balanço robusto ✓";
   const passiveTip = passiveRatio < 2
-    ? "Considera ETFs de dividendos ou DP"
-    : passiveRatio >= 4 ? "Portfólio a gerar rendimento sólido ✓" : "Aumenta activos geradores de rendimento";
+    ? `Projetado ${fmtPct(passiveRatio)} · real actual ${fmtPct(passiveRatioActual)} · considera reforçar activos geradores de rendimento`
+    : passiveRatio >= 4 ? `Projetado ${fmtPct(passiveRatio)} · real actual ${fmtPct(passiveRatioActual)} · portfólio a gerar rendimento sólido ✓` : `Projetado ${fmtPct(passiveRatio)} · real actual ${fmtPct(passiveRatioActual)} · margem para optimização`;
   const savingsTip = savingsRate === null ? "" : savingsRate < 10
     ? "Revê as 3 maiores categorias de despesa"
     : savingsRate < 20 ? "Alvo: 20% — faltam "+fmtPct(20-savingsRate) : "Mantém a disciplina de poupança ✓";
@@ -8762,7 +8765,7 @@ function renderHealthRatios() {
         debtRatio<=30?"#059669":debtRatio<=60?"#d97706":"#dc2626", debtTip)}
       ${metricCard("💰", "Rendimento passivo",
         fmtPct(passiveRatio),
-        "Rendimento anual ÷ activos · &gt;4% excelente · &gt;2% adequado",
+        `Yield passivo projectado ÷ activos · real actual ${fmtPct(passiveRatioActual)} · &gt;4% excelente · &gt;2% adequado`,
         passiveRatio>=4?"#059669":passiveRatio>=2?"#d97706":"#94a3b8", passiveTip)}
       ${metricCard("💼", "Taxa de poupança",
         savingsRate!==null?fmtPct(savingsRate):"—",
