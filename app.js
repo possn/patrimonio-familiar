@@ -641,15 +641,42 @@ function getPreferredDividendYieldData() {
   };
 }
 
-function applyPreferredDividendYieldToProjection() {
-  const pref = getPreferredDividendYieldData();
+function getLegacyWholePortfolioDividendYieldPct() {
+  const divData = calcDividendYield();
+  const totals = calcTotals();
+  const base = parseNum(totals && totals.assetsTotal);
+  return base > 0 ? (parseNum(divData.gross) / base * 100) : 0;
+}
+
+function syncDividendProjectionField(opts = {}) {
   const field = $('divProjYield');
   if (!field) return;
-  field.value = pref.selectedYieldPct > 0 ? fmt(pref.selectedYieldPct, 2) : '';
+  const pref = getPreferredDividendYieldData();
+  if (!(pref.selectedYieldPct > 0)) return;
+  const current = parseNum(field.value);
+  const legacyWhole = getLegacyWholePortfolioDividendYieldPct();
+  const shouldReplace = !!opts.force
+    || !String(field.value || '').trim()
+    || current <= 0
+    || (
+      legacyWhole > 0
+      && Math.abs(current - legacyWhole) < 0.05
+      && Math.abs(pref.selectedYieldPct - legacyWhole) > 0.15
+    );
+  if (shouldReplace) field.value = fmt(pref.selectedYieldPct, 2);
+}
+
+function applyPreferredDividendYieldToProjection() {
+  const pref = getPreferredDividendYieldData();
+  syncDividendProjectionField({ force: true });
+  const field = $('divProjYield');
   const tag = pref.selectedMode === 'net' ? 'líquido' : 'bruto';
   toast(pref.selectedYieldPct > 0
     ? `Yield ${tag} aplicado à projeção: ${fmtPct(pref.selectedYieldPct)}`
     : 'Sem yield automático disponível.');
+  if (field && field.focus) {
+    try { field.focus(); } catch(_) {}
+  }
 }
 
 function assetClassKey(asset) {
@@ -2373,10 +2400,10 @@ function renderDivSummaryKPIs() {
       <!-- Selector yield modo + botão projeção -->
       <div style="padding:12px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line)">
         <div class="seg" style="margin:0;flex:1;min-width:200px;max-width:280px">
-          <button class="seg__btn ${selectedMode==='gross'?'seg__btn--active':''}" type="button" onclick="window.setDividendYieldDisplayMode('gross'); window.renderDividends(); return false;">Yield bruto TTM</button>
-          <button class="seg__btn ${selectedMode==='net'?'seg__btn--active':''}" type="button" onclick="window.setDividendYieldDisplayMode('net'); window.renderDividends(); return false;">Yield líquido TTM</button>
+          <button class="seg__btn ${selectedMode==='gross'?'seg__btn--active':''}" type="button" data-divyield-mode="gross">Yield bruto TTM</button>
+          <button class="seg__btn ${selectedMode==='net'?'seg__btn--active':''}" type="button" data-divyield-mode="net">Yield líquido TTM</button>
         </div>
-        <button class="btn btn--primary btn--sm" type="button" onclick="window.applyPreferredDividendYieldToProjection(); return false;">📈 Usar na projeção</button>
+        <button class="btn btn--primary btn--sm" type="button" data-divyield-apply="1">📈 Usar na projeção</button>
       </div>
     </div>
 
@@ -2473,6 +2500,21 @@ function renderDivSummaryKPIs() {
         </div>
       </div>`;
     })()}`;
+
+  el.querySelectorAll('[data-divyield-mode]').forEach(btn => {
+    btn.addEventListener('click', ev => {
+      ev.preventDefault();
+      const mode = btn.dataset.divyieldMode === 'net' ? 'net' : 'gross';
+      setDividendYieldDisplayMode(mode);
+      renderDividends();
+    });
+  });
+  const applyBtn = el.querySelector('[data-divyield-apply]');
+  if (applyBtn) applyBtn.addEventListener('click', ev => {
+    ev.preventDefault();
+    applyPreferredDividendYieldToProjection();
+  });
+  syncDividendProjectionField({ force: false });
 }
 
 function renderDivSummaryList() {
@@ -2619,13 +2661,9 @@ function renderDivProjection() {
   const latest = summaries[0];
   const pref = getPreferredDividendYieldData();
 
-  // Auto-fill projection yield from real broker data if field is empty
+  // Keep the projection field aligned with the same dividend-base yield shown in the hero card.
+  syncDividendProjectionField({ force: false });
   const projYieldEl = $("divProjYield");
-  if (projYieldEl && !projYieldEl.value) {
-    const rm = calcPortfolioRealMetrics();
-    if (rm.ttmYieldGross > 0) projYieldEl.value = fmt(rm.ttmYieldGross, 2);
-    else if (pref.selectedYieldPct > 0) projYieldEl.value = fmt(pref.selectedYieldPct, 2);
-  }
 
   const projYieldField = parseNum($("divProjYield").value);
   const baseYield = projYieldField > 0 ? projYieldField : pref.selectedYieldPct;
@@ -7886,66 +7924,100 @@ async function refreshLiveQuotes() {
   let updated = 0, failed = 0;
   const errors = [];
 
-  // Convert DivTracker ticker format to Yahoo Finance format
-  // Known tickers not on Yahoo Finance — skip them gracefully
+  // Convert local / broker tickers into Yahoo candidates.
+  // Several imports keep a stale ISIN→Yahoo guess; try that first, then sensible fallbacks.
   const SKIP_TICKERS = new Set(["WBA","14","DN3.DE","OD7F.DE","U9UA.DE"]);
+  const ALT_EXCHANGE_SUFFIXES = [".DE", ".AS", ".L", ".MI", ".PA", ".SW", ".MC", ".LS", ".VI", ".BR"];
 
-  
-function toYahooTicker(raw) {
+  function toYahooTicker(raw) {
     const t = (raw||"").trim().toUpperCase();
-    if (SKIP_TICKERS.has(t)) return null;
+    if (!t || SKIP_TICKERS.has(t)) return null;
     if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD");
     const xmap = {".PT":".LS",".GB":".L",".PL":".WA",".CH":".SW",
       ".DK":".CO",".SE":".ST",".NO":".OL",".FI":".HE",
       ".BE":".BR",".IT":".MI",".FR":".PA",".NL":".AS",
       ".ES":".MC",".AU":".AX",".CA":".TO"};
-    for (const [from, to] of Object.entries(xmap))
+    for (const [from, to] of Object.entries(xmap)) {
       if (t.endsWith(from)) return t.slice(0,-from.length) + to;
+    }
     return t;
   }
 
-  // Resolve via ISIN first → avoids ticker collisions
-  // e.g. COR = Cencora (US, ~270$) vs COR.LS = Corticeira Amorim (PT, ~8€)
-  function resolveYahooTicker(asset) {
-    const isin = String(asset.isin || "").trim().toUpperCase();
-    if (isin && ISIN_YAHOO_MAP[isin]) return ISIN_YAHOO_MAP[isin];
-    const tk = String(asset.ticker || "").trim();
-    const raw = (tk && /^[A-Z0-9.\-]{1,12}$/.test(tk)) ? tk
-      : (asset.name && /^[A-Z0-9.\-]{1,12}$/.test(asset.name.trim())) ? asset.name.trim()
-      : extractTicker(asset);
-    if (!raw) return null;
-    const yahoo = toYahooTicker(raw);
-    return SKIP_TICKERS.has(raw.toUpperCase()) ? null : yahoo;
+  function getStoredYahooTicker(asset) {
+    const direct = String(asset.yahooTicker || "").trim().toUpperCase();
+    if (direct) return direct;
+    const m = String(asset.notes || "").match(/(?:^|\s|·)Yahoo=([A-Z0-9.\-=^]+)/i);
+    return m ? String(m[1] || "").trim().toUpperCase() : "";
   }
 
-  // Build list: {asset, raw, yahoo}
-  const tickerList = candidates.map(asset => {
-    const yahoo = resolveYahooTicker(asset);
-    const raw = String(asset.ticker || asset.name || "").trim() || extractTicker(asset) || "";
-    return { asset, raw, yahoo };
-  }).filter(x => x.yahoo);
+  function getRawTickerForAsset(asset) {
+    const tk = String(asset.ticker || "").trim();
+    if (tk && /^[A-Z0-9.\-]{1,16}$/i.test(tk)) return tk.toUpperCase();
+    const nm = String(asset.name || "").trim();
+    if (nm && /^[A-Z0-9.\-]{1,16}$/i.test(nm)) return nm.toUpperCase();
+    const ext = extractTicker(asset);
+    return ext ? String(ext).trim().toUpperCase() : "";
+  }
 
-  // Fetch all quotes in parallel
+  function buildYahooTickerCandidates(asset) {
+    const out = [];
+    const push = tk => {
+      const val = toYahooTicker(tk);
+      if (!val || out.includes(val)) return;
+      out.push(val);
+    };
+    push(getStoredYahooTicker(asset));
+    const isin = String(asset.isin || "").trim().toUpperCase();
+    if (isin && ISIN_YAHOO_MAP[isin]) push(ISIN_YAHOO_MAP[isin]);
+    const raw = getRawTickerForAsset(asset);
+    push(raw);
+    const normRaw = toYahooTicker(raw);
+    if (normRaw && normRaw !== raw) push(normRaw);
+    if (raw && !/[.=\-]/.test(raw)) {
+      ALT_EXCHANGE_SUFFIXES.forEach(suf => push(raw + suf));
+    }
+    return out;
+  }
+
+  async function fetchQuoteWithFallback(ref) {
+    let lastErr = null;
+    for (const candidate of ref.candidates) {
+      try {
+        const q = await fetchQuote(candidate, workerUrl);
+        return { yahoo: candidate, quote: q };
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error("Não foi possível obter uma cotação válida");
+  }
+
+  const tickerList = candidates.map(asset => {
+    const raw = getRawTickerForAsset(asset);
+    return { asset, raw, candidates: buildYahooTickerCandidates(asset) };
+  }).filter(x => x.candidates && x.candidates.length);
+
   const quoteResults = await Promise.allSettled(
-    tickerList.map(x => fetchQuote(x.yahoo, workerUrl))
+    tickerList.map(x => fetchQuoteWithFallback(x))
   );
   const quoteMap = {};
   const quoteErrMap = {};
   quoteResults.forEach((r, i) => {
-    const ref = tickerList[i];
-    if (!ref) return;
-    if (r.status === "fulfilled" && r.value) {
-      quoteMap[ref.yahoo] = r.value;
+    if (r.status === "fulfilled" && r.value && r.value.quote) {
+      quoteMap[i] = r.value;
     } else {
-      quoteErrMap[ref.yahoo] = (r && r.reason && r.reason.message) ? r.reason.message : "Erro ao obter cotação";
+      quoteErrMap[i] = (r && r.reason && r.reason.message) ? r.reason.message : "Erro ao obter cotação";
     }
   });
 
   // Collect currencies needing FX (crypto always USD, others from quote)
   const ccysNeeded = new Set();
-  for (const x of tickerList) if (x.yahoo.endsWith("-USD")) ccysNeeded.add("USD");
-  for (const q of Object.values(quoteMap)) {
-    const c = (q.currency||"EUR").toUpperCase();
+  for (const x of tickerList) {
+    if ((x.candidates || []).some(tk => tk.endsWith("-USD"))) ccysNeeded.add("USD");
+  }
+  for (const res of Object.values(quoteMap)) {
+    const q = res && res.quote;
+    const c = (q && q.currency || "EUR").toUpperCase();
     if (c !== "EUR") ccysNeeded.add(c);
   }
 
@@ -7978,18 +8050,22 @@ function toYahooTicker(raw) {
   }
 
   const today = new Date().toLocaleDateString("pt-PT");
-  for (const { asset, raw, yahoo } of tickerList) {
-    const q = quoteMap[yahoo];
+  for (const [idx, ref] of tickerList.entries()) {
+    const { asset, raw } = ref;
+    const resolved = quoteMap[idx];
+    const yahoo = resolved && resolved.yahoo;
+    const q = resolved && resolved.quote;
     if (!q || !Number.isFinite(q.price) || q.price <= 0) {
       failed++;
       errors.push({
         raw,
-        yahoo,
-        assetName: asset.name || raw || yahoo,
-        reason: quoteErrMap[yahoo] || "Não foi possível obter uma cotação válida"
+        yahoo: (ref.candidates || []).join(" → "),
+        assetName: asset.name || raw || (ref.candidates || [])[0] || "Ativo",
+        reason: quoteErrMap[idx] || "Não foi possível obter uma cotação válida"
       });
       continue;
     }
+    asset.yahooTicker = yahoo || asset.yahooTicker || "";
     const ccy = (q.currency||"EUR").toUpperCase();
     const fxToEur = ccy === "EUR" ? 1 : (fxRates[ccy] || FX_FALLBACK_LOCAL[ccy] || FX_FALLBACK_STATIC[ccy] || 1);
     const priceEur = q.price * fxToEur;
@@ -8148,7 +8224,7 @@ function showQuoteErrors(updated, failed, errors, updatedCount, failedCount) {
         <div class="item__t">${escapeHtml(assetName || raw || yahoo || "Ativo")}</div>
         <div class="item__s" style="margin-top:4px;line-height:1.5">
           <div><b>Local:</b> ${escapeHtml(raw || "—")}</div>
-          <div><b>Yahoo:</b> ${escapeHtml(yahoo || "—")}</div>
+          <div><b>Yahoo tentado:</b> ${escapeHtml(yahoo || "—")}</div>
           <div><b>Motivo:</b> ${escapeHtml(reason || "Erro desconhecido")}</div>
         </div>
       </div>
@@ -10707,8 +10783,9 @@ function renderAllocationPanel() {
   try {
     // Phase detection
     const savedPreset = (state.settings && state.settings.allocationPreset) || null;
-    if (savedPreset) _allocPreset = savedPreset;
-    else _allocPreset = detectFIREPhase();
+    if (!_allocPreset || !FIRE_ALLOCATION_PRESETS[_allocPreset]) {
+      _allocPreset = savedPreset || detectFIREPhase();
+    }
 
     const custom = (state.settings && state.settings.targetAllocation) || null;
     const preset = FIRE_ALLOCATION_PRESETS[_allocPreset];
@@ -10827,8 +10904,15 @@ function renderAllocationPanel() {
     el.innerHTML = html;
     // Wire phase-select buttons (use data-phase to avoid onclick quoting issues)
     el.querySelectorAll(".js-alloc-phase").forEach(btn => {
-      btn.addEventListener("click", () => {
-        window._allocPreset = btn.dataset.phase;
+      btn.addEventListener("click", ev => {
+        ev.preventDefault();
+        const phase = btn.dataset.phase;
+        if (!phase || !FIRE_ALLOCATION_PRESETS[phase]) return;
+        window._allocPreset = phase;
+        _allocPreset = phase;
+        if (!state.settings) state.settings = {};
+        state.settings.allocationPreset = phase;
+        saveState();
         renderAllocationPanel();
       });
     });
