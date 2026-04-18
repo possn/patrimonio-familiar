@@ -334,15 +334,15 @@
     </div>
     <div class="card">
       <div class="card__head">
-        <div><div class="card__title">Importar corretoras</div><div class="card__muted">CSV ou Excel · múltiplos anos · múltiplas corretoras</div></div>
+        <div><div class="card__title">Importar corretoras</div><div class="card__muted">CSV, Excel ou PDF · múltiplos anos · múltiplas corretoras</div></div>
       </div>
       <div class="row row--wrap" style="gap:10px">
-        <input id="brokerFiles" type="file" class="input" accept=".csv,.xls,.xlsx,text/csv,application/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple>
+        <input id="brokerFiles" type="file" class="input" accept=".csv,.xls,.xlsx,.pdf,text/csv,application/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf" multiple>
         <button class="btn btn--primary" id="btnImportBrokerFiles" disabled>Importar ficheiros</button>
       </div>
       <div class="note">
-        Junta vários ficheiros anuais (ex: 2023, 2024, 2025) e até corretoras diferentes. Reconhece <b>ledger</b> tipo <i>Action/Time/Total</i> e <b>posições</b> tipo <i>Ticker/Quantity/Cost Per Share</i>.<br>
-        A app guarda os eventos, deduplica sobreposições e reconstrói a parte importada da carteira. Evita importar ao mesmo tempo o ledger completo e um snapshot da mesma conta se não quiseres somar duas vezes.
+        Junta vários ficheiros anuais (ex: 2023, 2024, 2025) e até corretoras diferentes. Reconhece <b>ledger</b> tipo <i>Action/Time/Total</i>, <b>posições</b> tipo <i>Ticker/Quantity/Cost Per Share</i> e <b>PDF de confirmação de posses</b>.<br>
+        A app cruza histórico, posições e snapshots, deduplica sobreposições e reconstrói a parte importada da carteira. Para o mesmo broker, o ledger alimenta custo/dividendos e o snapshot actualiza quantidades/valor actual.
       </div>
       <div id="brokerImportResult" style="display:none;margin-top:10px"></div>
       <div id="brokerImportAudit" style="display:none;margin-top:10px"></div>

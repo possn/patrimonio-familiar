@@ -4684,20 +4684,6 @@ function brokerApproxFxToEUR(ccy) {
   return FX[String(ccy || "EUR").toUpperCase()] || 1;
 }
 
-function normalizeISIN(v) {
-  const s = String(v || "").trim().toUpperCase();
-  return /^[A-Z]{2}[A-Z0-9]{9}\d$/.test(s) ? s : "";
-}
-
-function makeBrokerSecurityKey({ isin = "", ticker = "", name = "" } = {}) {
-  const i = normalizeISIN(isin);
-  if (i) return `ISIN:${i}`;
-  const t = String(ticker || "").trim().toUpperCase();
-  if (t) return `TICKER:${t}`;
-  const n = String(name || "").trim().toUpperCase();
-  return `NAME:${n}`;
-}
-
 function detectBrokerRowsFormat(rows) {
   if (!Array.isArray(rows) || !rows.length) return "unknown";
   const sample = rows.slice(0, 8).map(normalizeRow);
@@ -4709,20 +4695,11 @@ function detectBrokerRowsFormat(rows) {
   return "unknown";
 }
 
-function detectBrokerTextFormat(text) {
-  const n = normStr(text || "");
-  if (!n) return "unknown";
-  if ((n.includes("confirmacao de ativos") || n.includes("confirmation of holdings") || n.includes("trading 212 invest")) && n.includes("valor dos ativos") && n.includes("isin") && n.includes("quantity") && n.includes("price")) {
-    return "holdings_pdf";
-  }
-  return "unknown";
-}
-
 function normalizeBrokerNameFromFile(fileName) {
   const n = normStr(fileName || "");
   if (n.includes("divtracker")) return "DivTracker";
-  if (n.includes("confirmation-of-holdings") || n.includes("confirmacao") || n.includes("holdings") || n.includes("trading212") || n.includes("trade212")) return "Trading 212";
   if (n.includes("trade republic") || n.includes("from_")) return "Corretora CSV";
+  if (n.includes("trading212") || n.includes("trade212")) return "Trading 212";
   if (n.includes("degiro")) return "DEGIRO";
   if (n.includes("xtb")) return "XTB";
   return "Corretora";
@@ -4763,15 +4740,7 @@ function brokerEventKey(evt) {
 }
 
 function brokerPositionKey(pos) {
-  return [
-    makeBrokerSecurityKey(pos),
-    Math.round(parseNum(pos.qty) * 1e8) / 1e8,
-    Math.round(parseNum(pos.costBasisEUR) * 100) / 100,
-    Math.round(parseNum(pos.marketValueEUR) * 100) / 100,
-    pos.positionKind || "",
-    pos.snapshotDate || "",
-    pos.sourceName || ""
-  ].join("|");
+  return [pos.ticker || "", pos.isin || "", Math.round(parseNum(pos.qty) * 1e8) / 1e8, Math.round(parseNum(pos.costBasisEUR) * 100) / 100, pos.sourceName || ""].join("|");
 }
 
 function estimateEURFactorFromRow(r, grossLocal, totalEUR, ccy) {
@@ -4840,7 +4809,7 @@ function parseBrokerPositionRows(rows, meta) {
     const ticker = String(r.ticker || r.symbol || "").trim();
     const qty = parseNumberSmart(r.quantity || r.qty || r.shares || r.no_of_shares || r.units);
     const cps = parseNumberSmart(r.cost_per_share || r.price_share || r.price || r.preco);
-    if ((!ticker && !normalizeISIN(r.isin)) || !Number.isFinite(qty) || !Number.isFinite(cps) || qty <= 0) continue;
+    if (!ticker || !Number.isFinite(qty) || !Number.isFinite(cps) || qty <= 0) continue;
     const ccy = String(r.currency || r.ccy || r.currency_price_share || "EUR").trim().toUpperCase() || "EUR";
     const costBasisEUR = qty * cps * brokerApproxFxToEUR(ccy);
     const pos = {
@@ -4849,118 +4818,17 @@ function parseBrokerPositionRows(rows, meta) {
       sourceName: meta.name,
       broker: meta.broker,
       ticker,
-      isin: normalizeISIN(r.isin),
-      name: String(r.name || r.security || ticker || r.isin).trim(),
+      isin: String(r.isin || "").trim(),
+      name: String(r.name || r.security || ticker).trim(),
       qty,
       costBasisEUR,
-      marketValueEUR: parseNumberSmart(r.market_value || r.market_value_eur || r.valor_mercado_eur) || 0,
       pricePerShare: cps,
       priceCurrency: ccy,
       class: brokerPositionClassFromTicker(ticker),
-      positionKind: "cost_snapshot",
-      snapshotDate: normalizeDate(r.date || r.as_of || meta.asOfDate || "") || "",
       key: ""
     };
     pos.key = brokerPositionKey(pos);
     positions.push(pos);
-  }
-  return positions;
-}
-
-async function parseBrokerImportFile(file) {
-  const name = String(file?.name || "").toLowerCase();
-  if (name.endsWith(".pdf")) {
-    const text = await extractTextFromPDF(file);
-    const format = detectBrokerTextFormat(text);
-    return { format, text, rows: [], textLength: text.length };
-  }
-  const rows = await fileToObjectRows(file);
-  const format = detectBrokerRowsFormat(rows);
-  return { format, rows, text: "" };
-}
-
-function parseTrading212HoldingsPdf(text, meta) {
-  const rawText = String(text || "");
-  const lines = rawText
-    .split(/\r?\n/)
-    .map(s => String(s || "").replace(/	+/g, " ").replace(/\s+/g, " ").trim())
-    .filter(Boolean);
-
-  const totalMatch = rawText.match(/Valor dos ativos:\s*([0-9.,]+)\s*EUR/i);
-  const asOfMatch = rawText.match(/as of\s+(\d{2}\/\d{2}\/\d{4})/i);
-  meta.snapshotTotalEUR = totalMatch ? parseNumberSmart(totalMatch[1]) : 0;
-  meta.asOfDate = asOfMatch ? normalizeDate(asOfMatch[1]) : "";
-
-  const positions = [];
-  const seen = new Set();
-  const ignore = (s) => {
-    const n = normStr(s || "");
-    return !n || n === "instrument" || n === "isin" || n === "quantity" || n === "price" ||
-      n.includes("nif") || n.includes("id de cliente") || n.includes("nome do cliente") ||
-      n.includes("confirmacao de ativos") || n.includes("trading 212 invest") || n.includes("trading 212 crypto") ||
-      n.includes("valor dos ativos") || n.includes("este documento") || n.includes("a informacao aqui apresentada") ||
-      n.includes("trading 212 e a denominacao") || n.includes("sem dados disponiveis") || /^\d+\/\d+$/.test(String(s || ""));
-  };
-  const rowRe = /^(.*?)\s+([A-Z]{2}[A-Z0-9]{9}\d)\s+([0-9][0-9.,]*)\s+([A-Z]{3})\s+([0-9][0-9.,]*)$/;
-  const pushPos = (name, isin, qtyLine, priceLine) => {
-    const isinNorm = normalizeISIN(isin);
-    const qty = parseNumberSmart(qtyLine);
-    const m = String(priceLine || "").match(/^([A-Z]{3})\s+([0-9][0-9.,]*)$/);
-    if (!isinNorm || !Number.isFinite(qty) || qty <= 0 || !m) return false;
-    const ccy = String(m[1] || "EUR").toUpperCase();
-    const px = parseNumberSmart(m[2]);
-    if (!Number.isFinite(px)) return false;
-    const pos = {
-      id: uid(),
-      sourceHash: meta.hash,
-      sourceName: meta.name,
-      broker: meta.broker,
-      ticker: "",
-      isin: isinNorm,
-      name: String(name || isinNorm).trim(),
-      qty,
-      costBasisEUR: 0,
-      marketValueEUR: qty * px * brokerApproxFxToEUR(ccy),
-      pricePerShare: px,
-      priceCurrency: ccy,
-      class: "Ações/ETFs",
-      positionKind: "market_snapshot",
-      snapshotDate: meta.asOfDate || "",
-      key: ""
-    };
-    pos.key = brokerPositionKey(pos);
-    if (seen.has(pos.key)) return false;
-    seen.add(pos.key);
-    positions.push(pos);
-    return true;
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (ignore(line)) continue;
-    const m = line.match(rowRe);
-    if (m) {
-      pushPos(m[1], m[2], m[3], `${m[4]} ${m[5]}`);
-      continue;
-    }
-    const isin = normalizeISIN(line);
-    if (!isin) continue;
-    let j = i - 1;
-    while (j >= 0 && ignore(lines[j])) j -= 1;
-    let k = i + 1;
-    while (k < lines.length && ignore(lines[k])) k += 1;
-    let l = k + 1;
-    while (l < lines.length && ignore(lines[l])) l += 1;
-    if (j >= 0 && k < lines.length && l < lines.length) {
-      pushPos(lines[j], isin, lines[k], lines[l]);
-    }
-  }
-  const parsedTotal = positions.reduce((s, p) => s + Math.max(0, parseNum(p.marketValueEUR)), 0);
-  if (meta.snapshotTotalEUR > 0 && parsedTotal > 0) {
-    const scale = meta.snapshotTotalEUR / parsedTotal;
-    if (Math.abs(scale - 1) > 0.001) {
-      positions.forEach(p => { p.marketValueEUR = Math.max(0, parseNum(p.marketValueEUR)) * scale; p.key = brokerPositionKey(p); });
-    }
   }
   return positions;
 }
@@ -4972,48 +4840,23 @@ function rebuildBrokerGeneratedData() {
   state.transactions = (state.transactions || []).filter(t => !t.generatedFromBroker);
 
   const posMap = new Map();
-  const touchPos = ({ ticker = "", isin = "", name = "", cls = "", currency = "EUR", sourceName = "" } = {}) => {
-    const key = makeBrokerSecurityKey({ isin, ticker, name });
-    const prev = posMap.get(key) || {
-      ticker: String(ticker || "").trim(),
-      isin: normalizeISIN(isin),
-      name: String(name || ticker || isin || "").trim(),
-      class: cls || brokerPositionClassFromTicker(ticker),
-      qty: 0,
-      costBasis: 0,
-      marketValueEUR: 0,
-      snapshotQty: 0,
-      snapshotDate: "",
-      currency: currency || "EUR",
-      sourceNames: new Set(),
-      hasSnapshot: false
-    };
-    if (!prev.ticker && ticker) prev.ticker = String(ticker).trim();
-    if (!prev.isin && isin) prev.isin = normalizeISIN(isin);
-    if ((!prev.name || prev.name === prev.isin) && name) prev.name = String(name).trim();
-    if (!prev.class && cls) prev.class = cls;
-    if (currency) prev.currency = currency;
-    if (sourceName) prev.sourceNames.add(sourceName);
+  const keyForTicker = (ticker, cls) => `${String(ticker || "").toUpperCase()}|${cls || "Ações/ETFs"}`;
+
+  const touchPos = (ticker, cls, patch = {}) => {
+    const key = keyForTicker(ticker, cls);
+    const prev = posMap.get(key) || { ticker, name: patch.name || ticker, class: cls || brokerPositionClassFromTicker(ticker), qty: 0, costBasis: 0, sourceNames: new Set(), currency: patch.currency || "EUR" };
+    if (patch.name && !prev.name) prev.name = patch.name;
+    if (patch.currency) prev.currency = patch.currency;
+    if (patch.sourceName) prev.sourceNames.add(patch.sourceName);
     posMap.set(key, prev);
     return prev;
   };
 
   for (const p of (bd.positions || [])) {
     const cls = p.class || brokerPositionClassFromTicker(p.ticker);
-    const pos = touchPos({ ticker: p.ticker, isin: p.isin, name: p.name, cls, sourceName: p.sourceName, currency: p.priceCurrency || "EUR" });
-    if (p.positionKind === "market_snapshot") {
-      const d = String(p.snapshotDate || "");
-      if (!pos.hasSnapshot || !pos.snapshotDate || (d && d >= pos.snapshotDate)) {
-        pos.snapshotDate = d;
-        pos.snapshotQty = parseNum(p.qty);
-        pos.marketValueEUR = Math.max(0, parseNum(p.marketValueEUR));
-        pos.hasSnapshot = pos.marketValueEUR > 0 || pos.snapshotQty > 0;
-      }
-    } else {
-      pos.qty += parseNum(p.qty);
-      pos.costBasis += Math.max(0, parseNum(p.costBasisEUR));
-      if (!pos.marketValueEUR && parseNum(p.marketValueEUR) > 0) pos.marketValueEUR = parseNum(p.marketValueEUR);
-    }
+    const pos = touchPos(p.ticker, cls, { name: p.name, sourceName: p.sourceName, currency: p.priceCurrency || "EUR" });
+    pos.qty += parseNum(p.qty);
+    pos.costBasis += parseNum(p.costBasisEUR);
   }
 
   const events = (bd.events || []).slice().sort((a, b) => String(a.dateTime || a.date).localeCompare(String(b.dateTime || b.date)));
@@ -5021,13 +4864,13 @@ function rebuildBrokerGeneratedData() {
     const e = events[i];
     const cls = brokerPositionClassFromTicker(e.ticker);
     if (e.type === "BUY") {
-      const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
+      const pos = touchPos(e.ticker, cls, { name: e.name, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
       pos.qty += parseNum(e.qty);
       pos.costBasis += Math.max(0, parseNum(e.totalEUR) + parseNum(e.feeEUR));
       continue;
     }
     if (e.type === "SELL") {
-      const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
+      const pos = touchPos(e.ticker, cls, { name: e.name, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
       const sellQty = Math.abs(parseNum(e.qty));
       const avg = pos.qty > 0 ? pos.costBasis / pos.qty : 0;
       pos.qty = Math.max(0, pos.qty - sellQty);
@@ -5036,18 +4879,18 @@ function rebuildBrokerGeneratedData() {
     }
     if (e.type === "SPLIT_OPEN" || e.type === "SPLIT_CLOSE") {
       const next = events[i + 1];
-      const sameGroup = next && (makeBrokerSecurityKey(next) === makeBrokerSecurityKey(e)) && String(next.dateTime || next.date) === String(e.dateTime || e.date) && ((e.type === "SPLIT_OPEN" && next.type === "SPLIT_CLOSE") || (e.type === "SPLIT_CLOSE" && next.type === "SPLIT_OPEN"));
+      const sameGroup = next && next.ticker === e.ticker && String(next.dateTime || next.date) === String(e.dateTime || e.date) && ((e.type === "SPLIT_OPEN" && next.type === "SPLIT_CLOSE") || (e.type === "SPLIT_CLOSE" && next.type === "SPLIT_OPEN"));
       if (sameGroup) {
         const openEvt = e.type === "SPLIT_OPEN" ? e : next;
         const closeEvt = e.type === "SPLIT_CLOSE" ? e : next;
-        const pos = touchPos({ ticker: e.ticker || next.ticker, isin: e.isin || next.isin, name: e.name || next.name, cls, sourceName: e.sourceName || next.sourceName, currency: e.totalCurrency || next.totalCurrency || "EUR" });
+        const pos = touchPos(e.ticker, cls, { name: e.name || next.name, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
         pos.qty = Math.max(0, pos.qty - parseNum(closeEvt.qty)) + parseNum(openEvt.qty);
         i++;
       }
       continue;
     }
     if (e.type === "STOCK_DISTRIBUTION") {
-      const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
+      const pos = touchPos(e.ticker, cls, { name: e.name, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
       pos.qty += Math.max(0, parseNum(e.qty));
       continue;
     }
@@ -5056,7 +4899,7 @@ function rebuildBrokerGeneratedData() {
       const tax = Math.max(0, parseNum(e.taxEUR));
       const net = Math.max(0, gross - tax);
       state.dividends.push(normalizeDividendRecord({
-        id: uid(), assetId: "", assetName: e.ticker || e.name || e.isin || "Dividendo",
+        id: uid(), assetId: "", assetName: e.ticker || e.name || "Dividendo",
         amount: gross, grossAmount: gross, netAmount: net, taxWithheld: tax,
         date: e.date, notes: `${e.actionRaw || e.type} · ${e.broker || "Corretora"}${e.sourceName ? " · " + e.sourceName : ""}`,
         generatedFromBroker: true, sourceHash: e.sourceHash, eventKey: e.key
@@ -5083,21 +4926,12 @@ function rebuildBrokerGeneratedData() {
   }
 
   for (const p of posMap.values()) {
-    const finalQty = p.hasSnapshot && p.snapshotQty > 0 ? p.snapshotQty : p.qty;
-    const finalValue = p.hasSnapshot && p.marketValueEUR > 0 ? p.marketValueEUR : (p.marketValueEUR > 0 ? p.marketValueEUR : p.costBasis);
-    if (!(finalQty > 0) || !(finalValue > 0 || p.costBasis > 0)) continue;
-    const displayName = p.ticker || p.name || p.isin || "Ativo";
-    const noteBits = [];
-    if (p.isin) noteBits.push(`ISIN=${p.isin}`);
-    noteBits.push(`Qty=${fmt(finalQty, 6)}`);
-    if (p.costBasis > 0) noteBits.push(`Custo=${fmtEUR2(p.costBasis)}`);
-    if (p.hasSnapshot && p.marketValueEUR > 0) noteBits.push(`Valor snapshot=${fmtEUR2(p.marketValueEUR)}${p.snapshotDate ? ` @ ${p.snapshotDate}` : ""}`);
-    noteBits.push(`Fontes=${Array.from(p.sourceNames || []).join(", ") || "import"}`);
+    if (!(p.qty > 0) || !(p.costBasis > 0)) continue;
+    const notes = `Gerado por importação de corretora. Qty=${fmt(p.qty, 6)} · Custo=${fmtEUR2(p.costBasis)} · Fontes=${Array.from(p.sourceNames || []).join(", ") || "import"}`;
     state.assets.push({
-      id: uid(), class: p.class || brokerPositionClassFromTicker(p.ticker), name: displayName, value: finalValue,
-      yieldType: "none", yieldValue: 0, compoundFreq: 12, notes: `Gerado por importação de corretora. ${noteBits.join(" · ")}`,
-      qty: finalQty, costBasis: p.costBasis, pmOriginal: finalQty > 0 && p.costBasis > 0 ? p.costBasis / finalQty : 0, pmCcy: "EUR",
-      ticker: p.ticker || "", isin: p.isin || "", brokerMarketSnapshot: !!p.hasSnapshot, brokerSnapshotDate: p.snapshotDate || "",
+      id: uid(), class: p.class || brokerPositionClassFromTicker(p.ticker), name: p.ticker, value: p.costBasis,
+      yieldType: "none", yieldValue: 0, compoundFreq: 12, notes,
+      qty: p.qty, costBasis: p.costBasis, pmOriginal: p.qty > 0 ? p.costBasis / p.qty : 0, pmCcy: "EUR",
       generatedFromBroker: true
     });
   }
@@ -5141,12 +4975,6 @@ function getBrokerImportDiagnostics() {
     const rec = byHash.get(p.sourceHash);
     if (!rec) return;
     rec.actualPositions += 1;
-    const d = String(p.snapshotDate || "").slice(0, 10);
-    if (d) {
-      if (!rec.firstDate || d < rec.firstDate) rec.firstDate = d;
-      if (!rec.lastDate || d > rec.lastDate) rec.lastDate = d;
-      rec.years.add(d.slice(0, 4));
-    }
     if (p.priceCurrency) rec.currencies.add(String(p.priceCurrency).toUpperCase());
   });
 
@@ -5190,11 +5018,8 @@ function getBrokerImportDiagnostics() {
 
   const importedAssets = (state.assets || []).filter(a => a.generatedFromBroker);
   const importedValue = importedAssets.reduce((s, a) => s + parseNum(a.value), 0);
-  const importedCost = importedAssets.reduce((s, a) => s + parseNum(a.costBasis), 0);
   const importedDivs = (state.dividends || []).filter(d => d.generatedFromBroker).reduce((s, d) => s + getDividendGross(d), 0);
   const importedInterest = (state.transactions || []).filter(t => t.generatedFromBroker && /juros/i.test(String(t.category || ""))).reduce((s, t) => s + parseNum(t.amount), 0);
-  const snapshotDeclared = fileRecs.reduce((s, f) => s + Math.max(0, parseNum(f.snapshotTotalEUR)), 0);
-  const snapshotFiles = fileRecs.filter(f => parseNum(f.snapshotTotalEUR) > 0).length;
 
   return {
     files: fileRecs,
@@ -5205,9 +5030,6 @@ function getBrokerImportDiagnostics() {
     overlapCount,
     importedAssets: importedAssets.length,
     importedValue,
-    importedCost,
-    snapshotDeclared,
-    snapshotFiles,
     importedDivs,
     importedInterest,
     firstDate: fileRecs.find(r => r.firstDate)?.firstDate || "",
@@ -5251,15 +5073,13 @@ function renderBrokerImportAudit() {
       </div>
       <div style="font-size:12px;color:#475569">${warning ? `Sobreposições detectadas: <b>${d.overlapCount}</b>` : "Sem sobreposições temporais detectadas entre ficheiros da mesma corretora."}</div>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-top:10px">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px">
       <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Corretoras</div><div style="font-weight:900">${d.brokerCount}</div></div>
       <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Ativos gerados</div><div style="font-weight:900">${d.importedAssets}</div></div>
-      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Valor importado</div><div style="font-weight:900">${fmtEUR(d.importedValue)}</div></div>
-      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Custo reconstruído</div><div style="font-weight:900">${fmtEUR(d.importedCost)}</div></div>
+      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Custo reconstruído</div><div style="font-weight:900">${fmtEUR(d.importedValue)}</div></div>
       <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Passivo real</div><div style="font-weight:900">${fmtEUR(d.importedDivs + d.importedInterest)}</div></div>
     </div>
-    <div style="font-size:11px;color:#64748b;margin-top:8px">Valor importado = valor actual gerado pelos snapshots/posições importadas. Custo reconstruído = base de custo inferida do histórico; pode divergir do valor actual de mercado.</div>
-    ${d.snapshotFiles ? `<div style="font-size:11px;color:#64748b;margin-top:6px">Snapshots declarados pelo broker: ${d.snapshotFiles} · total declarado ${fmtEUR(d.snapshotDeclared)}</div>` : ""}
+    <div style="font-size:11px;color:#64748b;margin-top:8px">Custo reconstruído = base de custo inferida das posições abertas a partir do histórico importado; não corresponde necessariamente ao valor actual de mercado da corretora.</div>
     <div class="list" style="margin-top:10px">${brokerRows}</div>`;
 }
 
@@ -5312,14 +5132,11 @@ function renderBrokerImportStatus() {
   if (!box || !list) return;
   const bd = ensureBrokerData();
   const files = (bd.files || []).slice().sort((a, b) => String(b.importedAt || "").localeCompare(String(a.importedAt || "")));
-  const yearsSet = new Set();
-  (bd.events || []).forEach(e => { const y = String(e.date || "").slice(0, 4); if (y) yearsSet.add(y); });
-  (bd.positions || []).forEach(p => { const y = String(p.snapshotDate || "").slice(0, 4); if (y) yearsSet.add(y); });
   const stats = {
     files: files.length,
     events: (bd.events || []).length,
     positions: (bd.positions || []).length,
-    years: yearsSet.size
+    years: new Set((bd.events || []).map(e => String(e.date || "").slice(0, 4)).filter(Boolean)).size
   };
   if (!files.length) {
     box.style.display = "none";
@@ -5334,7 +5151,7 @@ function renderBrokerImportStatus() {
   box.style.padding = "12px 14px";
   box.innerHTML = `
     <div style="font-weight:900;margin-bottom:6px">✅ Imports de corretoras activos</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
       <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Ficheiros</div><div style="font-weight:900">${stats.files}</div></div>
       <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Eventos</div><div style="font-weight:900">${stats.events}</div></div>
       <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Posições</div><div style="font-weight:900">${stats.positions}</div></div>
@@ -5344,7 +5161,7 @@ function renderBrokerImportStatus() {
     <div class="item" style="cursor:default">
       <div class="item__l">
         <div class="item__t">${escapeHtml(f.name || "Ficheiro")}</div>
-        <div class="item__s">${escapeHtml(f.broker || "Corretora")} · ${escapeHtml(f.format || "—")} · ${f.rows || 0} linhas · ${f.events || 0} eventos · ${f.positions || 0} posições${f.snapshotTotalEUR ? ` · snapshot ${fmtEUR(f.snapshotTotalEUR)}` : ""}</div>
+        <div class="item__s">${escapeHtml(f.broker || "Corretora")} · ${escapeHtml(f.format || "—")} · ${f.rows || 0} linhas · ${f.events || 0} eventos · ${f.positions || 0} posições</div>
       </div>
       <div class="item__r"><span class="pill">${escapeHtml(f.importedAt ? String(f.importedAt).slice(0, 10) : "")}</span></div>
     </div>
@@ -5369,22 +5186,10 @@ async function importBrokerFiles(files) {
 
   for (const file of fileArr) {
     const hash = await hashFile(file);
-    const parsed = await parseBrokerImportFile(file);
-    const format = parsed.format;
-    const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
+    const rows = await fileToObjectRows(file);
+    const format = detectBrokerRowsFormat(rows);
     const broker = normalizeBrokerNameFromFile(file.name);
-    const meta = {
-      hash,
-      name: file.name,
-      broker,
-      format,
-      importedAt: new Date().toISOString(),
-      rows: rows.length || 0,
-      events: 0,
-      positions: 0,
-      snapshotTotalEUR: 0,
-      asOfDate: ""
-    };
+    const meta = { hash, name: file.name, broker, format, importedAt: new Date().toISOString(), rows: rows.length, events: 0, positions: 0 };
 
     const prevCount = (bd.files || []).filter(f => f.hash === hash).length;
     bd.files = (bd.files || []).filter(f => f.hash !== hash);
@@ -5419,23 +5224,10 @@ async function importBrokerFiles(files) {
       addedFiles++;
       continue;
     }
-    if (format === "holdings_pdf") {
-      const positions = parseTrading212HoldingsPdf(parsed.text, meta);
-      for (const pos of positions) {
-        if (existingPosKeys.has(pos.key)) continue;
-        existingPosKeys.add(pos.key);
-        bd.positions.push(pos);
-        addedPositions++;
-      }
-      meta.positions = positions.length;
-      meta.rows = positions.length;
-      bd.files.push(meta);
-      addedFiles++;
-      continue;
-    }
     unknownFiles++;
   }
 
+  // keep only latest file metadata per hash
   const uniqueFiles = new Map();
   for (const f of (bd.files || [])) uniqueFiles.set(f.hash, f);
   bd.files = Array.from(uniqueFiles.values());
@@ -5448,7 +5240,6 @@ async function importBrokerFiles(files) {
   toast(msg, 4500);
   return { addedFiles, replacedFiles, addedEvents, addedPositions, unknownFiles };
 }
-
 
 function clearBrokerImports() {
   const bd = ensureBrokerData();

@@ -305,6 +305,10 @@ body {
 .kpi--out { background: var(--kpi-out); }
 .kpi--net { background: var(--kpi-net); }
 
+
+.healthKpiRow { grid-template-columns: 1fr 1fr 1fr; }
+.healthKpiRow .kpi { min-width: 0; }
+
 /* ─── ROWS / FLEX ─── */
 .row { display: flex; align-items: center; gap: 10px; }
 .row--wrap { flex-wrap: wrap; }
@@ -625,6 +629,11 @@ select.input   { cursor: pointer; }
   .pill__v      { font-size: 22px; }
   .filters      { grid-template-columns: 1fr; }
   .kpiRow       { grid-template-columns: 1fr 1fr; }
+  .healthKpiRow { grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .healthKpiRow .kpi { padding: 10px 10px; }
+  .healthKpiRow .kpi__k { font-size: 11px; }
+  .healthKpiRow .kpi__v { font-size: 16px; }
+  .healthKpiRow .kpi__s { font-size: 11px; }
   .bottomnav    { width: 100%; }
   .passivebar   { width: calc(100% - 16px); bottom: 76px; }
   .kpi-cell__value { font-size: 16px; }
@@ -634,6 +643,7 @@ select.input   { cursor: pointer; }
   .hero__value  { font-size: 34px; }
   .kpi__v       { font-size: 16px; }
   .kpiRow       { grid-template-columns: 1fr; }
+  .healthKpiRow { grid-template-columns: 1fr 1fr; }
 }
 
 /* ─── PRINT ─── */
