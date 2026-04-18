@@ -340,6 +340,59 @@ const DEFAULT_STATE = {
   fxHistory: {}       // { "USD": [{date:"YYYY-MM-DD", rate:n}] }
 };
 
+/* ─── ISIN → Yahoo Finance ticker map (built from real T212 data) ─────────
+   Prevents ticker collisions like COR (Corticeira Amorim = COR.LS)
+   being fetched as COR (Cencora, US pharma ~270 USD).
+   448 ISINs covering all exchanges in the T212/XTB universe.
+──────────────────────────────────────────────────────────────────────────── */
+const ISIN_YAHOO_MAP = {
+  "AN8068571086":"SLB","AT0000743059":"OMV.VI","AT0000A3EPA4":"AMS.VI",
+  "AU000000MOB7":"MOB.AX","AU0000185993":"IREN.AX",
+  "BMG1466R1732":"BORR","BMG3398L1182":"FIHL","BMG396372051":"GOGL","BMG9001E1286":"LILAK",
+  "CA0636711016":"BMO","CA0641491075":"BNS","CA11271J1075":"BN","CA1363851017":"CNQ",
+  "CA24477V1058":"DFTX","CA2483561072":"DNN","CA26142Q3044":"DPRO","CA29250N1050":"ENB",
+  "CA29259W7008":"EU","CA2926717083":"UUUU","CA3180931014":"FTG","CA3565001086":"FRU",
+  "CA38149E1016":"GLDG","CA4339211035":"HIVE","CA46500E8678":"ISO","CA50202P2044":"LICYQ",
+  "CA5592224011":"MGA","CA63010G1000":"GRA","CA64046G1063":"NEO","CA64550A1075":"HOVR",
+  "CA65340P1062":"NXE","CA67077M1086":"NTR","CA73044W3021":"POET","CA76131D1033":"QSR",
+  "CA7800871021":"RY","CA85236X1042":"STCK","CA87261Y1060":"TMC","CA8911605092":"TD",
+  "CA91702V1013":"UROY","CA92859G6085":"VZLA","CA96467A2002":"WCP",
+  "CH0038863350":"NESN.SW","CH0044328745":"CB.SW","CH0126881561":"SREN.SW",
+  "CH0334081137":"CRSP.SW","CH1499059983":"ROP.SW",
+  "DE0005552004":"DHL.DE","DE0005785604":"FRE.DE","DE0006231004":"IFX.DE",
+  "DE0007100000":"MBG.DE","DE0007657231":"VIB3.DE","DE0007664039":"VOW3.DE",
+  "DE000A0WMPJ6":"AIXA.DE","DE000A1K0235":"SMHN.DE","DE000A2E4K43":"DHER.DE",
+  "DE000A2NB601":"JEN.DE","DE000BASF111":"BAS.DE","DE000SHA0100":"SHA0.DE",
+  "ES0105223004":"GEST.MC","ES0112501012":"EBRO.MC","ES0124244E34":"MAP.MC",
+  "ES0130670112":"ELE.MC","ES0173093024":"RED.MC","ES0173516115":"REP.MC",
+  "ES0177542018":"IAG.MC","ES0183746314":"VID.MC",
+  "FR0000035081":"ICAD.PA","FR0000120073":"AI.PA","FR0000120404":"AC.PA",
+  "FR0000120628":"CS.PA","FR0004180578":"SWP.PA","FR0010040865":"GFC.PA",
+  "FR0010313833":"AKE.PA","FR0011053636":"ALCPB.PA","FR0011184241":"ADOC.PA",
+  "FR0012819381":"ALGIL.PA","FR0012882389":"EQS.PA","FR0013447729":"VRLA.PA",
+  "GB0002634946":"BA.L","GB0005603997":"LGEN.L","GB0006027295":"MGAM.L",
+  "GB0007188757":"RIO1.L","GB0031743007":"BRBY.L","GB00B0WMWD03":"QQ.L",
+  "GB00B132NW22":"ASHM.L","GB00B15KXN58":"ALUM.L","GB00B15KY211":"NICK.L",
+  "GB00B63H8491":"RR.L","GB00BGDT3G23":"RMV.L","GB00BJFFLV09":"CRDA.L",
+  "GB00BL6K5J42":"EDV.L","GB00BMXWN182":"JMGI.L","GB00BN7SWP63":"GSK.L",
+  "GB00BVZK7T90":"UNA.L",
+  "IE0002PG6CA6":"VVMX.IR","IE00045C7B38":"HTOO.IR","IE00063FT9K6":"CEBS.IR",
+  "IE000OJ5TQP4":"NATP.IR","IE000W8WMSL2":"QWTM.IR","IE00B3WJKG14":"QDVE.IR",
+  "IE00B53SZB19":"SXRV.IR","IE00BFXR7892":"KWEB.IR","IE00BGV5VN51":"XAIX.IR",
+  "IE00BKVD2N49":"STX.IR","IE00BLCHJ534":"PAVE.IR","IE00BLH3CV30":"UFOP.IR",
+  "IE00BLS09M33":"PNR.IR","IE00BQT3WG13":"CNYA.IR","IE00BTN1Y115":"MDT.IR",
+  "IE00BY7QL619":"JCI.IR",
+  "IT0003128367":"ENL.MI",
+  "LU1598757687":"MT.LU",
+  "NL0000235190":"AIR.AS","NL0009434992":"LYB.AS","NL0009805522":"NBIS.AS",
+  "NL0010583399":"CRBN.AS","NL0013267909":"AKZA.AS","NL00150001Q9":"STLA.AS",
+  "NL0015002MS2":"MICC.AS","NL0015073TS8":"CSG.AS",
+  "PTBCP0AM0015":"BCP.LS","PTCOR0AE0006":"COR.LS","PTEDP0AM0009":"EDP.LS",
+  "PTFRV0AE0004":"RAM.LS","PTGAL0AM0009":"GALP.LS","PTJMT0AE0001":"JMT.LS",
+  "PTMEN0AE0005":"EGL.LS","PTPTC0AM0009":"PHR.LS","PTREL0AM0008":"RENE.LS",
+  "PTSON0AM0001":"SON.LS"
+};
+
 let state = safeClone(DEFAULT_STATE);
 let currentView = "dashboard";
 let showingLiabs = false;
@@ -1340,29 +1393,39 @@ function renderDashboard() {
   if (pm2) pm2.textContent = fmtEUR(t.passiveAnnual / 12);
   if (pa2) pa2.textContent = fmtEUR(t.passiveAnnual) + "/ano";
 
-  // Rendimento base da carteira
+  // Yield dividendos (base distribuidores — real TTM quando disponível)
   const yieldEl = document.getElementById("kpiYield");
   if (yieldEl) {
-    const y = t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0;
+    const rm0 = calcPortfolioRealMetrics();
+    const y = rm0.hasData && rm0.ttmYieldNet > 0
+      ? rm0.ttmYieldNet
+      : (t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0);
     yieldEl.textContent = fmtPct(y);
   }
 
-  // Autonomia passiva (rendimento passivo / despesas mensais)
+  // P&L realizado (de vendas) — substituiu Autonomia passiva (duplicava health card)
   const autEl = document.getElementById("kpiAutonomy");
   if (autEl) {
-    const byMonth = new Map();
-    for (const tx of (state.transactions||[])) {
-      if (isInterAccountTransfer(tx)) continue;
-      const d = (tx.date||"").slice(0,7); if (!d) continue;
-      const cur = byMonth.get(d)||{out:0}; if (tx.type==="out") cur.out += parseNum(tx.amount);
-      byMonth.set(d, cur);
+    const rm0b = calcPortfolioRealMetrics();
+    if (rm0b.hasData && rm0b.totalRealizedPnL !== 0) {
+      autEl.textContent = (rm0b.totalRealizedPnL >= 0 ? "+" : "") + fmtEUR(rm0b.totalRealizedPnL);
+      autEl.style.color = rm0b.totalRealizedPnL >= 0 ? "#059669" : "#dc2626";
+    } else {
+      // Fallback to autonomia if no broker data
+      const byMonth = new Map();
+      for (const tx of (state.transactions||[])) {
+        if (isInterAccountTransfer(tx)) continue;
+        const d = (tx.date||"").slice(0,7); if (!d) continue;
+        const cur = byMonth.get(d)||{out:0}; if (tx.type==="out") cur.out += parseNum(tx.amount);
+        byMonth.set(d, cur);
+      }
+      const last6 = [...byMonth.keys()].sort().slice(-6);
+      const avgOut = last6.length ? last6.reduce((s,k)=>s+(byMonth.get(k).out||0),0)/last6.length : 0;
+      const exp12 = avgOut * 12;
+      const pct = exp12 > 0 ? Math.min(999, t.passiveAnnual / exp12 * 100) : 0;
+      autEl.textContent = pct > 0 ? fmtPct(pct) : "—";
+      autEl.style.color = pct >= 100 ? "#059669" : pct >= 50 ? "#f59e0b" : "#8b5cf6";
     }
-    const last6 = [...byMonth.keys()].sort().slice(-6);
-    const avgOut = last6.length ? last6.reduce((s,k)=>s+(byMonth.get(k).out||0),0)/last6.length : 0;
-    const exp12 = avgOut * 12;
-    const pct = exp12 > 0 ? Math.min(999, t.passiveAnnual / exp12 * 100) : 0;
-    autEl.textContent = pct > 0 ? fmtPct(pct) : "—";
-    autEl.style.color = pct >= 100 ? "#059669" : pct >= 50 ? "#f59e0b" : "#8b5cf6";
   }
 
   updatePassiveBar();
@@ -7774,58 +7837,6 @@ async function refreshLiveQuotes() {
   const SKIP_TICKERS = new Set(["WBA","14","DN3.DE","OD7F.DE","U9UA.DE"]);
 
   
-/* ─── ISIN → Yahoo Finance ticker map (built from real T212 data) ─────────
-   Prevents ticker collisions like COR (Corticeira Amorim = COR.LS)
-   being fetched as COR (Cencora, US pharma ~270 USD).
-   448 ISINs covering all exchanges in the T212/XTB universe.
-──────────────────────────────────────────────────────────────────────────── */
-const ISIN_YAHOO_MAP = {
-  "AN8068571086":"SLB","AT0000743059":"OMV.VI","AT0000A3EPA4":"AMS.VI",
-  "AU000000MOB7":"MOB.AX","AU0000185993":"IREN.AX",
-  "BMG1466R1732":"BORR","BMG3398L1182":"FIHL","BMG396372051":"GOGL","BMG9001E1286":"LILAK",
-  "CA0636711016":"BMO","CA0641491075":"BNS","CA11271J1075":"BN","CA1363851017":"CNQ",
-  "CA24477V1058":"DFTX","CA2483561072":"DNN","CA26142Q3044":"DPRO","CA29250N1050":"ENB",
-  "CA29259W7008":"EU","CA2926717083":"UUUU","CA3180931014":"FTG","CA3565001086":"FRU",
-  "CA38149E1016":"GLDG","CA4339211035":"HIVE","CA46500E8678":"ISO","CA50202P2044":"LICYQ",
-  "CA5592224011":"MGA","CA63010G1000":"GRA","CA64046G1063":"NEO","CA64550A1075":"HOVR",
-  "CA65340P1062":"NXE","CA67077M1086":"NTR","CA73044W3021":"POET","CA76131D1033":"QSR",
-  "CA7800871021":"RY","CA85236X1042":"STCK","CA87261Y1060":"TMC","CA8911605092":"TD",
-  "CA91702V1013":"UROY","CA92859G6085":"VZLA","CA96467A2002":"WCP",
-  "CH0038863350":"NESN.SW","CH0044328745":"CB.SW","CH0126881561":"SREN.SW",
-  "CH0334081137":"CRSP.SW","CH1499059983":"ROP.SW",
-  "DE0005552004":"DHL.DE","DE0005785604":"FRE.DE","DE0006231004":"IFX.DE",
-  "DE0007100000":"MBG.DE","DE0007657231":"VIB3.DE","DE0007664039":"VOW3.DE",
-  "DE000A0WMPJ6":"AIXA.DE","DE000A1K0235":"SMHN.DE","DE000A2E4K43":"DHER.DE",
-  "DE000A2NB601":"JEN.DE","DE000BASF111":"BAS.DE","DE000SHA0100":"SHA0.DE",
-  "ES0105223004":"GEST.MC","ES0112501012":"EBRO.MC","ES0124244E34":"MAP.MC",
-  "ES0130670112":"ELE.MC","ES0173093024":"RED.MC","ES0173516115":"REP.MC",
-  "ES0177542018":"IAG.MC","ES0183746314":"VID.MC",
-  "FR0000035081":"ICAD.PA","FR0000120073":"AI.PA","FR0000120404":"AC.PA",
-  "FR0000120628":"CS.PA","FR0004180578":"SWP.PA","FR0010040865":"GFC.PA",
-  "FR0010313833":"AKE.PA","FR0011053636":"ALCPB.PA","FR0011184241":"ADOC.PA",
-  "FR0012819381":"ALGIL.PA","FR0012882389":"EQS.PA","FR0013447729":"VRLA.PA",
-  "GB0002634946":"BA.L","GB0005603997":"LGEN.L","GB0006027295":"MGAM.L",
-  "GB0007188757":"RIO1.L","GB0031743007":"BRBY.L","GB00B0WMWD03":"QQ.L",
-  "GB00B132NW22":"ASHM.L","GB00B15KXN58":"ALUM.L","GB00B15KY211":"NICK.L",
-  "GB00B63H8491":"RR.L","GB00BGDT3G23":"RMV.L","GB00BJFFLV09":"CRDA.L",
-  "GB00BL6K5J42":"EDV.L","GB00BMXWN182":"JMGI.L","GB00BN7SWP63":"GSK.L",
-  "GB00BVZK7T90":"UNA.L",
-  "IE0002PG6CA6":"VVMX.IR","IE00045C7B38":"HTOO.IR","IE00063FT9K6":"CEBS.IR",
-  "IE000OJ5TQP4":"NATP.IR","IE000W8WMSL2":"QWTM.IR","IE00B3WJKG14":"QDVE.IR",
-  "IE00B53SZB19":"SXRV.IR","IE00BFXR7892":"KWEB.IR","IE00BGV5VN51":"XAIX.IR",
-  "IE00BKVD2N49":"STX.IR","IE00BLCHJ534":"PAVE.IR","IE00BLH3CV30":"UFOP.IR",
-  "IE00BLS09M33":"PNR.IR","IE00BQT3WG13":"CNYA.IR","IE00BTN1Y115":"MDT.IR",
-  "IE00BY7QL619":"JCI.IR",
-  "IT0003128367":"ENL.MI",
-  "LU1598757687":"MT.LU",
-  "NL0000235190":"AIR.AS","NL0009434992":"LYB.AS","NL0009805522":"NBIS.AS",
-  "NL0010583399":"CRBN.AS","NL0013267909":"AKZA.AS","NL00150001Q9":"STLA.AS",
-  "NL0015002MS2":"MICC.AS","NL0015073TS8":"CSG.AS",
-  "PTBCP0AM0015":"BCP.LS","PTCOR0AE0006":"COR.LS","PTEDP0AM0009":"EDP.LS",
-  "PTFRV0AE0004":"RAM.LS","PTGAL0AM0009":"GALP.LS","PTJMT0AE0001":"JMT.LS",
-  "PTMEN0AE0005":"EGL.LS","PTPTC0AM0009":"PHR.LS","PTREL0AM0008":"RENE.LS",
-  "PTSON0AM0001":"SON.LS"
-};
 function toYahooTicker(raw) {
     const t = (raw||"").trim().toUpperCase();
     if (SKIP_TICKERS.has(t)) return null;

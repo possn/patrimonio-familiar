@@ -26,7 +26,7 @@
       document.head.appendChild(s);
     })();
   </script>
-  <script defer src="app.js?v=20260418j"></script>
+  <script defer src="app.js?v=20260418k"></script>
 </head>
 <body>
 
@@ -79,14 +79,14 @@
           <div class="kpi-quick__s" id="kpiDivCount2"></div>
         </div>
         <div class="kpi-quick__cell kpi-quick__cell--amber">
-          <div class="kpi-quick__k">Rend. base</div>
+          <div class="kpi-quick__k">Yield dividendos</div>
           <div class="kpi-quick__v" id="kpiYield">—</div>
-          <div class="kpi-quick__s">passivo / capital</div>
+          <div class="kpi-quick__s">base distribuidores</div>
         </div>
         <div class="kpi-quick__cell kpi-quick__cell--purple">
-          <div class="kpi-quick__k">Autonomia passiva</div>
+          <div class="kpi-quick__k">P&amp;L realizado</div>
           <div class="kpi-quick__v" id="kpiAutonomy">—</div>
-          <div class="kpi-quick__s">rend. / despesas</div>
+          <div class="kpi-quick__s">mais-valias vendas</div>
         </div>
       </div>
     </div>
@@ -127,24 +127,17 @@
       </div>
     </div>
 
-    <!-- Botões de acção + KPIs originais (hidden, kept for JS compat) -->
+    <!-- Botões de acção (KPI pills movidos para kpi-quick grid acima) -->
+    <!-- IDs mantidos como elementos hidden para compat com JS -->
+    <span id="kpiPassiveAnnual" style="display:none"></span>
+    <span id="kpiPassiveMonthly" style="display:none"></span>
+    <span id="kpiDivYTD" style="display:none"></span>
+    <span id="kpiDivCount" style="display:none"></span>
     <div class="card">
-      <div class="pillRow">
-        <div class="pill">
-          <div class="pill__k">Rendimento passivo (anual) <button class="info-btn" onclick="openTip('passiveIncome')" title="Saber mais">ℹ️</button></div>
-          <div class="pill__v" id="kpiPassiveAnnual">0 €</div>
-          <div class="pill__v" id="kpiPassiveMonthly" style="font-size:13px;color:#64748b"></div>
-        </div>
-        <div class="pill pill--aqua">
-          <div class="pill__k">Dividendos YTD (líquido) <button class="info-btn" onclick="openTip('dividends')" title="Saber mais">ℹ️</button></div>
-          <div class="pill__v" id="kpiDivYTD">0 €</div>
-        </div>
-      </div>
-      <div class="card__muted" style="margin-top:6px;font-size:13px" id="kpiDivCount"></div>
-      <div class="row row--wrap" style="margin-top:14px;gap:8px">
-        <button class="btn btn--primary btn--sm" id="btnSnapshot">📸 Registar</button>
-        <button class="btn btn--primary btn--sm" id="btnAddDiv">💰 Dividendo</button>
-        <button class="btn btn--sm" id="btnClearHistory">Limpar</button>
+      <div class="row row--wrap" style="gap:8px">
+        <button class="btn btn--primary btn--sm" id="btnSnapshot">📸 Registar snapshot</button>
+        <button class="btn btn--primary btn--sm" id="btnAddDiv">💰 + Dividendo</button>
+        <button class="btn btn--sm" id="btnClearHistory">🗑 Limpar histórico</button>
         <button class="btn btn--ghost btn--sm" id="btnPrintDashboard" title="Imprimir / PDF">🖨️</button>
       </div>
     </div>
@@ -241,18 +234,19 @@
     <!-- v16.1: alerta rentabilidade negativa -->
     <div id="negReturnAlert" style="display:none;padding:10px 14px;background:#fef2f2;border-left:3px solid var(--red);border-radius:var(--r-sm);margin-bottom:12px;font-size:13px;color:#dc2626"></div>
 
-    <!-- v15: IRS estimado -->
+    <!-- IRS estimado — teaser, detalhe em Análise → Fiscal -->
     <div class="card" id="irsEstCard" style="display:none;border-left:4px solid #f59e0b;background:#fffbeb">
       <div class="card__head">
-        <div><div class="card__title" style="color:#92400e">🧾 IRS estimado (28% PT)</div>
-        <div class="card__muted" style="font-size:12px">Estimativa simplificada · consulta sempre um TOC</div></div>
+        <div>
+          <div class="card__title" style="color:#92400e">🧾 IRS estimado: <span id="irsEstTotal">—</span></div>
+          <div class="card__muted" style="font-size:12px">Estimativa 28% PT · Dividendos + Mais-valias</div>
+        </div>
+        <button class="btn btn--sm" style="font-size:12px" onclick="document.querySelector('.analysis-tab[data-tab=fiscal]').click();setView('analysis')">Ver detalhe →</button>
       </div>
-      <div class="kpiRow">
-        <div class="kpi kpi--out"><div class="kpi__k">Dividendos YTD</div><div class="kpi__v" id="irsEstDiv">—</div></div>
-        <div class="kpi kpi--out"><div class="kpi__k">Rendas YTD</div><div class="kpi__v" id="irsEstRendas">—</div></div>
-        <div class="kpi kpi--out"><div class="kpi__k">Mais-valias latentes</div><div class="kpi__v" id="irsEstGains">—</div></div>
-      </div>
-      <div style="margin-top:10px;font-size:15px;font-weight:700;color:#92400e">Total retido estimado: <span id="irsEstTotal">—</span></div>
+      <!-- Hidden elements for JS compat -->
+      <span id="irsEstDiv" style="display:none"></span>
+      <span id="irsEstRendas" style="display:none"></span>
+      <span id="irsEstGains" style="display:none"></span>
     </div>
 
     <!-- v15: Notificações push -->
@@ -451,27 +445,12 @@
       </div>
     </div>
 
-    <!-- IMPORTAR EXTRACTO DO BANCO -->
-    <div class="card">
+    <!-- Importar extracto: disponível na tab Importar -->
+    <div class="card" style="border-style:dashed;opacity:.7">
       <div class="card__head">
-        <div>
-          <div class="card__title">📥 Importar extracto do banco</div>
-          <div class="card__muted">CSV, Excel ou PDF · duplicados ignorados</div>
-        </div>
-      </div>
-      <div class="note" style="margin-bottom:12px">
-        Exporta o extracto do teu homebanking e carrega aqui. A app detecta o formato automaticamente e ignora movimentos já introduzidos.
-      </div>
-      <input id="bankFile" type="file"
-        accept=".csv,.xlsx,.xls,.pdf,text/csv,application/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf"
-        class="input">
-      <div class="row row--wrap" style="gap:8px;margin-top:10px">
-        <button class="btn btn--primary" id="btnImportBank" disabled style="flex:1">Importar extracto</button>
-      </div>
-      <div id="bankImportResult" style="margin-top:10px;display:none"></div>
-      <div class="card__muted" style="margin-top:12px;font-size:12px;line-height:1.7">
-        <b>Bancos suportados (v15):</b> CGD · Millennium BCP · BPI · Santander · Novo Banco · Montepio · ActivoBank · Caixa Agrícola<br>
-        <b>Formatos:</b> CSV/TXT · Excel .xlsx · PDF — detecção automática do banco
+        <div><div class="card__title">📥 Importar extracto do banco</div>
+        <div class="card__muted">Disponível na tab Importar</div></div>
+        <button class="btn btn--outline btn--sm" onclick="setView('import')">Ir para Importar →</button>
       </div>
     </div>
   </section>
@@ -1248,7 +1227,7 @@
 
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Sobre</div>
-        <div class="card__muted">Património Familiar <b>v16.13</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v16.13:</b> Yield calculado só sobre activos distribuidores (não dilui com acumuladores como VWCE) · Painel Performance Real: retorno total = latente+realizado+dividendos · Mais-valias por venda com top 5 ganhos/perdas · Dividendos por ano com retenção · Alocação FIRE com rationale detalhado por classe, exemplos (VWCE/VHYL/PHAU…), risco/retorno, expandível · Performance real integrada em Compound, FIRE e Projecção de dividendos<br><br><b>Novidades v16.12:</b> Colisões de ticker corrigidas com 448 mapeamentos ISIN→Yahoo (COR→COR.LS, SON→SON.LS, AI→AI.PA, GSK→GSK.L, AIR→AIR.AS, ALUM→ALUM.L, MBG→MBG.DE…) · Sanity check: valores >20x custo sem cotação do dia mostram P&L=0 em vez de valores absurdos · P&L painel mostra ticker + nome completo · P&L realizado das vendas incluído (valor T212 directo)<br><br><b>Novidades v16.11:</b> Tab Dividendos totalmente automático: hero card TTM, tabela por ano com bruto/líquido/yield/YoY, Top 10 pagadores — tudo calculado dos imports T212/XTB sem formulário manual · calcDividendYield usa dados reais em primeiro lugar · Formulário manual colapsado (secundário) · Limpar imports remove resumos auto-gerados<br><br><b>Novidades v16.10:</b> P&L total real = latente + realizado (vendas) + dividendos recebidos · Yield verdadeiro por ativo (dividendos 12m ÷ custo) · Decomposição visual por posição · Ordenação por retorno total/realizado/dividendos/yield · Relatório anual actualizado · Todos os tipos T212 verificados com ficheiros reais<br><br><b>Novidades v16.9:</b> XTB: detecção colunas PT (Símbolo/Tipo/Lucro/Montante/Data de abertura…) · Swap overhead → custo, não rendimento · Yield automático por ativo calculado dos dividendos reais importados · importJSON preserva histórico de preços e FX · Alocação FIRE com class matching corrigido<br><br><b>Novidades v16.8:</b> Parser XTB (CSV trades, posições, operações de caixa) · Histórico de cotações por ticker (tab Análise → 📉 Cotações) · Multi-moeda real com conversão automática no modal · Alocação Alvo FIRE com 3 fases (tab 🎯 Alocação) · FX taxas em tempo real guardadas localmente<br><br><b>Novidades v16.7:</b> Saúde Financeira com explicações detalhadas e sugestões contextuais por métrica · Barra de cobertura passiva · 6 indicadores com dicas de melhoria<br><br><b>Novidades v16.6:</b> Todas as listas com "▼ Ver mais / ▲ Ver menos" limitadas a 10 itens · Bug crítico na edição de resumos de dividendos corrigido · Limite de movimentos aumentado (5→10)<br><br><b>Novidades v16.5:</b> Motor de retorno unificado · valorização esperada por activo · pressupostos editáveis por classe · FIRE/Compound/Previsão coerentes<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
+        <div class="card__muted">Património Familiar <b>v16.14</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v16.14:</b> CRÍTICO: ISIN_YAHOO_MAP movido para topo do ficheiro (resolvia erro "Can't find variable" no import) · Duplicações removidas: pill card de KPIs duplicado no dashboard, importar banco duplicado no Cashflow, IRS card colapsado para teaser de 1 linha · Dashboard kpi-quick 4 métricas únicas: rend. mensal, dividendos YTD, yield real (distribuidores), P&L realizado<br><br><b>Novidades v16.13:</b> Yield calculado só sobre activos distribuidores (não dilui com acumuladores como VWCE) · Painel Performance Real: retorno total = latente+realizado+dividendos · Mais-valias por venda com top 5 ganhos/perdas · Dividendos por ano com retenção · Alocação FIRE com rationale detalhado por classe, exemplos (VWCE/VHYL/PHAU…), risco/retorno, expandível · Performance real integrada em Compound, FIRE e Projecção de dividendos<br><br><b>Novidades v16.12:</b> Colisões de ticker corrigidas com 448 mapeamentos ISIN→Yahoo (COR→COR.LS, SON→SON.LS, AI→AI.PA, GSK→GSK.L, AIR→AIR.AS, ALUM→ALUM.L, MBG→MBG.DE…) · Sanity check: valores >20x custo sem cotação do dia mostram P&L=0 em vez de valores absurdos · P&L painel mostra ticker + nome completo · P&L realizado das vendas incluído (valor T212 directo)<br><br><b>Novidades v16.11:</b> Tab Dividendos totalmente automático: hero card TTM, tabela por ano com bruto/líquido/yield/YoY, Top 10 pagadores — tudo calculado dos imports T212/XTB sem formulário manual · calcDividendYield usa dados reais em primeiro lugar · Formulário manual colapsado (secundário) · Limpar imports remove resumos auto-gerados<br><br><b>Novidades v16.10:</b> P&L total real = latente + realizado (vendas) + dividendos recebidos · Yield verdadeiro por ativo (dividendos 12m ÷ custo) · Decomposição visual por posição · Ordenação por retorno total/realizado/dividendos/yield · Relatório anual actualizado · Todos os tipos T212 verificados com ficheiros reais<br><br><b>Novidades v16.9:</b> XTB: detecção colunas PT (Símbolo/Tipo/Lucro/Montante/Data de abertura…) · Swap overhead → custo, não rendimento · Yield automático por ativo calculado dos dividendos reais importados · importJSON preserva histórico de preços e FX · Alocação FIRE com class matching corrigido<br><br><b>Novidades v16.8:</b> Parser XTB (CSV trades, posições, operações de caixa) · Histórico de cotações por ticker (tab Análise → 📉 Cotações) · Multi-moeda real com conversão automática no modal · Alocação Alvo FIRE com 3 fases (tab 🎯 Alocação) · FX taxas em tempo real guardadas localmente<br><br><b>Novidades v16.7:</b> Saúde Financeira com explicações detalhadas e sugestões contextuais por métrica · Barra de cobertura passiva · 6 indicadores com dicas de melhoria<br><br><b>Novidades v16.6:</b> Todas as listas com "▼ Ver mais / ▲ Ver menos" limitadas a 10 itens · Bug crítico na edição de resumos de dividendos corrigido · Limite de movimentos aumentado (5→10)<br><br><b>Novidades v16.5:</b> Motor de retorno unificado · valorização esperada por activo · pressupostos editáveis por classe · FIRE/Compound/Previsão coerentes<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
       </div>
     </div>
     <div id="paneFire" style="display:none">
