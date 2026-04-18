@@ -1275,6 +1275,20 @@ function renderDashboard() {
   checkNegativeReturn();
 }
 
+/* ─── ALERTA: RENTABILIDADE NEGATIVA ────────────────────────── */
+function checkNegativeReturn() {
+  const twr = calcTWR();
+  if (!twr) return;
+  const el = document.getElementById("negReturnAlert");
+  if (!el) return;
+  if (parseNum(twr.annualised) < -5) {
+    el.style.display = "";
+    el.innerHTML = `⚠️ TWR anualizado negativo: <b>${fmt(parseNum(twr.annualised),1)}%/ano</b> — o portfólio está a perder valor acima da inflação.`;
+  } else {
+    el.style.display = "none";
+  }
+}
+
 function renderSummary() {
   const list = $("summaryList");
   list.innerHTML = "";
@@ -7039,17 +7053,31 @@ function renderHealthRatios() {
   const leverageRatio = t.assetsTotal / Math.max(1, t.net);
   const passiveRatio = t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0;
 
-  // Despesas mensais médias (últimos 6 meses)
+  // Fluxo mensal médio (últimos 6 meses)
   const byMonth = new Map();
   for (const tx of state.transactions) {
     if (isInterAccountTransfer(tx)) continue;
     const d = (tx.date || "").slice(0, 7); if (!d) continue;
-    const cur = byMonth.get(d) || { out: 0 }; if (tx.type === "out") cur.out += parseNum(tx.amount);
+    const cur = byMonth.get(d) || { in: 0, out: 0 };
+    if (tx.type === "in") cur.in += parseNum(tx.amount);
+    else if (tx.type === "out") cur.out += parseNum(tx.amount);
     byMonth.set(d, cur);
   }
   const last6 = [...byMonth.keys()].sort().slice(-6);
   const avgMonthlyExp = last6.length ? last6.reduce((s, k) => s + (byMonth.get(k).out || 0), 0) / last6.length : 0;
+  const avgMonthlyIn = last6.length ? last6.reduce((s, k) => s + (byMonth.get(k).in || 0), 0) / last6.length : 0;
   const monthsOfRunway = avgMonthlyExp > 0 ? t.net / avgMonthlyExp : null;
+  const savingsRate = avgMonthlyIn > 0 ? Math.max(0, ((avgMonthlyIn - avgMonthlyExp) / avgMonthlyIn) * 100) : null;
+  const passiveCoverage = avgMonthlyExp > 0 ? (t.passiveAnnual / (avgMonthlyExp * 12)) * 100 : null;
+
+  // Liquidez imediata = Liquidez + Depósitos / despesas médias mensais
+  const liquidAssets = state.assets
+    .filter(a => {
+      const k = assetClassKey(a);
+      return k === "liquidez" || k === "depositos";
+    })
+    .reduce((s, a) => s + parseNum(a.value), 0);
+  const liquidMonths = avgMonthlyExp > 0 ? liquidAssets / avgMonthlyExp : null;
 
   const semaforo = (val, good, ok) => val <= good ? "🟢" : val <= ok ? "🟡" : "🔴";
   const semaforoInv = (val, good, ok) => val >= good ? "🟢" : val >= ok ? "🟡" : "🔴";
@@ -7067,7 +7095,7 @@ function renderHealthRatios() {
         <div class="kpi__s">Rendimento passivo / activos</div>
       </div>
     </div>
-    <div class="kpiRow">
+    <div class="kpiRow" style="margin-bottom:10px">
       <div class="kpi">
         <div class="kpi__k">Alavancagem ${semaforo(leverageRatio, 1.5, 3)}</div>
         <div class="kpi__v">${fmt(leverageRatio, 2)}×</div>
@@ -7077,6 +7105,18 @@ function renderHealthRatios() {
         <div class="kpi__k">Autonomia financeira ${monthsOfRunway ? semaforoInv(monthsOfRunway, 24, 6) : ""}</div>
         <div class="kpi__v">${monthsOfRunway ? fmt(monthsOfRunway, 0) + " meses" : "—"}</div>
         <div class="kpi__s">Net worth / despesas mensais</div>
+      </div>
+    </div>
+    <div class="kpiRow">
+      <div class="kpi">
+        <div class="kpi__k">Taxa de poupança ${savingsRate !== null ? semaforoInv(savingsRate, 20, 10) : ""}</div>
+        <div class="kpi__v" style="color:${savingsRate === null ? '#94a3b8' : savingsRate >= 20 ? '#059669' : savingsRate >= 10 ? '#d97706' : '#dc2626'}">${savingsRate !== null ? fmtPct(savingsRate) : "—"}</div>
+        <div class="kpi__s">Média dos últimos 6 meses</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi__k">Reserva de liquidez ${liquidMonths !== null ? semaforoInv(liquidMonths, 12, 6) : ""}</div>
+        <div class="kpi__v">${liquidMonths !== null ? fmt(liquidMonths, 0) + " meses" : "—"}</div>
+        <div class="kpi__s">Liquidez + depósitos / despesas</div>
       </div>
     </div>`;
 }
