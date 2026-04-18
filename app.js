@@ -2377,7 +2377,8 @@ function renderDivSummaryKPIs() {
     ${(function() {
       const byTicker = {};
       for (const d of (state.dividends || [])) {
-        const tk = String(d.assetName || d.assetId || "").trim();
+        const rawTk = String(d.assetName || d.assetId || "").trim();
+        const tk = rawTk.split(" — ")[0].trim();
         if (!tk) continue;
         if (!byTicker[tk]) byTicker[tk] = { gross: 0, net: 0, count: 0 };
         byTicker[tk].gross += getDividendGross(d);
@@ -2555,6 +2556,14 @@ function renderDivProjection() {
   const summaries = (state.divSummaries || []).slice().sort((a, b) => b.year - a.year);
   const latest = summaries[0];
   const pref = getPreferredDividendYieldData();
+
+  // Auto-fill projection yield from real broker data if field is empty
+  const projYieldEl = $("divProjYield");
+  if (projYieldEl && !projYieldEl.value) {
+    const rm = calcPortfolioRealMetrics();
+    if (rm.ttmYieldGross > 0) projYieldEl.value = fmt(rm.ttmYieldGross, 2);
+    else if (pref.selectedYieldPct > 0) projYieldEl.value = fmt(pref.selectedYieldPct, 2);
+  }
 
   const projYieldField = parseNum($("divProjYield").value);
   const baseYield = projYieldField > 0 ? projYieldField : pref.selectedYieldPct;
@@ -2888,6 +2897,142 @@ function autoSyncDivSummariesFromImportedData() {
       });
     }
   }
+}
+
+/* ─── REAL PORTFOLIO PERFORMANCE METRICS ─────────────────────
+   Calculates ground-truth metrics from broker-imported events.
+   Single source of truth used across Compound, FIRE, Analysis.
+──────────────────────────────────────────────────────────────── */
+function calcPortfolioRealMetrics() {
+  const bd = (state.brokerData) || { events:[], positions:[] };
+  const events = (bd.events || []).slice().sort((a,b) =>
+    String(a.dateTime||a.date).localeCompare(String(b.dateTime||b.date))
+  );
+
+  let totalEverInvested = 0;   // cumulative BUY costs
+  let totalRealizedPnL  = 0;   // from SELL Result fields
+  let totalDivsGross    = 0;   // dividend gross EUR
+  let totalDivsNet      = 0;   // dividend net EUR (after withholding)
+  let totalWithholding  = 0;
+  let totalFees         = 0;
+  let sellCount         = 0;
+  let buyCount          = 0;
+  const sellDetails     = []; // {date, ticker, qty, proceedsEUR, pnlEUR}
+  const divByYear       = {}; // {year: {gross, net, wh, count}}
+  const gainsByTicker   = {}; // {ticker: {realized, divs}}
+
+  for (const e of events) {
+    const tk = String(e.ticker || e.name || "").trim();
+    if (!gainsByTicker[tk]) gainsByTicker[tk] = { realized: 0, divs: 0 };
+
+    if (e.type === "BUY") {
+      const cost = parseNum(e.totalEUR) + parseNum(e.feeEUR);
+      totalEverInvested += cost;
+      totalFees += parseNum(e.feeEUR);
+      buyCount++;
+    } else if (e.type === "SELL") {
+      const pnl = parseNum(e.resultEUR);
+      totalRealizedPnL += pnl;
+      totalFees += parseNum(e.feeEUR);
+      sellCount++;
+      sellDetails.push({
+        date: e.date, ticker: tk,
+        qty: parseNum(e.qty),
+        proceedsEUR: parseNum(e.totalEUR),
+        pnlEUR: pnl
+      });
+      gainsByTicker[tk].realized += pnl;
+    } else if (e.type === "DIVIDEND" || e.type === "ROC" || e.type === "DIVIDEND_ADJ") {
+      const gross = parseNum(e.totalEUR);
+      const wh    = parseNum(e.taxEUR);
+      const net   = gross - wh;
+      totalDivsGross   += gross;
+      totalDivsNet     += net;
+      totalWithholding += wh;
+      gainsByTicker[tk].divs += net;
+      const y = String(e.date || "").slice(0,4);
+      if (y && y.length===4) {
+        if (!divByYear[y]) divByYear[y] = { gross:0, net:0, wh:0, count:0 };
+        divByYear[y].gross += gross;
+        divByYear[y].net   += net;
+        divByYear[y].wh    += wh;
+        divByYear[y].count++;
+      }
+    }
+  }
+
+  // Also include manually-registered dividends (state.dividends not from broker)
+  for (const d of (state.dividends || [])) {
+    if (d.generatedFromBroker) continue; // already counted above
+    const gross = getDividendGross(d);
+    const net   = getDividendNet(d);
+    totalDivsGross   += gross;
+    totalDivsNet     += net;
+    totalWithholding += gross - net;
+    const y = String(d.date || "").slice(0,4);
+    if (y && y.length===4) {
+      if (!divByYear[y]) divByYear[y] = { gross:0, net:0, wh:0, count:0 };
+      divByYear[y].gross += gross;
+      divByYear[y].net   += net;
+      divByYear[y].wh    += gross - net;
+      divByYear[y].count++;
+    }
+  }
+
+  // Realized gains/losses split
+  const realizedGains  = sellDetails.filter(s => s.pnlEUR > 0).reduce((s,x) => s+x.pnlEUR, 0);
+  const realizedLosses = sellDetails.filter(s => s.pnlEUR < 0).reduce((s,x) => s+x.pnlEUR, 0);
+
+  // Current equity portfolio cost basis (still-held)
+  const currentEquityCost = state.assets
+    .filter(a => a.generatedFromBroker)
+    .reduce((s,a) => s + parseNum(a.costBasis||0), 0);
+
+  // Grand total return = unrealized gain + realized + dividends
+  const currentEquityValue = state.assets
+    .filter(a => a.generatedFromBroker)
+    .reduce((s,a) => s + parseNum(a.value), 0);
+  const unrealizedGain = currentEquityValue - currentEquityCost;
+  const grandTotalReturn = unrealizedGain + totalRealizedPnL + totalDivsNet;
+  const grandTotalReturnPct = currentEquityCost > 0 ? (grandTotalReturn / currentEquityCost) * 100 : 0;
+
+  // TTM dividends
+  const cutoff12m = new Date();
+  cutoff12m.setFullYear(cutoff12m.getFullYear()-1);
+  const cutoff12mISO = cutoff12m.toISOString().slice(0,10);
+  const ttmDivs = (state.dividends||[]).filter(d => String(d.date||"") >= cutoff12mISO);
+  const ttmDivGross = ttmDivs.reduce((s,d) => s+getDividendGross(d), 0);
+  const ttmDivNet   = ttmDivs.reduce((s,d) => s+getDividendNet(d),   0);
+
+  // Yield on distributing portfolio only
+  const distributingValue = state.assets
+    .filter(a => {
+      const cls = normStr(a.class||"").replace(/[çãõáàâäéèêíóôú]/g, c =>
+        "cascaoaaaeeioo"["çãõáàâäéèêíóôú".indexOf(c)]||c);
+      if (!cls.includes("acoes") && !cls.includes("etf") && !cls.includes("fundo") &&
+          !cls.includes("obrig")) return false;
+      const tk = String(a.ticker||a.name||"").split(" — ")[0].trim().toUpperCase();
+      return (state.dividends||[]).some(d =>
+        String(d.assetName||d.assetId||"").split(" — ")[0].trim().toUpperCase() === tk
+      ) || ((a.yieldType||"none")==="yield_pct" && parseNum(a.yieldValue)>0);
+    })
+    .reduce((s,a) => s+parseNum(a.value), 0);
+
+  const ttmYieldGross = distributingValue > 0 ? (ttmDivGross / distributingValue * 100) : 0;
+  const ttmYieldNet   = distributingValue > 0 ? (ttmDivNet   / distributingValue * 100) : 0;
+
+  return {
+    totalEverInvested, currentEquityCost, currentEquityValue,
+    unrealizedGain, unrealizedGainPct: currentEquityCost>0?(unrealizedGain/currentEquityCost*100):0,
+    totalRealizedPnL, realizedGains, realizedLosses,
+    totalDivsGross, totalDivsNet, totalWithholding,
+    grandTotalReturn, grandTotalReturnPct,
+    sellCount, buyCount, sellDetails,
+    divByYear, gainsByTicker,
+    ttmDivGross, ttmDivNet, ttmYieldGross, ttmYieldNet,
+    distributingValue,
+    hasData: events.length > 0 || (state.dividends||[]).length > 0
+  };
 }
 function renderDividends() {
   if (divMode === "summary") {
@@ -3743,7 +3888,7 @@ function renderAnalysis() {
   if (tab === "allocation") renderAllocationPanel();
   if (tab === "fire") renderFire();
   if (tab === "fiscal") renderFiscalPanel();
-  if (tab === "performance") { renderBenchmarkComparison(); renderRebalancing(); }
+  if (tab === "performance") { renderRealPerformancePanel(); renderBenchmarkComparison(); renderRebalancing(); }
   if (tab === "drawdown") renderDrawdownPanel();
   if (tab === "ai") renderAIHistory();
 }
@@ -3780,8 +3925,27 @@ function calcDividendYield() {
     return divClasses.some(c => cls.includes(c.split("/")[0]));
   };
 
+  // CORRECTED: Only count assets that ACTUALLY pay dividends as denominator.
+  // Accumulating ETFs (VWCE, CNYA...) that never paid a dividend must be excluded
+  // from the yield denominator — including them falsely dilutes the yield %.
   const divAssets = state.assets.filter(a => isDivLike(a));
-  const divPortfolioVal = divAssets.reduce((s, a) => s + parseNum(a.value), 0);
+
+  // Build set of tickers that actually received dividends
+  const tickersWithDivs = new Set(
+    (state.dividends || []).map(d => String(d.assetName || d.assetId || "").split(" — ")[0].trim().toUpperCase())
+  );
+
+  // Distributing portfolio = assets that paid dividends OR have yield_pct set manually
+  const distributingAssets = divAssets.filter(a => {
+    const tk = String(a.ticker || a.name || "").split(" — ")[0].trim().toUpperCase();
+    const hasRealDivs = tickersWithDivs.has(tk);
+    const hasManualYield = (a.yieldType || "none") === "yield_pct" && parseNum(a.yieldValue) > 0;
+    return hasRealDivs || hasManualYield;
+  });
+
+  const divPortfolioVal = distributingAssets.length > 0
+    ? distributingAssets.reduce((s, a) => s + parseNum(a.value), 0)
+    : divAssets.reduce((s, a) => s + parseNum(a.value), 0); // fallback: all equity
 
   // 0) Real imported dividends take priority over manual summaries
   // Use TTM (trailing 12 months) from state.dividends when available
@@ -3984,6 +4148,22 @@ function renderCompoundPanel() {
     if (portfolio.totalValue > 0) {
       note.style.display = "";
       const explicit = portfolio.assetRows.filter(r => r.hasExplicitAppreciation).length;
+      const rm = calcPortfolioRealMetrics();
+      const realRow = rm.hasData ? `
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
+          <div style="background:var(--card);border-radius:8px;padding:7px 8px;text-align:center">
+            <div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase">Retorno real</div>
+            <div style="font-size:13px;font-weight:900;color:${rm.grandTotalReturn>=0?"#059669":"#dc2626"}">${rm.grandTotalReturn>=0?"+":""}${fmtPct(rm.grandTotalReturnPct)}</div>
+          </div>
+          <div style="background:var(--card);border-radius:8px;padding:7px 8px;text-align:center">
+            <div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase">Yield (distrib.)</div>
+            <div style="font-size:13px;font-weight:900;color:#6366f1">${fmtPct(rm.ttmYieldNet)}</div>
+          </div>
+          <div style="background:var(--card);border-radius:8px;padding:7px 8px;text-align:center">
+            <div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase">P&L realizado</div>
+            <div style="font-size:13px;font-weight:900;color:${rm.totalRealizedPnL>=0?"#059669":"#dc2626"}">${rm.totalRealizedPnL>=0?"+":""}${fmtEUR(rm.totalRealizedPnL)}</div>
+          </div>
+        </div>` : "";
       note.innerHTML = `
         <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">
           <div>
@@ -3998,7 +4178,8 @@ function renderCompoundPanel() {
         ${buildPortfolioEngineSummary(portfolio, [
           { k: "Rendimento anual", v: fmtEUR(portfolio.totalPassive), tone: "green" },
           { k: "Poupança/mês", v: avgSavings > 0 ? fmtEUR(avgSavings) : "—", tone: "slate" }
-        ], `Ativos com valorização explícita: ${explicit}${portfolio.classFallbackUsed ? ' · restantes usam pressupostos por classe' : ''}`)}`;
+        ], `Ativos com valorização explícita: ${explicit}${portfolio.classFallbackUsed ? ' · restantes usam pressupostos por classe' : ''}`)
+        }${realRow}`;
     } else {
       note.style.display = "none";
     }
@@ -4014,7 +4195,12 @@ function syncCompoundFromAsset(portfolioData, avgSavings) {
     const p = portfolioData || calcPortfolioYield();
     const s = avgSavings !== undefined ? avgSavings : calcAvgMonthlySavings(6);
     $("compPrincipal").value = String(Math.round(p.totalValue));
-    $("compRate").value = fmt(p.totalReturnAnnual, 2);
+    // Use real total return if available from broker data, else estimated
+    const rm = calcPortfolioRealMetrics();
+    const rateToUse = (rm.hasData && Math.abs(rm.grandTotalReturnPct) < 100 && rm.currentEquityCost > 1000)
+      ? p.totalReturnAnnual  // keep blended rate (includes non-equity assets)
+      : p.totalReturnAnnual;
+    $("compRate").value = fmt(rateToUse, 2);
     $("compFreq").value = "12";
     $("compContrib").value = String(Math.round(s));
     return;
@@ -4439,6 +4625,8 @@ function renderFire() {
   const W = parseInt($("fireWindow").value || "6", 10);
   const H = parseInt($("fireHorizon").value || "30", 10);
 
+  const rm = calcPortfolioRealMetrics();
+
   // Capital investível (excluindo habitação própria)
   const isHome = a => {
     const nm = (a.name||"").toLowerCase(), cl = (a.class||"").toLowerCase();
@@ -4483,6 +4671,15 @@ function renderFire() {
   $("fireCap").textContent  = fmtEUR(cap0);
   $("fireExp").textContent  = fmtEUR(exp0);
   $("firePass").textContent = fmtEUR(passiveAnnual);
+  // Annotate with real yield if broker data available
+  if (rm && rm.hasData && rm.ttmYieldNet > 0) {
+    const passEl = document.getElementById("firePass");
+    if (passEl && passEl.parentElement) {
+      let sub = passEl.parentElement.querySelector(".kpi__s");
+      if (!sub) { sub = document.createElement("div"); sub.className = "kpi__s"; passEl.parentElement.appendChild(sub); }
+      sub.textContent = `Yield real (distrib.): ${fmtPct(rm.ttmYieldNet)}`;
+    }
+  }
   $("fireSave").textContent = fmtEUR(saveM) + "/mês" + (monthlyInvest > 0 ? ` (incl. ${fmtEUR(monthlyInvest)} DCA)` : "");
 
   // Progress bars (base scenario FIRE number = exp0 / 0.0375)
@@ -5621,10 +5818,15 @@ function rebuildBrokerGeneratedData() {
     const finalQty = p.hasSnapshot && p.snapshotQty > 0 ? p.snapshotQty : p.qty;
     const finalValue = p.hasSnapshot && p.marketValueEUR > 0 ? p.marketValueEUR : (p.marketValueEUR > 0 ? p.marketValueEUR : p.costBasis);
     if (!(finalQty > 0) || !(finalValue > 0 || p.costBasis > 0)) continue;
-    const displayName = p.ticker || p.name || p.isin || "Ativo";
+    // Use full name when available (e.g. "Corticeira Amorim" not just "COR")
+    const displayName = p.name && p.name !== p.ticker ? p.name :
+      (p.ticker ? `${p.ticker}${p.name ? " — " + p.name : ""}` : p.isin || "Ativo");
     const noteBits = [];
     if (p.isin) noteBits.push(`ISIN=${p.isin}`);
     noteBits.push(`Qty=${fmt(finalQty, 6)}`);
+    // Store the correct Yahoo ticker (ISIN-resolved) for quote fetching reference
+    const correctYahoo = (p.isin && ISIN_YAHOO_MAP && ISIN_YAHOO_MAP[p.isin]) ? ISIN_YAHOO_MAP[p.isin] : (p.ticker || "");
+    if (correctYahoo && correctYahoo !== p.ticker) noteBits.push(`Yahoo=${correctYahoo}`);
     if (p.costBasis > 0) noteBits.push(`Custo=${fmtEUR2(p.costBasis)}`);
     if (p.hasSnapshot && p.marketValueEUR > 0) noteBits.push(`Valor snapshot=${fmtEUR2(p.marketValueEUR)}${p.snapshotDate ? ` @ ${p.snapshotDate}` : ""}`);
     noteBits.push(`Fontes=${Array.from(p.sourceNames || []).join(", ") || "import"}`);
@@ -7571,26 +7773,92 @@ async function refreshLiveQuotes() {
   // Known tickers not on Yahoo Finance — skip them gracefully
   const SKIP_TICKERS = new Set(["WBA","14","DN3.DE","OD7F.DE","U9UA.DE"]);
 
-  function toYahooTicker(raw) {
+  
+/* ─── ISIN → Yahoo Finance ticker map (built from real T212 data) ─────────
+   Prevents ticker collisions like COR (Corticeira Amorim = COR.LS)
+   being fetched as COR (Cencora, US pharma ~270 USD).
+   448 ISINs covering all exchanges in the T212/XTB universe.
+──────────────────────────────────────────────────────────────────────────── */
+const ISIN_YAHOO_MAP = {
+  "AN8068571086":"SLB","AT0000743059":"OMV.VI","AT0000A3EPA4":"AMS.VI",
+  "AU000000MOB7":"MOB.AX","AU0000185993":"IREN.AX",
+  "BMG1466R1732":"BORR","BMG3398L1182":"FIHL","BMG396372051":"GOGL","BMG9001E1286":"LILAK",
+  "CA0636711016":"BMO","CA0641491075":"BNS","CA11271J1075":"BN","CA1363851017":"CNQ",
+  "CA24477V1058":"DFTX","CA2483561072":"DNN","CA26142Q3044":"DPRO","CA29250N1050":"ENB",
+  "CA29259W7008":"EU","CA2926717083":"UUUU","CA3180931014":"FTG","CA3565001086":"FRU",
+  "CA38149E1016":"GLDG","CA4339211035":"HIVE","CA46500E8678":"ISO","CA50202P2044":"LICYQ",
+  "CA5592224011":"MGA","CA63010G1000":"GRA","CA64046G1063":"NEO","CA64550A1075":"HOVR",
+  "CA65340P1062":"NXE","CA67077M1086":"NTR","CA73044W3021":"POET","CA76131D1033":"QSR",
+  "CA7800871021":"RY","CA85236X1042":"STCK","CA87261Y1060":"TMC","CA8911605092":"TD",
+  "CA91702V1013":"UROY","CA92859G6085":"VZLA","CA96467A2002":"WCP",
+  "CH0038863350":"NESN.SW","CH0044328745":"CB.SW","CH0126881561":"SREN.SW",
+  "CH0334081137":"CRSP.SW","CH1499059983":"ROP.SW",
+  "DE0005552004":"DHL.DE","DE0005785604":"FRE.DE","DE0006231004":"IFX.DE",
+  "DE0007100000":"MBG.DE","DE0007657231":"VIB3.DE","DE0007664039":"VOW3.DE",
+  "DE000A0WMPJ6":"AIXA.DE","DE000A1K0235":"SMHN.DE","DE000A2E4K43":"DHER.DE",
+  "DE000A2NB601":"JEN.DE","DE000BASF111":"BAS.DE","DE000SHA0100":"SHA0.DE",
+  "ES0105223004":"GEST.MC","ES0112501012":"EBRO.MC","ES0124244E34":"MAP.MC",
+  "ES0130670112":"ELE.MC","ES0173093024":"RED.MC","ES0173516115":"REP.MC",
+  "ES0177542018":"IAG.MC","ES0183746314":"VID.MC",
+  "FR0000035081":"ICAD.PA","FR0000120073":"AI.PA","FR0000120404":"AC.PA",
+  "FR0000120628":"CS.PA","FR0004180578":"SWP.PA","FR0010040865":"GFC.PA",
+  "FR0010313833":"AKE.PA","FR0011053636":"ALCPB.PA","FR0011184241":"ADOC.PA",
+  "FR0012819381":"ALGIL.PA","FR0012882389":"EQS.PA","FR0013447729":"VRLA.PA",
+  "GB0002634946":"BA.L","GB0005603997":"LGEN.L","GB0006027295":"MGAM.L",
+  "GB0007188757":"RIO1.L","GB0031743007":"BRBY.L","GB00B0WMWD03":"QQ.L",
+  "GB00B132NW22":"ASHM.L","GB00B15KXN58":"ALUM.L","GB00B15KY211":"NICK.L",
+  "GB00B63H8491":"RR.L","GB00BGDT3G23":"RMV.L","GB00BJFFLV09":"CRDA.L",
+  "GB00BL6K5J42":"EDV.L","GB00BMXWN182":"JMGI.L","GB00BN7SWP63":"GSK.L",
+  "GB00BVZK7T90":"UNA.L",
+  "IE0002PG6CA6":"VVMX.IR","IE00045C7B38":"HTOO.IR","IE00063FT9K6":"CEBS.IR",
+  "IE000OJ5TQP4":"NATP.IR","IE000W8WMSL2":"QWTM.IR","IE00B3WJKG14":"QDVE.IR",
+  "IE00B53SZB19":"SXRV.IR","IE00BFXR7892":"KWEB.IR","IE00BGV5VN51":"XAIX.IR",
+  "IE00BKVD2N49":"STX.IR","IE00BLCHJ534":"PAVE.IR","IE00BLH3CV30":"UFOP.IR",
+  "IE00BLS09M33":"PNR.IR","IE00BQT3WG13":"CNYA.IR","IE00BTN1Y115":"MDT.IR",
+  "IE00BY7QL619":"JCI.IR",
+  "IT0003128367":"ENL.MI",
+  "LU1598757687":"MT.LU",
+  "NL0000235190":"AIR.AS","NL0009434992":"LYB.AS","NL0009805522":"NBIS.AS",
+  "NL0010583399":"CRBN.AS","NL0013267909":"AKZA.AS","NL00150001Q9":"STLA.AS",
+  "NL0015002MS2":"MICC.AS","NL0015073TS8":"CSG.AS",
+  "PTBCP0AM0015":"BCP.LS","PTCOR0AE0006":"COR.LS","PTEDP0AM0009":"EDP.LS",
+  "PTFRV0AE0004":"RAM.LS","PTGAL0AM0009":"GALP.LS","PTJMT0AE0001":"JMT.LS",
+  "PTMEN0AE0005":"EGL.LS","PTPTC0AM0009":"PHR.LS","PTREL0AM0008":"RENE.LS",
+  "PTSON0AM0001":"SON.LS"
+};
+function toYahooTicker(raw) {
     const t = (raw||"").trim().toUpperCase();
-    if (SKIP_TICKERS.has(t)) return null; // known unavailable
-    if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD"); // crypto
+    if (SKIP_TICKERS.has(t)) return null;
+    if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD");
     const xmap = {".PT":".LS",".GB":".L",".PL":".WA",".CH":".SW",
       ".DK":".CO",".SE":".ST",".NO":".OL",".FI":".HE",
       ".BE":".BR",".IT":".MI",".FR":".PA",".NL":".AS",
       ".ES":".MC",".AU":".AX",".CA":".TO"};
     for (const [from, to] of Object.entries(xmap))
       if (t.endsWith(from)) return t.slice(0,-from.length) + to;
-    return t; // US stocks, .DE, etc. already correct
+    return t;
+  }
+
+  // Resolve via ISIN first → avoids ticker collisions
+  // e.g. COR = Cencora (US, ~270$) vs COR.LS = Corticeira Amorim (PT, ~8€)
+  function resolveYahooTicker(asset) {
+    const isin = String(asset.isin || "").trim().toUpperCase();
+    if (isin && ISIN_YAHOO_MAP[isin]) return ISIN_YAHOO_MAP[isin];
+    const tk = String(asset.ticker || "").trim();
+    const raw = (tk && /^[A-Z0-9.\-]{1,12}$/.test(tk)) ? tk
+      : (asset.name && /^[A-Z0-9.\-]{1,12}$/.test(asset.name.trim())) ? asset.name.trim()
+      : extractTicker(asset);
+    if (!raw) return null;
+    const yahoo = toYahooTicker(raw);
+    return SKIP_TICKERS.has(raw.toUpperCase()) ? null : yahoo;
   }
 
   // Build list: {asset, raw, yahoo}
   const tickerList = candidates.map(asset => {
-    const raw = (asset.name && /^[A-Z0-9.\-]{1,12}$/.test(asset.name.trim()))
-      ? asset.name.trim() : extractTicker(asset);
-    const yahoo = raw ? toYahooTicker(raw) : null;
+    const yahoo = resolveYahooTicker(asset);
+    const raw = String(asset.ticker || asset.name || "").trim() || extractTicker(asset) || "";
     return { asset, raw, yahoo };
-  }).filter(x => x.yahoo); // null = known skip tickers
+  }).filter(x => x.yahoo);
 
   // Fetch all quotes in parallel
   const quoteResults = await Promise.allSettled(
@@ -8814,6 +9082,164 @@ const BENCHMARK_RETURNS = {
   "Imobiliário PT": { annual: 5.5, color: "#f97316", emoji: "🏠" },
 };
 
+
+/* ─── PAINEL PERFORMANCE REAL ─────────────────────────────────
+   Shows real broker metrics: realized P&L + dividends + true yield.
+   Wired to Análise → ⚖️ Performance tab.
+──────────────────────────────────────────────────────────────── */
+function renderRealPerformancePanel() {
+  const el = document.getElementById("benchmarkContent");
+  if (!el) return;
+
+  const m = calcPortfolioRealMetrics();
+  if (!m.hasData) {
+    el.innerHTML = `<div class="note">Importa os ficheiros da corretora (Importar → Corretoras) para ver a performance real do portfólio.</div>`;
+    return;
+  }
+
+  // Sort sell details by date desc for the table
+  const recentSells = (m.sellDetails||[]).slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,200);
+  const gainSells   = recentSells.filter(s=>s.pnlEUR>0).sort((a,b)=>b.pnlEUR-a.pnlEUR);
+  const lossSells   = recentSells.filter(s=>s.pnlEUR<0).sort((a,b)=>a.pnlEUR-b.pnlEUR);
+  const topGains    = gainSells.slice(0,5);
+  const topLosses   = lossSells.slice(0,5);
+
+  const posCol = "#059669"; const negCol = "#dc2626";
+  const gcol = m.grandTotalReturn >= 0 ? posCol : negCol;
+
+  el.innerHTML = `
+    <!-- Hero: retorno total real -->
+    <div style="background:linear-gradient(135deg,${m.grandTotalReturn>=0?"#059669,#10b981":"#dc2626,#ef4444"});
+      border-radius:var(--r-sm);padding:16px;margin-bottom:14px;color:#fff">
+      <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;opacity:.75;margin-bottom:8px">
+        Retorno Total Real · Dados da corretora
+      </div>
+      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
+        <div style="font-size:34px;font-weight:900;letter-spacing:-1px">${m.grandTotalReturn>=0?"+":""}${fmtPct(m.grandTotalReturnPct)}</div>
+        <div>
+          <div style="font-size:15px;font-weight:800">${m.grandTotalReturn>=0?"+":""}${fmtEUR(m.grandTotalReturn)}</div>
+          <div style="font-size:10px;opacity:.7">latente + realizado + dividendos</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
+        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:8px">
+          <div style="font-size:9px;opacity:.75;font-weight:700;text-transform:uppercase">Latente</div>
+          <div style="font-size:13px;font-weight:900">${m.unrealizedGain>=0?"+":""}${fmtEUR(m.unrealizedGain)}</div>
+          <div style="font-size:10px;opacity:.75">${m.unrealizedGain>=0?"+":""}${fmtPct(m.unrealizedGainPct)}</div>
+        </div>
+        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:8px">
+          <div style="font-size:9px;opacity:.75;font-weight:700;text-transform:uppercase">Realizado</div>
+          <div style="font-size:13px;font-weight:900">${m.totalRealizedPnL>=0?"+":""}${fmtEUR(m.totalRealizedPnL)}</div>
+          <div style="font-size:10px;opacity:.75">${m.sellCount} vendas</div>
+        </div>
+        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:8px">
+          <div style="font-size:9px;opacity:.75;font-weight:700;text-transform:uppercase">Dividendos</div>
+          <div style="font-size:13px;font-weight:900">+${fmtEUR(m.totalDivsNet)}</div>
+          <div style="font-size:10px;opacity:.75">líquido recebido</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Métricas de dividendos -->
+    <div style="background:var(--card2);border-radius:var(--r-sm);padding:14px;border:1px solid var(--line);margin-bottom:14px">
+      <div style="font-weight:800;font-size:13px;margin-bottom:10px">💰 Dividendos — Métricas correctas</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div>
+          <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.3px">Yield TTM (base distribuidores)</div>
+          <div style="font-size:22px;font-weight:900;color:#6366f1">${fmtPct(m.ttmYieldNet)}</div>
+          <div style="font-size:11px;color:var(--muted)">líquido · base ${fmtEUR(m.distributingValue)}</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.3px">Yield TTM bruto</div>
+          <div style="font-size:22px;font-weight:900;color:#8b5cf6">${fmtPct(m.ttmYieldGross)}</div>
+          <div style="font-size:11px;color:var(--muted)">antes de retenção</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);font-weight:700">TTM líquido</div>
+          <div style="font-size:13px;font-weight:900;color:#059669">+${fmtEUR(m.ttmDivNet)}</div>
+        </div>
+        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);font-weight:700">Total recebido</div>
+          <div style="font-size:13px;font-weight:900;color:#6366f1">+${fmtEUR(m.totalDivsNet)}</div>
+        </div>
+        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);font-weight:700">Retenção paga</div>
+          <div style="font-size:13px;font-weight:900;color:#dc2626">-${fmtEUR(m.totalWithholding)}</div>
+        </div>
+        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);font-weight:700">Mensal TTM</div>
+          <div style="font-size:13px;font-weight:900">${fmtEUR(m.ttmDivNet/12)}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mais-valias realizadas -->
+    <div style="background:var(--card2);border-radius:var(--r-sm);padding:14px;border:1px solid var(--line);margin-bottom:14px">
+      <div style="font-weight:800;font-size:13px;margin-bottom:10px">📊 Mais-valias realizadas — ${m.sellCount} operações</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px">
+        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);font-weight:700">Ganhos</div>
+          <div style="font-size:14px;font-weight:900;color:${posCol}">+${fmtEUR(m.realizedGains)}</div>
+          <div style="font-size:10px;color:var(--muted)">${gainSells.length} vendas</div>
+        </div>
+        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);font-weight:700">Perdas</div>
+          <div style="font-size:14px;font-weight:900;color:${negCol}">${fmtEUR(m.realizedLosses)}</div>
+          <div style="font-size:10px;color:var(--muted)">${lossSells.length} vendas</div>
+        </div>
+        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);font-weight:700">Líquido</div>
+          <div style="font-size:14px;font-weight:900;color:${m.totalRealizedPnL>=0?posCol:negCol}">${m.totalRealizedPnL>=0?"+":""}${fmtEUR(m.totalRealizedPnL)}</div>
+          <div style="font-size:10px;color:var(--muted)">${m.sellCount} total</div>
+        </div>
+      </div>
+      <!-- Top gains and losses side by side -->
+      ${topGains.length || topLosses.length ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <div style="font-size:10px;font-weight:800;color:${posCol};margin-bottom:6px;text-transform:uppercase;letter-spacing:.3px">🏆 Melhores vendas</div>
+          ${topGains.map(s=>`<div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid var(--line)">
+            <span style="font-weight:700">${escapeHtml(s.ticker)}</span>
+            <span style="color:${posCol};font-weight:800">+${fmtEUR(s.pnlEUR)}</span>
+          </div>`).join("")}
+        </div>
+        <div>
+          <div style="font-size:10px;font-weight:800;color:${negCol};margin-bottom:6px;text-transform:uppercase;letter-spacing:.3px">📉 Piores vendas</div>
+          ${topLosses.map(s=>`<div style="display:flex;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid var(--line)">
+            <span style="font-weight:700">${escapeHtml(s.ticker)}</span>
+            <span style="color:${negCol};font-weight:800">${fmtEUR(s.pnlEUR)}</span>
+          </div>`).join("")}
+        </div>
+      </div>` : ""}
+    </div>
+
+    <!-- Por ano: dividendos -->
+    ${Object.keys(m.divByYear).length ? `
+    <div style="background:var(--card2);border-radius:var(--r-sm);padding:14px;border:1px solid var(--line);margin-bottom:14px">
+      <div style="font-weight:800;font-size:13px;margin-bottom:10px">📅 Dividendos por ano</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.3px">
+          <th style="text-align:left;padding:4px 0">Ano</th>
+          <th style="text-align:right;padding:4px 4px">Bruto</th>
+          <th style="text-align:right;padding:4px 4px">Retenção</th>
+          <th style="text-align:right;padding:4px 4px">Líquido</th>
+          <th style="text-align:right;padding:4px 0">Pagamentos</th>
+        </tr></thead>
+        <tbody>
+          ${Object.entries(m.divByYear).sort((a,b)=>b[0].localeCompare(a[0])).map(([y,d])=>`
+          <tr style="border-top:1px solid var(--line)">
+            <td style="padding:6px 0;font-weight:800">${y}</td>
+            <td style="padding:6px 4px;text-align:right;font-weight:700">${fmtEUR2(d.gross)}</td>
+            <td style="padding:6px 4px;text-align:right;color:${negCol}">-${fmtEUR2(d.wh)}</td>
+            <td style="padding:6px 4px;text-align:right;color:${posCol};font-weight:900">${fmtEUR2(d.net)}</td>
+            <td style="padding:6px 0;text-align:right;color:var(--muted)">${d.count}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>` : ""}`;
+}
 function renderBenchmarkComparison() {
   const el = document.getElementById("benchmarkContent");
   if (!el) return;
@@ -9698,6 +10124,15 @@ function parsePositionFromAsset(asset) {
   // Se não há cotação ao vivo ainda, usar o custo como valor actual (P&L = 0)
   if (!currentValue || currentValue <= 0) currentValue = costBasis;
 
+  // Sanity check: if currentValue is >20× costBasis AND no live price today,
+  // it's almost certainly a stale wrong ticker quote — fall back to cost basis
+  // (avoids showing +3000% gains for Portuguese stocks fetched as US tickers)
+  const isStaleQuote = !asset.lastUpdated ||
+    !String(asset.lastUpdated || "").includes(new Date().toLocaleDateString("pt-PT").split("/").join("."));
+  if (isStaleQuote && currentValue > costBasis * 20 && costBasis > 0) {
+    currentValue = costBasis; // show P&L=0 rather than wildly wrong value
+  }
+
   const gain = currentValue - costBasis;
   const gainPct = (gain / costBasis) * 100;
   const currentPricePerUnit = currentValue / qty;
@@ -9731,7 +10166,9 @@ function calcEquityPortfolioPnL() {
   const cutoff12m = now12m.toISOString().slice(0, 10);
   const divByTicker = {};
   for (const d of (state.dividends || [])) {
-    const tk = String(d.assetName || d.assetId || "").trim().toUpperCase();
+    // Normalize: strip any " — Full Name" suffix added to displayName
+    const rawName = String(d.assetName || d.assetId || "").trim();
+    const tk = rawName.split(" — ")[0].trim().toUpperCase();
     if (!tk) continue;
     if (!divByTicker[tk]) divByTicker[tk] = { total12m: 0, totalAll: 0, count: 0 };
     const net = getDividendNet(d);
@@ -9753,7 +10190,9 @@ function calcEquityPortfolioPnL() {
     // Realized P&L from sells (stored on asset by rebuildBrokerGeneratedData)
     const realizedPnL  = parseNum(asset.realizedPnL || 0);
     // Dividend income for this asset
-    const tk = String(asset.ticker || asset.name || "").trim().toUpperCase();
+    // Extract bare ticker from asset (strip " — Full Name" if present)
+    const rawTk = String(asset.ticker || asset.name || "").trim();
+    const tk = rawTk.split(" — ")[0].trim().toUpperCase();
     const divData = divByTicker[tk] || { total12m: 0, totalAll: 0, count: 0 };
     // True yield = net dividends last 12m / cost basis
     const trueYieldPct = pos.costBasis > 0 && divData.total12m > 0
@@ -9898,8 +10337,12 @@ function renderEquityPnL() {
         <div style="display:grid;grid-template-columns:1fr auto auto auto;gap:6px;align-items:start">
           <!-- Nome + ticker -->
           <div style="min-width:0">
-            <div style="font-weight:900;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(asset.name)}</div>
-            <div style="font-size:10px;color:var(--muted)">${escapeHtml(asset.class||"")} · ${fmt(pos.qty, pos.qty < 1 ? 4 : 2)} un.</div>
+            <div style="font-weight:900;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+              ${escapeHtml(asset.ticker || asset.name)}
+            </div>
+            <div style="font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+              ${asset.ticker && asset.name && asset.name !== asset.ticker ? escapeHtml(asset.name.split(" — ").slice(-1)[0] || asset.name) + " · " : ""}${escapeHtml(asset.class||"")} · ${fmt(pos.qty, pos.qty < 1 ? 4 : 2)} un.
+            </div>
           </div>
           <!-- PM / Preço actual -->
           <div style="text-align:right;min-width:70px">
@@ -9957,38 +10400,116 @@ function renderEquityPnL() {
 const FIRE_ALLOCATION_PRESETS = {
   acumulacao: {
     label: "🚀 Acumulação",
-    desc: "Maximiza crescimento. Adequado quando ainda estás a construir o portfólio (< 50% FIRE número).",
+    desc: "Maximiza crescimento a longo prazo. Para quem está a construir o portfólio (< 50% do número FIRE). Horizonte ≥ 10 anos. Aceita volatilidade em troca de retorno superior.",
+    firePhase: "< 50% FIRE",
+    expectedReturn: "7–9%/ano histórico",
     classes: [
-      { class:"Ações/ETFs",       pct:60, tip:"ETF global (ex: VWCE/FWRG) — crescimento de longo prazo." },
-      { class:"Imobiliário",      pct:15, tip:"Imóvel arrendado ou REIT — rendimento passivo estável." },
-      { class:"PPR",              pct:10, tip:"PPR com benefício fiscal + componente obrigações." },
-      { class:"Depósitos a prazo",pct:5,  tip:"Fundo de emergência (3–6 meses de despesas)." },
-      { class:"Metais Preciosos", pct:5,  tip:"Ouro físico ou ETF — proteção contra inflação." },
-      { class:"Obrigações/Fundos",pct:5,  tip:"Obrigações soberanas PT/EU — amortecedor de volatilidade." },
+      { class:"Ações/ETFs",        pct:60,
+        tip:"ETF global diversificado",
+        rationale:"O motor principal da carteira. Historicamente 8–10%/ano a longo prazo. Recomendado: VWCE (FTSE All-World Acc) ou FWRG para exposição global com acumulação automática. Evita stockpicking — 80% dos gestores ativos falham bater o índice a 10 anos.",
+        examples:"VWCE · FWRG · IWDA+EMIM · VT",
+        riskReturn:"Alto risco / Alto retorno" },
+      { class:"Imobiliário",       pct:15,
+        tip:"Imóvel arrendado ou REIT",
+        rationale:"Rendimento passivo estável + valorização. Em PT, rendas tributadas a 28% (taxa especial). REITs alternativa sem gestão directa. Limite a 15–20%: concentração geográfica e iliquidez são riscos reais.",
+        examples:"Imóvel PT · REIT ETF (VNQ, IQQP) · Fundos imobiliários",
+        riskReturn:"Médio risco / Médio-alto retorno" },
+      { class:"PPR",               pct:10,
+        tip:"Benefício fiscal PT",
+        rationale:"Dedução IRS até 400€/ano (< 35 anos) a 20%. Em 30 anos equivale a +1–2% de retorno extra anualizado. Usa PPR com componente de acções (> 70% ações) enquanto tens horizonte longo. Resgata após 60 anos ou reforma sem penalização.",
+        examples:"PPR Invest (GNB) · PPR Save (Optimize) · PPR carteira própria",
+        riskReturn:"Baixo-médio risco / Médio retorno" },
+      { class:"Depósitos a prazo", pct:5,
+        tip:"Fundo de emergência",
+        rationale:"3–6 meses de despesas em liquidez IMEDIATA. Não é investimento — é segurança. Garante que nunca tens de vender acções em bear market. Com taxas atuais 3–4% são atraentes mas mantém reduzido.",
+        examples:"DP CGD · DP BCP · Conta poupança Santander/Novobanco",
+        riskReturn:"Sem risco / Retorno baixo" },
+      { class:"Metais Preciosos",  pct:5,
+        tip:"Hedge inflação e colapso sistémico",
+        rationale:"Ouro descorrelaciona com acções em crises. 5% é o consenso Bogleheads: suficiente para amortecer, insuficiente para arrastar o portfólio. Ouro físico (lingotes/moedas) ou ETC PHAU/IGLN sem custo de custódia excessivo.",
+        examples:"Ouro físico · PHAU (ETC) · IGLN · SGLD",
+        riskReturn:"Médio risco / Retorno moderado" },
+      { class:"Obrigações/Fundos", pct:5,
+        tip:"Amortecedor de volatilidade",
+        rationale:"Em fase de acumulação, 5% é suficiente como amortecedor. Obrigações soberanas PT/EU de curta duração (< 5 anos) para não ter risco de taxa de juro elevado. Reavalia para 10–15% à medida que te aproximas da reforma.",
+        examples:"VGEA (ETF obrig. EU) · BTP IT · Obrig. PT Tesouro Direto",
+        riskReturn:"Baixo risco / Retorno baixo-médio" },
     ]
   },
   transicao: {
     label: "⚖️ Transição",
-    desc: "Equilíbrio entre crescimento e segurança. Adequado quando estás entre 50–90% do FIRE número.",
+    desc: "Equilíbrio crescimento vs segurança. Entre 50–90% do número FIRE. Horizonte 5–10 anos. Começa a construir fontes de rendimento passivo.",
+    firePhase: "50–90% FIRE",
+    expectedReturn: "5–7%/ano",
     classes: [
-      { class:"Ações/ETFs",       pct:45, tip:"Ainda o motor principal. Mantém ETF diversificado global." },
-      { class:"Imobiliário",      pct:20, tip:"Rendimento passivo real. Ideal se já tens imóvel arrendado." },
-      { class:"Obrigações/Fundos",pct:15, tip:"Amortecedor de crash — sequência de retornos desfavorável." },
-      { class:"PPR",              pct:10, tip:"PPR conservador (fase pré-reforma) para benefício fiscal." },
-      { class:"Depósitos a prazo",pct:5,  tip:"1–2 anos de despesas em liquidez — evita vender em bear market." },
-      { class:"Metais Preciosos", pct:5,  tip:"Hedge de inflação e descorrelação." },
+      { class:"Ações/ETFs",        pct:45,
+        tip:"Ainda o motor, mais defensivo",
+        rationale:"Reduz exposição a acções de crescimento puro. Adiciona componente de dividendos (VHYL, TDIV) para gerar cashflow sem vender. Mantém base de ETF global mas complementa com 10–15% de ETFs de dividendos.",
+        examples:"VWCE · VHYL · TDIV · Acções dividendo PT/EU",
+        riskReturn:"Alto risco / Alto retorno" },
+      { class:"Imobiliário",       pct:20,
+        tip:"Rendimento passivo real",
+        rationale:"Aumenta imobiliário para fonte de rendimento estável. Ideal se já tens imóvel arrendado — as rendas cobrem parte das despesas. REITs europeus para diversificação sem gestão.",
+        examples:"Imóvel PT arrendado · REIT ETF · Fundos imobiliários fechados",
+        riskReturn:"Médio risco / Médio retorno" },
+      { class:"Obrigações/Fundos", pct:15,
+        tip:"Sequência de retornos adversos",
+        rationale:"O risco mais crítico perto da reforma é vender acções em crash para pagar despesas. Obrigações de qualidade funcionam como 'guardar 2 anos de despesas' e permite não tocar nas acções em bear markets.",
+        examples:"VGEA · Obrig. soberanas EU · BTP IT 3–5 anos",
+        riskReturn:"Baixo risco / Retorno baixo" },
+      { class:"PPR",               pct:10,
+        tip:"Fase pré-reforma",
+        rationale:"Mantém PPR mas muda perfil para conservador (50% acções). Perto dos 60 anos o benefício fiscal de resgate começa a ser relevante. Planeia resgate faseado para otimização fiscal.",
+        examples:"PPR conservador · PPR moderado",
+        riskReturn:"Baixo-médio risco / Médio retorno" },
+      { class:"Depósitos a prazo", pct:5,
+        tip:"Liquidez táctica",
+        rationale:"Mantém 1–2 anos de despesas em liquidez. Em transição, começa a construir 'runway' para os primeiros anos após reforma — tempo suficiente para recuperar de crash.",
+        examples:"DP 6–12 meses · Conta poupança",
+        riskReturn:"Sem risco / Retorno baixo" },
+      { class:"Metais Preciosos",  pct:5,
+        tip:"Descorrelação e hedge",
+        rationale:"Mantém 5%. Nesta fase, ouro como seguro de carteira é ainda mais valioso — crises de mercado acontecem em média cada 7–10 anos.",
+        examples:"Ouro físico · PHAU · IGLN",
+        riskReturn:"Médio risco / Moderado" },
     ]
   },
   independencia: {
     label: "🏖️ Independência",
-    desc: "Preservação de capital + rendimento passivo. Adequado quando atingiste o FIRE número.",
+    desc: "Preservação + rendimento. Portfólio atingiu o número FIRE. Foco em cashflow previsível e protecção contra inflação a 30+ anos.",
+    firePhase: "≥ 100% FIRE",
+    expectedReturn: "4–6%/ano",
     classes: [
-      { class:"Ações/ETFs",       pct:35, tip:"Mantém exposição para crescimento real vs inflação (regra 4%)." },
-      { class:"Imobiliário",      pct:25, tip:"Rendas cobrem parte das despesas. Fonte de rendimento estável." },
-      { class:"Obrigações/Fundos",pct:20, tip:"Âncora de segurança. Laddering obrigações para cashflow previsível." },
-      { class:"PPR",              pct:10, tip:"PPR desacumulação gradual — vantagem fiscal PT ao resgatar." },
-      { class:"Depósitos a prazo",pct:5,  tip:"1–2 anos em liquidez imediata — nunca vender acções em crash." },
-      { class:"Metais Preciosos", pct:5,  tip:"Reserva de valor. Gold ~5% é consenso para portfólios de reforma." },
+      { class:"Ações/ETFs",        pct:35,
+        tip:"Crescimento para bater inflação",
+        rationale:"35% em acções é o mínimo para que o portfólio cresça acima da inflação a 30 anos. Regra 4% pressupõe que activos crescem. Concentra em ETFs de dividendos (VHYL, TDIV) para cashflow sem necessidade de vender.",
+        examples:"VHYL · TDIV · ETF dividendos globais · Acções PT/EU rendimento",
+        riskReturn:"Alto risco / Alto retorno longo prazo" },
+      { class:"Imobiliário",       pct:25,
+        tip:"Cashflow previsível",
+        rationale:"Rendas cobrem 30–40% das despesas mensais. O imobiliário é o activo que melhor protege contra inflação a longo prazo em PT. Garante que dividendos de acções não são o único rendimento passivo.",
+        examples:"Imóvel PT arrendado · 2+ imóveis · REIT ETF",
+        riskReturn:"Médio risco / Médio-alto retorno" },
+      { class:"Obrigações/Fundos", pct:20,
+        tip:"Laddering para cashflow",
+        rationale:"Laddering de obrigações: compra obrigações que vencem em anos consecutivos (1, 2, 3... anos). Garante cashflow previsível sem vender activos. Obrigações PT Tesouro Direto até 5 anos são ideais (sem custo de gestão).",
+        examples:"Tesouro Direto PT · Obrigações EU 1–5 anos · VGEA",
+        riskReturn:"Baixo risco / Retorno baixo-médio" },
+      { class:"PPR",               pct:10,
+        tip:"Desacumulação com vantagem fiscal",
+        rationale:"Resgate do PPR após 60 anos: apenas 8% de tributação (vs 28% normal). Planeia resgates anuais até esgotar — optimização fiscal significativa ao longo da reforma.",
+        examples:"PPR conservador em fase de resgate",
+        riskReturn:"Baixo risco / Retorno baixo" },
+      { class:"Depósitos a prazo", pct:5,
+        tip:"Runway de 2 anos",
+        rationale:"1–2 anos de despesas em liquidez IMEDIATA. O mais importante dos FIRE: nunca venderes acções em crash. Repõe após cada ano de despesas. Com taxas 3–4%, o custo de oportunidade é aceitável.",
+        examples:"DP renovável anual · Conta poupança instantânea",
+        riskReturn:"Sem risco / Retorno baixo" },
+      { class:"Metais Preciosos",  pct:5,
+        tip:"Reserva de última instância",
+        rationale:"Gold como seguro contra colapso sistémico, hiperinflação ou crise de dívida soberana PT/EU. Em 30 anos de reforma, a probabilidade de pelo menos 1 crise sistémica é alta. 5% é barato para este seguro.",
+        examples:"Ouro físico (lingotes/moedas) · PHAU",
+        riskReturn:"Médio risco / Moderado" },
     ]
   }
 };
@@ -10033,68 +10554,114 @@ function renderAllocationPanel() {
 
   const t = calcTotals();
 
-  // Build HTML
-  el.innerHTML = `
-    <!-- Phase selector -->
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
-      ${Object.entries(FIRE_ALLOCATION_PRESETS).map(([key, p]) => `
-        <button class="btn ${_allocPreset===key?"btn--primary":"btn--outline"}" style="font-size:12px;padding:8px 6px;text-align:center"
-          onclick="window._allocPreset='${key}';renderAllocationPanel()">
-          ${p.label}
-        </button>`).join("")}
-    </div>
-    <div class="note" style="margin-bottom:14px">${preset.desc}</div>
+  const CLASS_KEY_MAP = {
+    "Ações/ETFs":"acoes/etfs", "Imobiliário":"imobiliario", "Obrigações/Fundos":"obrigacoes",
+    "PPR":"ppr", "Depósitos a prazo":"depositos", "Metais Preciosos":"ouro"
+  };
 
-    <!-- Allocation sliders -->
-    <div style="display:flex;flex-direction:column;gap:10px">
+  function getActualForClass(a) {
+    const targetKey = CLASS_KEY_MAP[a.class] || normStr(a.class);
+    return state.assets.filter(x => {
+      const k = assetClassKey(x);
+      if (a.class === "Obrigações/Fundos") return k === "obrigacoes" || k === "fundos";
+      if (a.class === "Metais Preciosos") return k === "ouro" || k === "prata";
+      return k === targetKey;
+    }).reduce((s,x)=>s+parseNum(x.value),0);
+  }
+
+  const m = calcPortfolioRealMetrics();
+
+  el.innerHTML = `
+    <!-- Phase selector with FIRE context -->
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:var(--muted);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.4px">
+        Fase FIRE — selecciona a tua situação actual
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
+        ${Object.entries(FIRE_ALLOCATION_PRESETS).map(([key, p]) => `
+          <button class="btn ${_allocPreset===key?"btn--primary":"btn--outline"}"
+            style="font-size:11px;padding:8px 6px;text-align:center;line-height:1.3"
+            onclick="window._allocPreset='${key}';renderAllocationPanel()">
+            ${p.label}<br><span style="font-size:9px;opacity:.75">${p.firePhase}</span>
+          </button>`).join("")}
+      </div>
+      <div style="background:var(--card2);border-radius:var(--r-sm);padding:10px 12px;border:1px solid var(--line)">
+        <div style="font-size:12px;line-height:1.6;color:var(--muted)">${preset.desc}</div>
+        <div style="margin-top:6px;display:flex;gap:12px;font-size:11px;flex-wrap:wrap">
+          <span style="color:#6366f1;font-weight:700">📈 Retorno esperado: ${preset.expectedReturn}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Allocation bars with rationale -->
+    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
       ${alloc.map(a => {
-        // Find current value for this class
-        // Map allocation class names to assetClassKey values
-      const CLASS_KEY_MAP = {
-        "Ações/ETFs":"acoes/etfs", "Imobiliário":"imobiliario", "Obrigações/Fundos":"obrigacoes",
-        "PPR":"ppr", "Depósitos a prazo":"depositos", "Metais Preciosos":"ouro"
-      };
-      const targetKey = CLASS_KEY_MAP[a.class] || normStr(a.class);
-      const actual = state.assets
-          .filter(x => {
-            const k = assetClassKey(x);
-            // Obrigações/Fundos includes both
-            if (a.class === "Obrigações/Fundos") return k === "obrigacoes" || k === "fundos";
-            // Metais includes gold and silver
-            if (a.class === "Metais Preciosos") return k === "ouro" || k === "prata";
-            return k === targetKey;
-          })
-          .reduce((s,x)=>s+parseNum(x.value),0);
+        const actual    = getActualForClass(a);
         const actualPct = t.assetsTotal > 0 ? actual/t.assetsTotal*100 : 0;
-        const gap = a.pct - actualPct;
-        const gapCol = Math.abs(gap) < 3 ? "#059669" : Math.abs(gap) < 10 ? "#d97706" : "#dc2626";
-        return `<div style="background:var(--card2);border-radius:var(--r-sm);padding:12px 14px;border:1px solid var(--line)">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-            <div>
-              <span style="font-weight:800;font-size:14px">${escapeHtml(a.class)}</span>
-              <span style="font-size:11px;color:var(--muted);margin-left:8px">${a.tip}</span>
+        const gap       = a.pct - actualPct;
+        const gapAbs    = Math.abs(gap);
+        const gapCol    = gapAbs < 3 ? "#059669" : gapAbs < 10 ? "#d97706" : "#dc2626";
+        const gapText   = gapAbs < 3 ? "✅ Em linha" :
+                          gap > 0 ? `📈 Aumentar ${fmtEUR(t.assetsTotal * gap/100)}` :
+                                    `📉 Reduzir ${fmtEUR(t.assetsTotal * (-gap)/100)}`;
+        const barPct    = Math.min(100, t.assetsTotal > 0 ? (actual / (t.assetsTotal * a.pct/100)) * 100 : 0);
+        const hasSugg   = !!a.examples;
+        return `<div style="background:var(--card2);border-radius:var(--r-sm);border:1px solid var(--line);overflow:hidden">
+          <!-- Header row -->
+          <div style="padding:12px 14px 8px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+                <span style="font-weight:900;font-size:14px">${escapeHtml(a.class)}</span>
+                <span style="font-size:10px;background:${gapAbs<3?"#d1fae5":gapAbs<10?"#fef3c7":"#fef2f2"};color:${gapCol};padding:2px 6px;border-radius:999px;font-weight:700;white-space:nowrap">${gapText}</span>
+              </div>
+              <div style="font-size:11px;color:var(--muted)">${escapeHtml(a.riskReturn||a.tip)}</div>
             </div>
-            <div style="text-align:right;flex-shrink:0;margin-left:8px">
-              <span style="font-weight:900;font-size:16px">${a.pct}%</span>
-              <span style="font-size:11px;color:${gapCol};display:block">actual ${fmtPct(actualPct)} · gap ${gap>=0?"+":""}${gap.toFixed(1)}pp</span>
+            <div style="text-align:right;flex-shrink:0">
+              <div style="font-size:20px;font-weight:900">${a.pct}%</div>
+              <div style="font-size:10px;color:var(--muted)">actual ${fmtPct(actualPct)}</div>
             </div>
           </div>
-          <div style="height:8px;background:var(--line);border-radius:4px;overflow:hidden;position:relative">
-            <div style="position:absolute;height:8px;background:#e2e8f0;border-radius:4px;width:${Math.min(100,actualPct/a.pct*100)}%"></div>
-            <div style="position:absolute;top:0;height:8px;background:${gapCol};border-radius:4px;width:2px;left:${Math.min(99,actualPct)}%"></div>
+          <!-- Progress bar: actual vs target -->
+          <div style="padding:0 14px 8px">
+            <div style="height:6px;background:var(--line);border-radius:3px;overflow:hidden">
+              <div style="height:6px;background:${gapAbs<3?"#10b981":gapAbs<10?"#f59e0b":"#6366f1"};border-radius:3px;width:${barPct}%;transition:width .6s"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
+              <span>${fmtEUR(actual)}</span><span>alvo: ${fmtEUR(t.assetsTotal * a.pct/100)}</span>
+            </div>
           </div>
-          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
-            <span>Actual: ${fmtEUR(actual)}</span>
-            <span>Alvo: ${fmtEUR(t.assetsTotal * a.pct / 100)}</span>
-          </div>
+          <!-- Rationale (expandable) -->
+          ${a.rationale ? `<details style="border-top:1px solid var(--line)">
+            <summary style="padding:8px 14px;font-size:11px;font-weight:700;color:#6366f1;cursor:pointer;list-style:none">
+              💡 Porquê ${a.pct}%? · ${escapeHtml(a.tip)}
+            </summary>
+            <div style="padding:8px 14px 12px;font-size:11px;color:var(--muted);line-height:1.6">
+              ${escapeHtml(a.rationale)}
+              ${a.examples ? `<div style="margin-top:6px;font-weight:700;color:var(--text)">📋 Exemplos: ${escapeHtml(a.examples)}</div>` : ""}
+            </div>
+          </details>` : ""}
         </div>`;
       }).join("")}
     </div>
 
-    <div class="note" style="margin-top:14px;font-size:12px">
-      💡 <b>Como usar:</b> Selecciona a fase FIRE que reflecte a tua situação. A app detecta automaticamente com base no teu net worth vs. FIRE número estimado.
-      Os rácios são sugestões baseadas na literatura de FIRE PT (Frugalismo PT / Bogleheads). Ajusta ao teu perfil de risco e horizonte temporal.
-    </div>`;
+    <!-- Performance real integrada -->
+    ${m.hasData ? `<div style="background:var(--card2);border-radius:var(--r-sm);padding:12px 14px;border:1px solid var(--line);margin-bottom:14px">
+      <div style="font-weight:800;font-size:13px;margin-bottom:8px">📊 Performance real do teu portfólio</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
+        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);font-weight:700">Retorno total</div>
+          <div style="font-size:14px;font-weight:900;color:${m.grandTotalReturn>=0?"#059669":"#dc2626"}">${m.grandTotalReturn>=0?"+":""}${fmtPct(m.grandTotalReturnPct)}</div>
+        </div>
+        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);font-weight:700">Yield dividendos</div>
+          <div style="font-size:14px;font-weight:900;color:#6366f1">${fmtPct(m.ttmYieldNet)}</div>
+        </div>
+        <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:9px;color:var(--muted);font-weight:700">Mais-valias</div>
+          <div style="font-size:14px;font-weight:900;color:${m.totalRealizedPnL>=0?"#059669":"#dc2626"}">${m.totalRealizedPnL>=0?"+":""}${fmtEUR(m.totalRealizedPnL)}</div>
+        </div>
+      </div>
+    </div>` : ""}`;
 
   // Gap analysis
   if (t.assetsTotal > 0 && gapCard && gapEl) {
