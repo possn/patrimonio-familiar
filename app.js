@@ -8303,6 +8303,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   window.applyPreferredDividendYieldToProjection = applyPreferredDividendYieldToProjection;
   window.renderDividends = renderDividends;
   window.renderAllocationPanel = renderAllocationPanel;
+  window.setAllocationPreset = setAllocationPreset;
+  window._allocPreset = _allocPreset;
 });
 
 // Guarantee state is saved when app goes to background or is closed
@@ -10754,6 +10756,18 @@ const FIRE_ALLOCATION_PRESETS = {
 let _allocPreset = "acumulacao";
 let _allocCustom = null; // user overrides
 
+function setAllocationPreset(phase, opts = {}) {
+  const { persist = false, rerender = true } = opts || {};
+  if (!phase || !FIRE_ALLOCATION_PRESETS[phase]) return false;
+  _allocPreset = phase;
+  window._allocPreset = phase;
+  if (!state.settings) state.settings = {};
+  state.settings.allocationPreset = phase;
+  if (persist) saveState();
+  if (rerender) renderAllocationPanel();
+  return true;
+}
+
 function detectFIREPhase() {
   // Try to estimate FIRE phase from current data
   const t = calcTotals();
@@ -10821,7 +10835,7 @@ function renderAllocationPanel() {
     Object.entries(FIRE_ALLOCATION_PRESETS).forEach(([key, p]) => {
       const active = _allocPreset === key;
       html += "<button class='btn " + (active ? "btn--primary" : "btn--outline") + " js-alloc-phase alloc-phase-btn'"
-        + " type='button' data-phase='" + key + "' onclick='window._allocPreset=this.dataset.phase; renderAllocationPanel(); return false;'>"
+        + " type='button' data-phase='" + key + "' onclick='return window.setAllocationPreset && window.setAllocationPreset(this.dataset.phase, { persist: true, rerender: true });'>"
         + escapeHtml(p.label) + "<br><span style='font-size:9px;opacity:.75'>" + escapeHtml(p.firePhase) + "</span>"
         + "</button>";
     });
@@ -10902,20 +10916,8 @@ function renderAllocationPanel() {
     }
 
     el.innerHTML = html;
-    // Wire phase-select buttons (use data-phase to avoid onclick quoting issues)
-    el.querySelectorAll(".js-alloc-phase").forEach(btn => {
-      btn.addEventListener("click", ev => {
-        ev.preventDefault();
-        const phase = btn.dataset.phase;
-        if (!phase || !FIRE_ALLOCATION_PRESETS[phase]) return;
-        window._allocPreset = phase;
-        _allocPreset = phase;
-        if (!state.settings) state.settings = {};
-        state.settings.allocationPreset = phase;
-        saveState();
-        renderAllocationPanel();
-      });
-    });
+    // iOS/Safari was previously only updating window._allocPreset via inline onclick.
+    // The inline handler now calls setAllocationPreset(), which updates the real state.
 
     // Gap analysis
     if (t.assetsTotal > 0 && gapCard && gapEl) {
