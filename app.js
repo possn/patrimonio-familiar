@@ -1422,7 +1422,7 @@ function renderSummary() {
     list.appendChild(row);
   }
   $("btnSummaryToggle").style.display = items.length > 10 ? "inline-flex" : "none";
-  $("btnSummaryToggle").textContent = summaryExpanded ? "Ver menos" : "Ver o resto";
+  $("btnSummaryToggle").textContent = summaryExpanded ? "▲ Ver menos" : "▼ Ver mais ("+items.length+")";
 }
 
 const PALETTE = ["#5b5ce6","#3b82f6","#39d6d8","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899","#06b6d4","#84cc16","#f97316","#64748b"];
@@ -1599,8 +1599,8 @@ function renderItems() {
     if (src.length > LIMIT && !isSearching) {
       tog.style.display = "";
       tog.textContent = itemsExpanded
-        ? "Ver menos"
-        : `Ver todos (${src.length})`;
+        ? "▲ Ver menos"
+        : `▼ Ver mais (${src.length})`;
     } else {
       tog.style.display = "none";
     }
@@ -1746,7 +1746,7 @@ function deleteCurrentItem() {
 }
 
 /* ─── CASHFLOW ────────────────────────────────────────────── */
-const TX_PREVIEW_COUNT = 5;
+const TX_PREVIEW_COUNT = 10;
 
 function ensureMonthYearOptions() {
   const now = new Date(), yearNow = now.getFullYear();
@@ -1999,7 +1999,7 @@ function renderTxList() {
 
   if (tx.length > TX_PREVIEW_COUNT) {
     $("btnTxToggle").style.display = "inline";
-    $("btnTxToggle").textContent = txExpanded ? "Ver menos" : `Ver todos (${tx.length})`;
+    $("btnTxToggle").textContent = txExpanded ? "▲ Ver menos" : `▼ Ver mais (${tx.length})`;
   } else {
     $("btnTxToggle").style.display = "none";
   }
@@ -2295,9 +2295,12 @@ function renderDivSummaryList() {
     list.innerHTML = `<div class="item" style="cursor:default"><div class="item__l"><div class="item__t">Sem resumos registados</div><div class="item__s">Preenche o formulário acima com os dados da corretora.</div></div></div>`;
     return;
   }
-  list.innerHTML = summaries.map((s, i) => {
+  const DIVSUM_LIMIT = 10;
+  if (!window._divSumExpanded) window._divSumExpanded = false;
+  const shownSummaries = window._divSumExpanded ? summaries : summaries.slice(0, DIVSUM_LIMIT);
+  list.innerHTML = shownSummaries.map((s, i) => {
     const net = parseNum(s.gross) - parseNum(s.tax);
-    const prev = summaries[i + 1];
+    const prev = summaries[summaries.indexOf(s) + 1];
     const yoy = prev ? ((parseNum(s.gross) - parseNum(prev.gross)) / Math.max(1, parseNum(prev.gross)) * 100) : null;
     return `<div class="item" data-summary-id="${s.id}" style="cursor:pointer">
       <div class="item__l">
@@ -2310,6 +2313,18 @@ function renderDivSummaryList() {
       </div>
     </div>`;
   }).join("");
+  if (summaries.length > DIVSUM_LIMIT) {
+    const btn = document.createElement("div");
+    btn.style.cssText = "text-align:center;margin-top:10px";
+    btn.innerHTML = `<button class="btn btn--ghost btn--sm" style="font-size:13px">
+      ${window._divSumExpanded ? "▲ Ver menos" : "▼ Ver mais (" + summaries.length + ")"}
+    </button>`;
+    btn.querySelector("button").addEventListener("click", () => {
+      window._divSumExpanded = !window._divSumExpanded;
+      renderDivSummaryList();
+    });
+    list.appendChild(btn);
+  }
 
   // Click to edit
   list.querySelectorAll(".item[data-summary-id]").forEach(row => {
@@ -2320,7 +2335,13 @@ function renderDivSummaryList() {
       $("divSummaryYear").value = String(s.year);
       $("divSummaryGross").value = String(parseNum(s.gross));
       $("divSummaryTax").value = String(parseNum(s.tax));
-      $("divSummaryYield").value = String(parseNum(s.yieldPct));
+      // Preencher o campo correto conforme o modo activo (default: gross_tax)
+      $("divSummaryGross").value = String(parseNum(s.gross));
+      $("divSummaryTax").value = String(parseNum(s.tax));
+      $("divSummaryYield_gt").value = String(parseNum(s.yieldPct));
+      // Garantir que o modo visível é gross_tax
+      const modeRadio = document.querySelector('input[name="divInputMode"][value="gross_tax"]');
+      if (modeRadio) { modeRadio.checked = true; modeRadio.dispatchEvent(new Event("change")); }
       $("divSummaryNotes").value = s.notes || "";
       editingDivSummaryId = s.id;
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -2659,7 +2680,8 @@ function renderDividends() {
     return;
   }
 
-  const shown = divExpanded ? divs : divs.slice(0, 8);
+  const DIV_LIMIT = 10;
+  const shown = divExpanded ? divs : divs.slice(0, DIV_LIMIT);
   for (const d of shown) {
     const net = getDividendNet(d);
     const row = document.createElement("div");
@@ -2676,9 +2698,9 @@ function renderDividends() {
     wrap.appendChild(row);
   }
 
-  if (divs.length > 8) {
+  if (divs.length > DIV_LIMIT) {
     $("btnDivToggle").style.display = "inline";
-    $("btnDivToggle").textContent = divExpanded ? "Ver menos" : `Ver todos (${divs.length})`;
+    $("btnDivToggle").textContent = divExpanded ? "▲ Ver menos" : `▼ Ver mais (${divs.length})`;
   } else {
     $("btnDivToggle").style.display = "none";
   }
@@ -4023,7 +4045,10 @@ function renderForecastPanel() {
     if (!rows.length) {
       tbl.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Nenhum ativo disponível</div><div class="item__s">Adiciona ativos para projetar o património.</div></div><div class="item__v">—</div></div>`;
     } else {
-      tbl.innerHTML = rows.map(a => {
+      const FORECAST_LIMIT = 10;
+      if (!window._forecastExpanded) window._forecastExpanded = false;
+      const shownRows = window._forecastExpanded ? rows : rows.slice(0, FORECAST_LIMIT);
+      tbl.innerHTML = shownRows.map(a => {
         const v0 = parseNum(a.value);
         const passiveRate = getAssetPassiveRatePct(a);
         const appreciation = getAssetAppreciationPct(a, { allowClassFallback: true });
@@ -4042,6 +4067,18 @@ function renderForecastPanel() {
           </div>
         </div>`;
       }).join("");
+      if (rows.length > FORECAST_LIMIT) {
+        const btn = document.createElement("div");
+        btn.style.cssText = "text-align:center;margin-top:10px";
+        btn.innerHTML = `<button class="btn btn--ghost btn--sm" style="font-size:13px">
+          ${window._forecastExpanded ? "▲ Ver menos" : "▼ Ver mais (" + rows.length + ")"}
+        </button>`;
+        btn.querySelector("button").addEventListener("click", () => {
+          window._forecastExpanded = !window._forecastExpanded;
+          renderForecastPanel();
+        });
+        tbl.appendChild(btn);
+      }
     }
   }
 
@@ -4119,7 +4156,11 @@ function renderComparePanel() {
 
   const tbl = $("compareTable");
   if (tbl) {
-    tbl.innerHTML = displayData.slice().reverse().map(d => {
+    const COMPARE_LIMIT = 10;
+    if (!window._compareExpanded) window._compareExpanded = false;
+    const allRows = displayData.slice().reverse();
+    const shownRows = window._compareExpanded ? allRows : allRows.slice(0, COMPARE_LIMIT);
+    tbl.innerHTML = shownRows.map(d => {
       const sign = (d.delta || 0) >= 0 ? "+" : "";
       const cls = (d.delta || 0) >= 0 ? "kpi--in" : "kpi--out";
       return `<div class="item">
@@ -4127,6 +4168,18 @@ function renderComparePanel() {
         <div class="item__v ${cls}">${sign}${fmtEUR(d.delta || 0)}</div>
       </div>`;
     }).join("");
+    if (allRows.length > COMPARE_LIMIT) {
+      const btn = document.createElement("div");
+      btn.style.cssText = "text-align:center;margin-top:10px";
+      btn.innerHTML = `<button class="btn btn--ghost btn--sm" style="font-size:13px">
+        ${window._compareExpanded ? "▲ Ver menos" : "▼ Ver mais (" + allRows.length + ")"}
+      </button>`;
+      btn.querySelector("button").addEventListener("click", () => {
+        window._compareExpanded = !window._compareExpanded;
+        renderComparePanel();
+      });
+      tbl.appendChild(btn);
+    }
   }
 }
 
@@ -4374,7 +4427,7 @@ function openDistDetail(keepOpen = false) {
   }
   if (tog) {
     tog.style.display = entries.length > 10 ? "" : "none";
-    tog.textContent = distDetailExpanded ? "Ver menos" : "Ver o resto";
+    tog.textContent = distDetailExpanded ? "▲ Ver menos" : "▼ Ver mais ("+entries.length+")";
   }
   if (!keepOpen) openModal("modalDist");
 }
@@ -5340,7 +5393,10 @@ function renderBrokerImportStatus() {
       <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Posições</div><div style="font-weight:900">${stats.positions}</div></div>
       <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Anos</div><div style="font-weight:900">${stats.years}</div></div>
     </div>`;
-  list.innerHTML = files.map(f => `
+  const BROKER_LIMIT = 10;
+  if (!window._brokerListExpanded) window._brokerListExpanded = false;
+  const shownFiles = window._brokerListExpanded ? files : files.slice(0, BROKER_LIMIT);
+  list.innerHTML = shownFiles.map(f => `
     <div class="item" style="cursor:default">
       <div class="item__l">
         <div class="item__t">${escapeHtml(f.name || "Ficheiro")}</div>
@@ -5349,6 +5405,18 @@ function renderBrokerImportStatus() {
       <div class="item__r"><span class="pill">${escapeHtml(f.importedAt ? String(f.importedAt).slice(0, 10) : "")}</span></div>
     </div>
   `).join("");
+  if (files.length > BROKER_LIMIT) {
+    const btn = document.createElement("div");
+    btn.style.cssText = "text-align:center;margin-top:10px";
+    btn.innerHTML = `<button class="btn btn--ghost btn--sm" style="font-size:13px">
+      ${window._brokerListExpanded ? "▲ Ver menos" : "▼ Ver mais (" + files.length + ")"}
+    </button>`;
+    btn.querySelector("button").addEventListener("click", () => {
+      window._brokerListExpanded = !window._brokerListExpanded;
+      renderBrokerImportStatus();
+    });
+    list.appendChild(btn);
+  }
   renderBrokerImportAudit();
 }
 
@@ -7358,7 +7426,10 @@ function renderSnapshotTable() {
   if (!el) return;
   const h = state.history.slice().sort((a,b) => String(b.dateISO).localeCompare(String(a.dateISO)));
   if (!h.length) { el.innerHTML=`<div class="item" style="cursor:default"><div class="item__l"><div class="item__t">Sem snapshots</div><div class="item__s">Usa "Registar mês" para criar.</div></div></div>`; return; }
-  el.innerHTML = h.slice(0,24).map(s => {
+  const SNAP_LIMIT = 10;
+  if (!window._snapExpanded) window._snapExpanded = false;
+  const shown = window._snapExpanded ? h : h.slice(0, SNAP_LIMIT);
+  el.innerHTML = shown.map(s => {
     const auto = s.auto ? `<span class="badge badge--blue" style="font-size:10px">auto</span>` : "";
     return `<div class="item" style="cursor:default">
       <div class="item__l">
@@ -7371,6 +7442,18 @@ function renderSnapshotTable() {
       </div>
     </div>`;
   }).join("");
+  if (h.length > SNAP_LIMIT) {
+    const btn = document.createElement("div");
+    btn.style.cssText = "text-align:center;margin-top:10px";
+    btn.innerHTML = `<button class="btn btn--ghost btn--sm" style="font-size:13px">
+      ${window._snapExpanded ? "▲ Ver menos" : "▼ Ver mais (" + h.length + ")"}
+    </button>`;
+    btn.querySelector("button").addEventListener("click", () => {
+      window._snapExpanded = !window._snapExpanded;
+      renderSnapshotTable();
+    });
+    el.appendChild(btn);
+  }
 }
 
 /* ─── TAXA DE JURO REAL (Fisher) ────────────────────────────── */
@@ -9077,7 +9160,7 @@ function renderEquityPnL() {
     ${sorted.length > 10 ? `
     <div style="text-align:center;margin-top:10px">
       <button class="btn btn--ghost btn--sm" onclick="window._pnlExpanded=!window._pnlExpanded;renderEquityPnL()" style="font-size:13px">
-        ${window._pnlExpanded ? "Ver menos" : "Ver todas (" + sorted.length + ")"}
+        ${window._pnlExpanded ? "▲ Ver menos" : "▼ Ver mais (" + sorted.length + ")"}
       </button>
     </div>` : ""}
     <div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:center">
