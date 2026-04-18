@@ -328,7 +328,7 @@ async function storageClear() {
 
 /* ─── STATE ───────────────────────────────────────────────── */
 const DEFAULT_STATE = {
-  settings: { currency: "EUR", goalMonthly: 0, returnDefaults: safeClone(DEFAULT_RETURN_SETTINGS) },
+  settings: { currency: "EUR", goalMonthly: 0 },
   assets: [],
   liabilities: [],
   transactions: [],
@@ -6736,14 +6736,15 @@ function checkDuplicateWarning() {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  await requestPersistentStorage();
-  state = await loadStateAsync();
-  wire();
-  renderAll();
-  // v15: auto-snapshot mensal silencioso
-  autoSnapshotIfNeeded();
-  // v15: verificar vencimentos com notificação
-  setTimeout(() => checkAndNotifyMaturities(), 2000);
+  try { await requestPersistentStorage(); } catch (e) { console.error("Persistent storage init falhou", e); }
+  try { state = await loadStateAsync(); } catch (e) {
+    console.error("Falha ao carregar estado; a usar estado por defeito.", e);
+    state = safeClone(DEFAULT_STATE);
+  }
+  try { wire(); } catch (e) { console.error("Falha no binding dos botões", e); }
+  try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
+  try { autoSnapshotIfNeeded(); } catch (e) { console.error("Falha no auto snapshot", e); }
+  try { setTimeout(() => checkAndNotifyMaturities(), 2000); } catch (e) { console.error("Falha nas notificações de vencimento", e); }
 });
 
 // Guarantee state is saved when app goes to background or is closed
