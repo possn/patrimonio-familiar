@@ -5334,6 +5334,18 @@ function rebuildBrokerGeneratedData() {
       const avg = pos.qty > 0 ? pos.costBasis / pos.qty : 0;
       pos.qty = Math.max(0, pos.qty - sellQty);
       pos.costBasis = Math.max(0, pos.costBasis - sellQty * avg);
+      // Accumulate realised P&L: use broker-reported Result when available (T212 provides this exactly)
+      const brokerPnL = parseNum(e.resultEUR);
+      if (!pos.realizedPnL) pos.realizedPnL = 0;
+      if (Number.isFinite(brokerPnL) && brokerPnL !== 0) {
+        pos.realizedPnL += brokerPnL;
+      } else {
+        // Fallback: proceeds - avg_cost * qty
+        const proceeds = parseNum(e.totalEUR);
+        if (proceeds > 0 && avg > 0) pos.realizedPnL += proceeds - sellQty * avg;
+      }
+      if (!pos.sellTrades) pos.sellTrades = [];
+      pos.sellTrades.push({ date: e.date, qty: sellQty, proceedsEUR: parseNum(e.totalEUR), pnlEUR: brokerPnL || 0 });
       continue;
     }
     if (e.type === "SPLIT_OPEN" || e.type === "SPLIT_CLOSE") {
@@ -5417,12 +5429,16 @@ function rebuildBrokerGeneratedData() {
       noteBits.push(`Div(12m)=${fmtEUR2(totalDivEUR12m)}/ano · Yield≈${fmtPct(totalDivEUR12m / finalValue * 100)}`);
     }
 
+    if (p.realizedPnL !== undefined && p.realizedPnL !== 0) {
+      noteBits.push(`P&L realizado=${p.realizedPnL >= 0 ? "+" : ""}${fmtEUR2(p.realizedPnL)}`);
+    }
     state.assets.push({
       id: uid(), class: p.class || brokerPositionClassFromTicker(p.ticker), name: displayName, value: finalValue,
       yieldType: assetYieldType, yieldValue: assetYieldValue, compoundFreq: 12,
       notes: `Gerado por importação de corretora. ${noteBits.join(" · ")}`,
       qty: finalQty, costBasis: p.costBasis, pmOriginal: finalQty > 0 && p.costBasis > 0 ? p.costBasis / finalQty : 0, pmCcy: "EUR",
       ticker: p.ticker || "", isin: p.isin || "", brokerMarketSnapshot: !!p.hasSnapshot, brokerSnapshotDate: p.snapshotDate || "",
+      realizedPnL: p.realizedPnL || 0, sellTrades: p.sellTrades || [],
       generatedFromBroker: true
     });
   }
@@ -9485,22 +9501,67 @@ function calcEquityPortfolioPnL() {
     equityClasses.some(c => (a.class || "").includes(c.split("/")[0]))
   );
 
-  let totalCost    = 0;
-  let totalCurrent = 0;
-  const positions  = [];
+  // Pre-index dividends by ticker for fast lookup
+  const now12m = new Date();
+  now12m.setFullYear(now12m.getFullYear() - 1);
+  const cutoff12m = now12m.toISOString().slice(0, 10);
+  const divByTicker = {};
+  for (const d of (state.dividends || [])) {
+    const tk = String(d.assetName || d.assetId || "").trim().toUpperCase();
+    if (!tk) continue;
+    if (!divByTicker[tk]) divByTicker[tk] = { total12m: 0, totalAll: 0, count: 0 };
+    const net = getDividendNet(d);
+    divByTicker[tk].totalAll += net;
+    divByTicker[tk].count++;
+    if (String(d.date || "") >= cutoff12m) divByTicker[tk].total12m += net;
+  }
+
+  let totalCost      = 0;
+  let totalCurrent   = 0;
+  let totalRealized  = 0;
+  let totalDivAll    = 0;
+  const positions    = [];
 
   for (const asset of equityAssets) {
     const pos = parsePositionFromAsset(asset);
     if (!pos) continue;
-    totalCost    += pos.costBasis;
-    totalCurrent += pos.currentValue;
+
+    // Realized P&L from sells (stored on asset by rebuildBrokerGeneratedData)
+    const realizedPnL  = parseNum(asset.realizedPnL || 0);
+    // Dividend income for this asset
+    const tk = String(asset.ticker || asset.name || "").trim().toUpperCase();
+    const divData = divByTicker[tk] || { total12m: 0, totalAll: 0, count: 0 };
+    // True yield = net dividends last 12m / cost basis
+    const trueYieldPct = pos.costBasis > 0 && divData.total12m > 0
+      ? (divData.total12m / pos.costBasis) * 100 : 0;
+    // Total return = unrealized gain + realized gain + dividends received
+    const totalReturn = pos.gain + realizedPnL + divData.totalAll;
+    const totalReturnPct = pos.costBasis > 0 ? (totalReturn / pos.costBasis) * 100 : 0;
+
+    // Augment pos
+    pos.realizedPnL   = realizedPnL;
+    pos.divAll        = divData.totalAll;
+    pos.div12m        = divData.total12m;
+    pos.divCount      = divData.count;
+    pos.trueYieldPct  = trueYieldPct;
+    pos.totalReturn   = totalReturn;
+    pos.totalReturnPct = totalReturnPct;
+
+    totalCost     += pos.costBasis;
+    totalCurrent  += pos.currentValue;
+    totalRealized += realizedPnL;
+    totalDivAll   += divData.totalAll;
     positions.push({ asset, pos });
   }
 
   const totalGain    = totalCurrent - totalCost;
   const totalGainPct = totalCost > 0 ? (totalGain / totalCost) * 100 : 0;
+  // Grand total return across all positions
+  const grandTotalReturn = totalGain + totalRealized + totalDivAll;
+  const grandTotalReturnPct = totalCost > 0 ? (grandTotalReturn / totalCost) * 100 : 0;
 
-  return { positions, totalCost, totalCurrent, totalGain, totalGainPct };
+  return { positions, totalCost, totalCurrent, totalGain, totalGainPct,
+    totalRealized, totalDivAll, grandTotalReturn, grandTotalReturnPct };
 }
 
 /* ─── RENDER: PAINEL P&L ─────────────────────────────────────── */
@@ -9508,119 +9569,142 @@ function renderEquityPnL() {
   const el = document.getElementById("equityPnLContent");
   if (!el) return;
 
-  const { positions, totalCost, totalCurrent, totalGain, totalGainPct } = calcEquityPortfolioPnL();
+  const { positions, totalCost, totalCurrent, totalGain, totalGainPct,
+    totalRealized, totalDivAll, grandTotalReturn, grandTotalReturnPct } = calcEquityPortfolioPnL();
 
   if (!positions.length) {
     el.innerHTML = `<div class="note">
       Sem posições com dados de custo.<br><br>
-      <b>Como activar:</b> importa o CSV do DivTracker ou de uma corretora com colunas
-      <code>ticker, qty, cost_per_share</code>. A app guarda automaticamente o preço médio (PM) e,
-      após actualizar cotações (⟳), calcula o P&L de cada posição.
+      <b>Como activar:</b> importa o CSV do ledger da corretora (Trading 212, XTB). A app calcula
+      automaticamente o preço médio, P&L realizado, dividendos recebidos e yield real por posição.
     </div>`;
     return;
   }
 
-  const posNeg = positions.filter(p => p.pos.gain <  0).length;
+  const posNeg = positions.filter(p => p.pos.gain < 0).length;
   const posPos = positions.filter(p => p.pos.gain >= 0).length;
-
-  // Ordenar por ganho % decrescente
-  const sorted = [...positions].sort((a, b) => b.pos.gainPct - a.pos.gainPct);
-
-  // Cabeçalho global
-  const totalCol = totalGain >= 0 ? "var(--green)" : "var(--red)";
-  const totalSign = totalGain >= 0 ? "+" : "";
-
-  // Calcular média ponderada de rendimento (weighted avg return)
   const withLive = positions.filter(p => p.pos.hasLivePrice);
-  const avgReturn = withLive.length > 0
-    ? withLive.reduce((s, p) => s + p.pos.gainPct, 0) / withLive.length
-    : totalGainPct;
+  const hasDivs  = totalDivAll > 0;
+  const hasReal  = Math.abs(totalRealized) > 0;
+
+  // Sort options
+  if (!window._pnlSort) window._pnlSort = "total_return";
+  const sorted = [...positions].sort((a, b) => {
+    if (window._pnlSort === "gain_pct")     return b.pos.gainPct - a.pos.gainPct;
+    if (window._pnlSort === "yield")        return b.pos.trueYieldPct - a.pos.trueYieldPct;
+    if (window._pnlSort === "realized")     return b.pos.realizedPnL - a.pos.realizedPnL;
+    if (window._pnlSort === "dividends")    return b.pos.divAll - a.pos.divAll;
+    return b.pos.totalReturn - a.pos.totalReturn; // default: total return
+  });
+
+  const gcol = grandTotalReturn >= 0 ? "var(--green)" : "var(--red)";
+  const gsign = grandTotalReturn >= 0 ? "+" : "";
 
   el.innerHTML = `
-    <!-- KPI global — hero card P&L -->
-    <div style="background:linear-gradient(135deg,${totalGain >= 0 ? "#059669,#10b981" : "#dc2626,#ef4444"});
+    <!-- HERO: retorno total (latente + realizado + dividendos) -->
+    <div style="background:linear-gradient(135deg,${grandTotalReturn >= 0 ? "#059669,#10b981" : "#dc2626,#ef4444"});
       border-radius:var(--r-sm);padding:16px 16px 14px;margin-bottom:14px;color:#fff">
-      <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;opacity:.75;margin-bottom:10px">
-        Portfólio Acções &amp; ETFs — P&L
+      <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;opacity:.75;margin-bottom:8px">
+        Retorno Total do Portfólio
       </div>
-      <!-- Valor principal: ganho/perda total -->
       <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
-        <div style="font-size:38px;font-weight:900;letter-spacing:-1px;line-height:1">
-          ${totalSign}${fmtPct(totalGainPct)}
+        <div style="font-size:36px;font-weight:900;letter-spacing:-1px;line-height:1">
+          ${gsign}${fmtPct(grandTotalReturnPct)}
         </div>
         <div>
-          <div style="font-size:16px;font-weight:800">${totalSign}${fmtEUR(totalGain)}</div>
-          <div style="font-size:11px;opacity:.7">ganho / perda total</div>
+          <div style="font-size:16px;font-weight:800">${gsign}${fmtEUR(grandTotalReturn)}</div>
+          <div style="font-size:11px;opacity:.7">latente + realizado + dividendos</div>
         </div>
       </div>
-      <!-- Barra progresso -->
-      <div style="height:5px;background:rgba(255,255,255,.25);border-radius:3px;overflow:hidden;margin-bottom:12px">
-        <div style="height:5px;background:#fff;border-radius:3px;
-          width:${Math.min(100, Math.max(2, (totalCurrent/Math.max(totalCost,1))*100))}%;
-          transition:width .8s cubic-bezier(.4,0,.2,1)"></div>
-      </div>
-      <!-- 3 métricas secundárias -->
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
-        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:8px 10px">
-          <div style="font-size:10px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Investido</div>
-          <div style="font-size:14px;font-weight:900;margin-top:2px">${fmtEUR(totalCost)}</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px">
+        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:7px 8px">
+          <div style="font-size:9px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Investido</div>
+          <div style="font-size:13px;font-weight:900;margin-top:1px">${fmtEUR(totalCost)}</div>
         </div>
-        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:8px 10px">
-          <div style="font-size:10px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Actual</div>
-          <div style="font-size:14px;font-weight:900;margin-top:2px">${fmtEUR(totalCurrent)}</div>
+        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:7px 8px">
+          <div style="font-size:9px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Latente</div>
+          <div style="font-size:13px;font-weight:900;margin-top:1px">${totalGain>=0?"+":""}${fmtEUR(totalGain)}</div>
         </div>
-        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:8px 10px">
-          <div style="font-size:10px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Média ret.</div>
-          <div style="font-size:14px;font-weight:900;margin-top:2px">${avgReturn>=0?"+":""}${fmtPct(avgReturn)}</div>
+        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:7px 8px">
+          <div style="font-size:9px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Realizado</div>
+          <div style="font-size:13px;font-weight:900;margin-top:1px">${totalRealized>=0?"+":""}${fmtEUR(totalRealized)}</div>
+        </div>
+        <div style="background:rgba(255,255,255,.15);border-radius:10px;padding:7px 8px">
+          <div style="font-size:9px;opacity:.75;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Dividendos</div>
+          <div style="font-size:13px;font-weight:900;margin-top:1px">${totalDivAll>0?"+":""}${fmtEUR(totalDivAll)}</div>
         </div>
       </div>
-      <div style="margin-top:8px;font-size:11px;opacity:.65">
-        ${posPos} positiva${posPos!==1?"s":""} · ${posNeg} negativa${posNeg!==1?"s":""} · ${positions.length} total
-        ${!withLive.length ? " · ⚡ Actualiza ⟳ Cotações para P&L real" : ""}
+      <div style="font-size:11px;opacity:.65">
+        ${posPos} positiva${posPos!==1?"s":""} · ${posNeg} negativa${posNeg!==1?"s":""} · ${positions.length} posições
+        ${!withLive.length ? " · ⚡ Actualiza ⟳ Cotações para valores em tempo real" : ""}
       </div>
     </div>
 
-    <!-- Lista de posições — máx 10, toggle para ver todas -->
-    <div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;
-      letter-spacing:.5px;margin-bottom:8px;display:grid;
-      grid-template-columns:1fr 60px 70px 80px;gap:4px;padding:0 4px">
-      <span>Activo</span><span style="text-align:right">Qtd</span>
-      <span style="text-align:right">PM / Actual</span>
-      <span style="text-align:right">P&L</span>
+    <!-- Ordenar por -->
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+      <span style="font-size:11px;color:var(--muted);font-weight:700">Ordenar:</span>
+      ${[
+        ["total_return","Retorno total"],["gain_pct","P&L %"],
+        ["realized","Realizado"],["dividends","Dividendos"],["yield","Yield"]
+      ].map(([v,l]) => `<button class="btn btn--sm ${window._pnlSort===v?"btn--primary":"btn--outline"}"
+        style="font-size:11px;padding:4px 8px"
+        onclick="window._pnlSort='${v}';renderEquityPnL()">${l}</button>`).join("")}
+    </div>
+
+    <!-- Cabeçalho da lista -->
+    <div style="font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.4px;margin-bottom:6px;display:grid;
+      grid-template-columns:1fr auto auto auto;gap:6px;padding:0 4px">
+      <span>Activo</span>
+      <span style="text-align:right;min-width:70px">PM/Actual</span>
+      <span style="text-align:right;min-width:65px">Divid.</span>
+      <span style="text-align:right;min-width:75px">Retorno</span>
     </div>
 
     ${(window._pnlExpanded ? sorted : sorted.slice(0, 10)).map(({ asset, pos }) => {
-      const col   = pos.gain >= 0 ? "var(--green)" : "var(--red)";
-      const sign  = pos.gain >= 0 ? "+" : "";
-      const arrow = pos.gain >= 0 ? "▲" : "▼";
-      const barW  = Math.min(100, Math.max(0, (pos.currentValue / Math.max(pos.costBasis, 1)) * 100));
-      const isCrypto = (asset.class||"").toLowerCase().includes("cripto");
+      const col  = pos.totalReturn >= 0 ? "var(--green)" : "var(--red)";
+      const lCol = pos.gain >= 0 ? "var(--green)" : "var(--red)";
+      const barW = Math.min(100, Math.max(0, (pos.currentValue / Math.max(pos.costBasis, 1)) * 100));
+      const hasDiv = pos.divAll > 0;
+      const hasRz  = Math.abs(pos.realizedPnL) > 0.01;
 
       return `<div style="border:1px solid var(--line);border-radius:var(--r-sm);
-        padding:11px 13px;margin-bottom:7px;background:var(--item-bg);
+        padding:10px 12px;margin-bottom:7px;background:var(--item-bg);
         border-left:3px solid ${col}">
-        <div style="display:grid;grid-template-columns:1fr 60px 70px 80px;gap:4px;align-items:center">
-          <div>
-            <div style="font-weight:900;font-size:14px">${escapeHtml(asset.name)}</div>
-            <div style="font-size:11px;color:var(--muted)">${escapeHtml(asset.class||"")}</div>
+        <div style="display:grid;grid-template-columns:1fr auto auto auto;gap:6px;align-items:start">
+          <!-- Nome + ticker -->
+          <div style="min-width:0">
+            <div style="font-weight:900;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(asset.name)}</div>
+            <div style="font-size:10px;color:var(--muted)">${escapeHtml(asset.class||"")} · ${fmt(pos.qty, pos.qty < 1 ? 4 : 2)} un.</div>
           </div>
-          <div style="text-align:right;font-size:13px;font-weight:700;color:var(--muted)">
-            ${fmt(pos.qty, pos.qty < 1 ? 6 : 2)}
-          </div>
-          <div style="text-align:right">
-            <div style="font-size:11px;color:var(--muted)">${fmtEUR2(pos.costPricePerUnit)}</div>
-            <div style="font-size:13px;font-weight:800;color:${pos.hasLivePrice?"var(--text)":"var(--muted)"}">
+          <!-- PM / Preço actual -->
+          <div style="text-align:right;min-width:70px">
+            <div style="font-size:10px;color:var(--muted)">PM ${fmtEUR2(pos.costPricePerUnit)}</div>
+            <div style="font-size:12px;font-weight:800;color:${pos.hasLivePrice?"var(--text)":"var(--muted)"}">
               ${pos.hasLivePrice ? fmtEUR2(pos.currentPricePerUnit) : "—"}
             </div>
           </div>
-          <div style="text-align:right">
-            <div style="font-size:14px;font-weight:900;color:${col}">${sign}${fmtPct(pos.gainPct)}</div>
-            <div style="font-size:11px;color:${col};font-weight:700">${sign}${fmtEUR(pos.gain)}</div>
+          <!-- Dividendos -->
+          <div style="text-align:right;min-width:65px">
+            ${hasDiv ? `<div style="font-size:11px;font-weight:800;color:#6366f1">${fmtEUR(pos.divAll)}</div>
+              <div style="font-size:10px;color:var(--muted)">${pos.trueYieldPct>0?fmtPct(pos.trueYieldPct)+" yield":pos.divCount+" pag."}</div>` :
+              `<div style="font-size:10px;color:var(--muted)">—</div>`}
+          </div>
+          <!-- Retorno total -->
+          <div style="text-align:right;min-width:75px">
+            <div style="font-size:13px;font-weight:900;color:${col}">${pos.totalReturn>=0?"+":""}${fmtEUR(pos.totalReturn)}</div>
+            <div style="font-size:10px;color:${col};font-weight:700">${pos.totalReturn>=0?"+":""}${fmtPct(pos.totalReturnPct)}</div>
           </div>
         </div>
-        <!-- Barra de progresso custo → actual -->
-        <div style="margin-top:7px;height:4px;background:var(--line);border-radius:2px;overflow:hidden">
-          <div style="height:4px;background:${col};width:${barW}%;border-radius:2px;transition:width .5s"></div>
+        <!-- Linha 2: decomposição latente / realizado / dividendos -->
+        ${(hasRz || hasDiv || pos.gain !== 0) ? `<div style="margin-top:7px;display:flex;gap:10px;flex-wrap:wrap;font-size:10px;color:var(--muted)">
+          <span style="color:${lCol}">Latente: ${pos.gain>=0?"+":""}${fmtEUR(pos.gain)} (${pos.gain>=0?"+":""}${fmtPct(pos.gainPct)})</span>
+          ${hasRz ? `<span style="color:${pos.realizedPnL>=0?"var(--green)":"var(--red)"}">Realizado: ${pos.realizedPnL>=0?"+":""}${fmtEUR(pos.realizedPnL)}</span>` : ""}
+          ${hasDiv ? `<span style="color:#6366f1">Div: +${fmtEUR(pos.divAll)} · Yield 12m: ${fmtPct(pos.trueYieldPct)}</span>` : ""}
+        </div>` : ""}
+        <!-- Barra visual custo → actual -->
+        <div style="margin-top:6px;height:3px;background:var(--line);border-radius:2px;overflow:hidden">
+          <div style="height:3px;background:${lCol};width:${barW}%;border-radius:2px;transition:width .5s"></div>
         </div>
       </div>`;
     }).join("")}
@@ -9631,8 +9715,9 @@ function renderEquityPnL() {
         ${window._pnlExpanded ? "▲ Ver menos" : "▼ Ver mais (" + sorted.length + ")"}
       </button>
     </div>` : ""}
-    <div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:center">
-      ${!withLive.length ? "⚡ Actualiza ⟳ Cotações para P&L real · " : ""}${positions.length} posição${positions.length!==1?"s":""} com dados de custo
+    <div style="font-size:11px;color:var(--muted);margin-top:10px;text-align:center">
+      ${!withLive.length ? "⚡ ⟳ Cotações para P&L real em tempo real · " : ""}${positions.length} posição${positions.length!==1?"s":""}
+      ${hasDivs ? " · dividendos incluídos" : ""}${hasReal ? " · P&L realizado incluído" : ""}
     </div>`;
 }
 
@@ -10255,12 +10340,22 @@ function exportAnnualReport() {
     "═══════════════════════════════════════",
     `Investido:    ${fmtEUR(pnl.totalCost)}`,
     `Valor actual: ${fmtEUR(pnl.totalCurrent)}`,
-    `Ganho/Perda:  ${pnl.totalGain>=0?"+":""}${fmtEUR(pnl.totalGain)} (${pnl.totalGain>=0?"+":""}${fmtPct(pnl.totalGainPct)})`,
+    `Ganho latente: ${pnl.totalGain>=0?"+":""}${fmtEUR(pnl.totalGain)} (${pnl.totalGain>=0?"+":""}${fmtPct(pnl.totalGainPct)})`,
+    `P&L realizado: ${pnl.totalRealized>=0?"+":""}${fmtEUR(pnl.totalRealized||0)}`,
+    `Dividendos recebidos: +${fmtEUR(pnl.totalDivAll||0)}`,
+    `Retorno total: ${pnl.grandTotalReturn>=0?"+":""}${fmtEUR(pnl.grandTotalReturn||0)} (${pnl.grandTotalReturn>=0?"+":""}${fmtPct(pnl.grandTotalReturnPct||0)})`,
     "",
-    "POSIÇÕES:",
-    ...pnl.positions.map(({asset,pos}) =>
-      `  ${String(asset.name).padEnd(10)} ${fmtPct(pos.gainPct).padStart(8)} ${pos.gain>=0?"+":""}${fmtEUR(pos.gain)}`
-    ),
+    "POSIÇÕES (Nome | P&L latente | Realizado | Dividendos | Retorno total | Yield):",
+    ...pnl.positions.map(({asset,pos}) => {
+      const rz = pos.realizedPnL || 0;
+      const dv = pos.divAll || 0;
+      const yl = pos.trueYieldPct || 0;
+      return `  ${String(asset.name).padEnd(12)} ` +
+        `Latente: ${pos.gain>=0?"+":""}${fmtEUR(pos.gain)} (${fmtPct(pos.gainPct)})` +
+        (Math.abs(rz)>0 ? `  Realiz: ${rz>=0?"+":""}${fmtEUR(rz)}` : "") +
+        (dv>0 ? `  Div: +${fmtEUR(dv)}` + (yl>0 ? ` (${fmtPct(yl)}yield)` : "") : "") +
+        `  TOTAL: ${pos.totalReturn>=0?"+":""}${fmtEUR(pos.totalReturn)}`;
+    }),
     "",
     "═══════════════════════════════════════",
     "ANÁLISE DE RISCO",
