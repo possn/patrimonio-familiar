@@ -26,7 +26,7 @@
       document.head.appendChild(s);
     })();
   </script>
-  <script defer src="app.js?v=20260418c"></script>
+  <script defer src="app.js?v=20260418e"></script>
 </head>
 <body>
 
@@ -721,6 +721,8 @@
         <button class="analysis-tab" data-tab="compare">📊 Comparar</button>
         <button class="analysis-tab" data-tab="portfolio">🌍 Sector</button>
         <button class="analysis-tab" data-tab="fiscal">🧾 Fiscal</button>
+        <button class="analysis-tab" data-tab="pricehistory">📉 Cotações</button>
+        <button class="analysis-tab" data-tab="allocation">🎯 Alocação</button>
       </div>
     </div>
     <!-- Hidden select kept for JS compatibility -->
@@ -1019,6 +1021,49 @@
         <div id="fiscalContent"></div>
       </div>
     </div>
+
+    <!-- 📉 Histórico de Cotações -->
+    <div class="analysisPanelTab" id="analysisPanelTab_pricehistory" style="display:none">
+      <div class="card">
+        <div class="card__head">
+          <div><div class="card__title">📉 Histórico de Cotações</div>
+          <div class="card__muted">Evolução de preços guardada em cada ⟳ Cotações</div></div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+          <label class="lbl" style="margin:0;white-space:nowrap">Ticker:</label>
+          <select class="input" id="priceHistoryTicker" style="max-width:200px" onchange="renderPriceHistoryPanel()"></select>
+          <button class="btn btn--ghost btn--sm" onclick="renderPriceHistoryPanel()">↻ Actualizar</button>
+        </div>
+        <div id="priceHistoryContent"></div>
+      </div>
+      <div class="card">
+        <div class="card__head">
+          <div><div class="card__title">💱 Taxas de Câmbio</div>
+          <div class="card__muted">Histórico de FX registado em cada actualização</div></div>
+        </div>
+        <div id="fxHistoryContent"></div>
+      </div>
+    </div>
+
+    <!-- 🎯 Alocação Alvo FIRE -->
+    <div class="analysisPanelTab" id="analysisPanelTab_allocation" style="display:none">
+      <div class="card">
+        <div class="card__head">
+          <div><div class="card__title">🎯 Alocação Alvo</div>
+          <div class="card__muted">Sugestão FIRE · clica para personalizar</div></div>
+          <button class="btn btn--primary btn--sm" id="btnSaveAllocation">Guardar</button>
+        </div>
+        <div id="allocationContent"></div>
+      </div>
+      <div class="card" id="allocationGapCard" style="display:none">
+        <div class="card__head">
+          <div><div class="card__title">📊 Gap vs. Carteira Actual</div>
+          <div class="card__muted">O que comprar / vender para atingir o alvo</div></div>
+        </div>
+        <div id="allocationGapContent"></div>
+      </div>
+    </div>
+
     <!-- IA: Painel de Análise por Inteligência Artificial -->
     <div class="analysisPanelTab" id="analysisPanelTab_ai" style="display:none">
 
@@ -1191,7 +1236,7 @@
 
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Sobre</div>
-        <div class="card__muted">Património Familiar <b>v16.6</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v16.6:</b> Todas as listas com "▼ Ver mais / ▲ Ver menos" limitadas a 10 itens · Bug crítico na edição de resumos de dividendos corrigido · Limite de movimentos aumentado (5→10) · Botões de expand padronizados<br><br><b>Novidades v16.5:</b> Motor de retorno unificado · valorização esperada por activo · pressupostos editáveis por classe · FIRE/Compound/Previsão coerentes<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
+        <div class="card__muted">Património Familiar <b>v16.8</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v16.8:</b> Parser XTB (CSV trades, posições, operações de caixa) · Histórico de cotações por ticker (tab Análise → 📉 Cotações) · Multi-moeda real com conversão automática no modal · Alocação Alvo FIRE com 3 fases (tab 🎯 Alocação) · FX taxas em tempo real guardadas localmente<br><br><b>Novidades v16.7:</b> Saúde Financeira com explicações detalhadas e sugestões contextuais por métrica · Barra de cobertura passiva · 6 indicadores com dicas de melhoria<br><br><b>Novidades v16.6:</b> Todas as listas com "▼ Ver mais / ▲ Ver menos" limitadas a 10 itens · Bug crítico na edição de resumos de dividendos corrigido · Limite de movimentos aumentado (5→10)<br><br><b>Novidades v16.5:</b> Motor de retorno unificado · valorização esperada por activo · pressupostos editáveis por classe · FIRE/Compound/Previsão coerentes<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
       </div>
     </div>
     <div id="paneFire" style="display:none">
@@ -1256,7 +1301,29 @@
       <input type="hidden" id="mId"><input type="hidden" id="mKind">
       <label class="lbl">Classe</label><select class="input" id="mClass"></select>
       <label class="lbl">Nome</label><input class="input" id="mName" placeholder="ex: VWCE, Apartamento, Ouro físico">
-      <label class="lbl">Valor atual (€)</label><input class="input" id="mValue" inputmode="decimal" placeholder="ex: 12500">
+      <label class="lbl">Valor atual (€ equivalente)</label><input class="input" id="mValue" inputmode="decimal" placeholder="ex: 12500">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+        <div>
+          <label class="lbl">Moeda do activo</label>
+          <select class="input" id="mCurrency">
+            <option value="EUR">EUR — Euro</option>
+            <option value="USD">USD — Dólar</option>
+            <option value="GBP">GBP — Libra</option>
+            <option value="CHF">CHF — Franco Suíço</option>
+            <option value="CAD">CAD — Dólar Canadiano</option>
+            <option value="AUD">AUD — Dólar Australiano</option>
+            <option value="SEK">SEK — Coroa Sueca</option>
+            <option value="NOK">NOK — Coroa Norueguesa</option>
+            <option value="PLN">PLN — Zloty</option>
+            <option value="JPY">JPY — Iene</option>
+          </select>
+        </div>
+        <div>
+          <label class="lbl">Valor moeda original</label>
+          <input class="input" id="mValueLocal" inputmode="decimal" placeholder="ex: 13500">
+        </div>
+      </div>
+      <div id="mFxNote" class="note" style="display:none;font-size:11px;margin-top:4px"></div>
       <div id="yieldRow">
         <label class="lbl">Rendimento passivo</label>
         <select class="input" id="mYieldType">

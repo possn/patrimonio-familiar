@@ -941,3 +941,14 @@ select.input   { cursor: pointer; }
 @media (max-width:480px){
   .return-settings-summary{grid-template-columns:1fr}
 }
+
+/* ─── Health Metric Cards (v16.7) ──────────────────────────── */
+.health-metric-card {
+  transition: box-shadow .2s;
+}
+.health-metric-card:hover {
+  box-shadow: 0 2px 12px rgba(0,0,0,.08);
+}
+.health-tip-inline {
+  /* already styled inline; this is for overrides */
+}

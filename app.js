@@ -328,14 +328,16 @@ async function storageClear() {
 
 /* ─── STATE ───────────────────────────────────────────────── */
 const DEFAULT_STATE = {
-  settings: { currency: "EUR", goalMonthly: 0 },
+  settings: { currency: "EUR", goalMonthly: 0, targetAllocation: null },
   assets: [],
   liabilities: [],
   transactions: [],
   dividends: [],
   divSummaries: [], // {id, year, gross, tax, yieldPct, notes}
   history: [],
-  brokerData: { files: [], events: [], positions: [] }
+  brokerData: { files: [], events: [], positions: [] },
+  priceHistory: {},   // { "TICKER": [{date:"YYYY-MM-DD", priceEur:n, priceLoc:n, ccy:"USD"}] }
+  fxHistory: {}       // { "USD": [{date:"YYYY-MM-DD", rate:n}] }
 };
 
 let state = safeClone(DEFAULT_STATE);
@@ -376,6 +378,8 @@ async function loadStateAsync() {
       dividends: Array.isArray(p.dividends) ? p.dividends : [],
       divSummaries: Array.isArray(p.divSummaries) ? p.divSummaries : [],
       history: Array.isArray(p.history) ? p.history : [],
+      priceHistory: (p.priceHistory && typeof p.priceHistory === "object") ? p.priceHistory : {},
+      fxHistory: (p.fxHistory && typeof p.fxHistory === "object") ? p.fxHistory : {},
       brokerData: {
         files: Array.isArray(p.brokerData && p.brokerData.files) ? p.brokerData.files : [],
         events: Array.isArray(p.brokerData && p.brokerData.events) ? p.brokerData.events : [],
@@ -1585,8 +1589,9 @@ function renderItems() {
     row.className = "item";
     const badge = !showingLiabs ? yieldBadge(it) : "";
     const gainBadge = !showingLiabs ? renderGainLossBadge(it) : "";
+    const cBadge = !showingLiabs ? ccyBadge(it) : "";
     row.innerHTML = `<div class="item__l">
-      <div class="item__t">${escapeHtml(it.name || "—")}${gainBadge}</div>
+      <div class="item__t">${escapeHtml(it.name || "—")}${gainBadge}${cBadge}</div>
       <div class="item__s">${escapeHtml(it.class || "")}${badge}${!showingLiabs ? appreciationBadge(it) : ""}</div>
     </div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
     row.addEventListener("click", () => editItem(it.id));
@@ -1631,6 +1636,12 @@ function openItemModal(kind) {
   buildClassSelect(kind);
   $("mName").value = "";
   $("mValue").value = "";
+  const curSel = document.getElementById("mCurrency");
+  if (curSel) curSel.value = "EUR";
+  const vlEl = document.getElementById("mValueLocal");
+  if (vlEl) vlEl.value = "";
+  const fxNote = document.getElementById("mFxNote");
+  if (fxNote) fxNote.style.display = "none";
   $("mYieldType").value = "none";
   $("mYieldValue").value = "";
   $("mAppreciationPct").value = "";
@@ -1642,6 +1653,7 @@ function openItemModal(kind) {
   toggleYieldFields(kind);
   $("btnSaveItem").dataset.kind = kind;
   openModal("modalItem");
+  wireCurrencyModal();
 }
 
 function buildClassSelect(kind) {
@@ -1674,10 +1686,15 @@ function editItem(id) {
   $("modalItemTitle").textContent = showingLiabs ? "Editar passivo" : "Editar ativo";
   buildClassSelect(kind);
   $("mClass").value = it.class || (kind === "liab" ? CLASSES_LIABS[0] : CLASSES_ASSETS[0]);
-  $("mName").value = it.name || "";
+    $("mName").value = it.name || "";
   $("mValue").value = String(parseNum(it.value) || "");
+  const curSel2 = document.getElementById("mCurrency");
+  if (curSel2) curSel2.value = it.currency || "EUR";
+  const vlEl2 = document.getElementById("mValueLocal");
+  if (vlEl2) vlEl2.value = it.valueLocal ? String(it.valueLocal) : "";
   $("mNotes").value = it.notes || "";
   toggleYieldFields(kind);
+  wireCurrencyModal();
   if (!showingLiabs) {
     $("mYieldType").value = it.yieldType || "none";
     $("mYieldValue").value = it.yieldValue != null ? String(it.yieldValue) : "";
@@ -1702,11 +1719,22 @@ function editItem(id) {
 function saveItemFromModal() {
   const kind = $("btnSaveItem").dataset.kind;
   const isLiab = kind === "liab";
+  const curSelS = document.getElementById("mCurrency");
+  const savedCcy = curSelS ? (curSelS.value || "EUR") : "EUR";
+  const vlElS    = document.getElementById("mValueLocal");
+  const savedVL  = vlElS ? parseNum(vlElS.value) : 0;
+  // If user entered a local value and currency != EUR, auto-convert to EUR
+  let eurValue = parseNum($("mValue").value);
+  if (savedCcy !== "EUR" && savedVL > 0) {
+    eurValue = toEUR(savedVL, savedCcy);
+  }
   const obj = {
     id: editingItemId || uid(),
     class: $("mClass").value || "Outros",
     name: ($("mName").value || "").trim(),
-    value: parseNum($("mValue").value),
+    value: eurValue,
+    currency: savedCcy || "EUR",
+    valueLocal: savedVL || 0,
     notes: ($("mNotes").value || "").trim()
   };
   if (!obj.name) { toast("Nome é obrigatório."); return; }
@@ -3507,6 +3535,8 @@ function renderAnalysis() {
   if (tab === "compound") renderCompoundPanel();
   if (tab === "forecast") renderForecastPanel();
   if (tab === "compare") renderComparePanel();
+  if (tab === "pricehistory") { renderPriceHistoryPanel(); renderFXHistoryPanel(); }
+  if (tab === "allocation") renderAllocationPanel();
   if (tab === "fire") renderFire();
   if (tab === "fiscal") renderFiscalPanel();
   if (tab === "performance") { renderBenchmarkComparison(); renderRebalancing(); }
@@ -4728,13 +4758,41 @@ async function fileToObjectRows(file) {
   return csvToObjects(text);
 }
 
+const FX_FALLBACK_STATIC = {
+  EUR:1, USD:0.92, GBP:1.17, GBX:0.0117, CHF:1.05, CAD:0.68, AUD:0.59,
+  DKK:0.134, SEK:0.087, NOK:0.085, PLN:0.23, JPY:0.006, HKD:0.118,
+  SGD:0.68, BRL:0.17, MXN:0.046, ZAR:0.052
+};
+
 function brokerApproxFxToEUR(ccy) {
-  const FX = {
-    EUR:1, USD:0.92, GBP:1.17, GBX:0.0117, CHF:1.05, CAD:0.68, AUD:0.59,
-    DKK:0.134, SEK:0.087, NOK:0.085, PLN:0.23, JPY:0.006, HKD:0.118,
-    SGD:0.68, BRL:0.17, MXN:0.046, ZAR:0.052
-  };
-  return FX[String(ccy || "EUR").toUpperCase()] || 1;
+  const c = String(ccy || "EUR").toUpperCase();
+  // Prefer live rates stored after last ⟳ Cotações
+  const live = state && state.settings && state.settings.lastFxRates;
+  if (live && live[c]) return live[c];
+  return FX_FALLBACK_STATIC[c] || 1;
+}
+
+/** Convert amount in any currency to EUR */
+function toEUR(amount, ccy) {
+  if (!ccy || String(ccy).toUpperCase() === "EUR") return amount;
+  return amount * brokerApproxFxToEUR(ccy);
+}
+
+/** Format a value in its native currency */
+function fmtCcy(amount, ccy) {
+  const c = String(ccy || "EUR").toUpperCase();
+  try {
+    return new Intl.NumberFormat("pt-PT", { style:"currency", currency:c, maximumFractionDigits:2 }).format(amount);
+  } catch(_) { return `${(+amount).toFixed(2)} ${c}`; }
+}
+
+/** Badge showing native currency value for non-EUR assets */
+function ccyBadge(item) {
+  const c = String(item.currency || item.priceCurrency || "").toUpperCase();
+  if (!c || c === "EUR") return "";
+  const v = parseNum(item.valueLocal || 0) || parseNum(item.value);
+  if (!v) return "";
+  return ` <span class="badge" style="background:#dbeafe;color:#1e40af;font-size:10px;border:1px solid #93c5fd">${fmtCcy(v, c)}</span>`;
 }
 
 function normalizeISIN(v) {
@@ -4757,8 +4815,18 @@ function detectBrokerRowsFormat(rows) {
   const keys = new Set();
   sample.forEach(r => Object.keys(r || {}).forEach(k => keys.add(k)));
   const has = (...arr) => arr.some(k => keys.has(k));
+  // Trading 212 ledger
   if (has("action") && has("time") && has("ticker", "isin") && has("total")) return "broker_ledger";
+  // Generic positions CSV (cost per share)
   if (has("ticker", "symbol") && has("quantity", "qty", "shares", "no_of_shares") && has("cost_per_share", "price_share", "price", "preco")) return "positions";
+  // XTB trade history CSV (closed trades)
+  // Columns: Symbol, Type, Open time, Close time, Open price, Close price, Volume, Profit, Commission, Swap
+  if (has("symbol") && has("type") && (has("open_time","open time") || has("opentime")) && (has("close_time","close time") || has("closetime")) && has("volume")) return "xtb_trades";
+  // XTB open positions / portfolio snapshot
+  // Columns: Symbol, Volume, Open price, Market price, Profit/Loss
+  if (has("symbol") && has("volume") && (has("open_price","open price") || has("openprice")) && (has("market_price","market price") || has("marketprice"))) return "xtb_positions";
+  // XTB cash operations / history (Tipo/Tipo de operação, Símbolo, Montante, Comentário)
+  if ((has("tipo","type") || has("tipo_de_operacao","tipo de operacao")) && (has("montante","amount","valor") || has("profit")) && has("simbolo","symbol","ticker")) return "xtb_cash";
   return "unknown";
 }
 
@@ -4776,7 +4844,6 @@ function normalizeBrokerNameFromFile(fileName) {
   if (n.includes("divtracker")) return "DivTracker";
   if (n.includes("confirmation-of-holdings") || n.includes("confirmacao") || n.includes("holdings") || n.includes("trading212") || n.includes("trade212")) return "Trading 212";
   if (n.includes("trade republic") || n.includes("from_")) return "Corretora CSV";
-  if (n.includes("degiro")) return "DEGIRO";
   if (n.includes("xtb")) return "XTB";
   return "Corretora";
 }
@@ -4920,6 +4987,160 @@ function parseBrokerPositionRows(rows, meta) {
   return positions;
 }
 
+
+/* ─── XTB PARSERS ─────────────────────────────────────────────
+   XTB exports 3 CSV types:
+   1. Trade history (closed):  Symbol, Type, Open time, Close time,
+      Open price, Close price, Volume, Profit, Commission, Swap, Comment
+   2. Open positions:          Symbol, Volume, Open price, Market price,
+      Profit/Loss, Commission, Swap, Margin
+   3. Cash operations:         Tipo, Símbolo, Montante, Comentário, Data
+──────────────────────────────────────────────────────────────── */
+
+function parseXTBNormalizeAction(type, comment) {
+  const t = normStr(type || "");
+  const c = normStr(comment || "");
+  // Closed trade types
+  if (t === "buy" || t === "compra" || t === "bought") return "BUY";
+  if (t === "sell" || t === "venda" || t === "sold") return "SELL";
+  // Cash ops
+  if (t.includes("deposit") || t.includes("deposito") || c.includes("deposit")) return "DEPOSIT";
+  if (t.includes("withdraw") || t.includes("levantamento")) return "WITHDRAWAL";
+  if (t.includes("dividend") || t.includes("dividendo") || c.includes("dividend")) return "DIVIDEND";
+  if (t.includes("interest") || t.includes("juro") || c.includes("interest")) return "CASH_INTEREST";
+  if (t.includes("commission") || t.includes("comissao")) return "OTHER"; // absorb into trade cost
+  return "OTHER";
+}
+
+function xtbTickerToYahoo(symbol) {
+  // XTB uses suffixes like AAPL.US, VOW3.DE, VWCE.DE, etc.
+  if (!symbol) return symbol;
+  const s = symbol.toUpperCase().trim();
+  // Remove .US suffix – Yahoo uses bare ticker for US stocks
+  if (s.endsWith(".US")) return s.slice(0, -3);
+  // .PT → .LS (Euronext Lisbon)
+  if (s.endsWith(".PT")) return s.slice(0, -3) + ".LS";
+  // .UK → .L (London)
+  if (s.endsWith(".UK")) return s.slice(0, -3) + ".L";
+  // Keep .DE, .FR, .NL, .BE, .IT, .ES, .CH, .SE etc. – Yahoo usually takes them directly
+  return s;
+}
+
+/** XTB Trade History CSV (closed positions) */
+function parseXTBTradesRows(rows, meta) {
+  const events = [];
+  for (const raw of (rows || [])) {
+    const r = normalizeRow(raw);
+    // Column aliases (PT/EN mixed)
+    const symbol   = String(r.symbol || r.simbolo || r.instrumento || "").trim();
+    const typeRaw  = String(r.type || r.tipo || r.direction || "").trim();
+    const openTime = String(r.open_time || r["open time"] || r.opentime || r.data_abertura || "").trim();
+    const closeTime= String(r.close_time || r["close time"] || r.closetime || r.data_fecho || "").trim();
+    const openPx   = parseNumberSmart(r.open_price || r["open price"] || r.openprice || r.preco_abertura);
+    const closePx  = parseNumberSmart(r.close_price || r["close price"] || r.closeprice || r.preco_fecho);
+    const vol      = parseNumberSmart(r.volume || r.qty || r.quantity || r.units);
+    const profit   = parseNumberSmart(r.profit || r.resultado || r.pl || r["profit/loss"]);
+    const commission = parseNumberSmart(r.commission || r.comissao || 0);
+    const comment  = String(r.comment || r.comentario || r.comments || "").trim();
+
+    if (!symbol || !Number.isFinite(vol) || vol <= 0) continue;
+    const type = parseXTBNormalizeAction(typeRaw, comment);
+    if (type === "OTHER") continue;
+
+    // Use close time as the event date (trade settled)
+    const dateStr = normalizeDate((closeTime || openTime || "").slice(0, 10)) || isoToday();
+    const ticker  = xtbTickerToYahoo(symbol);
+    // For XTB CFDs pricePerShare is the close price; for real shares same
+    const pricePerShare = Number.isFinite(closePx) && closePx > 0 ? closePx : openPx;
+    const totalEUR = Math.abs(Number.isFinite(profit) ? profit : 0) + Math.abs(commission);
+    // Reconstruct approximate cost EUR = vol * openPx (best we have from CSV)
+    const costEUR  = vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : pricePerShare);
+    const feeEUR   = Math.abs(commission);
+
+    const evt = {
+      id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
+      type, actionRaw: typeRaw,
+      date: dateStr, dateTime: closeTime || dateStr,
+      ticker, isin: "", name: symbol,
+      qty: vol,
+      pricePerShare: Number.isFinite(pricePerShare) ? pricePerShare : 0,
+      totalEUR: costEUR, // cost basis approximation
+      totalCurrency: "EUR",
+      grossLocal: costEUR, localCurrency: "EUR",
+      taxEUR: 0, feeEUR,
+      resultEUR: Number.isFinite(profit) ? profit : 0,
+      notes: comment, key: ""
+    };
+    evt.key = brokerEventKey(evt);
+    events.push(evt);
+  }
+  return events;
+}
+
+/** XTB Open Positions CSV (portfolio snapshot) */
+function parseXTBPositionsRows(rows, meta) {
+  const positions = [];
+  for (const raw of (rows || [])) {
+    const r = normalizeRow(raw);
+    const symbol   = String(r.symbol || r.simbolo || r.instrumento || "").trim();
+    const vol      = parseNumberSmart(r.volume || r.qty || r.quantity);
+    const openPx   = parseNumberSmart(r.open_price || r["open price"] || r.openprice || r.preco_abertura || r.preco_entrada);
+    const mktPx    = parseNumberSmart(r.market_price || r["market price"] || r.marketprice || r["current price"] || r.preco_atual);
+
+    if (!symbol || !Number.isFinite(vol) || vol <= 0) continue;
+    const ticker = xtbTickerToYahoo(symbol);
+    const usePrice = Number.isFinite(mktPx) && mktPx > 0 ? mktPx : (Number.isFinite(openPx) ? openPx : 0);
+    const costBasisEUR = vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : usePrice);
+    const marketValueEUR = vol * usePrice;
+
+    const pos = {
+      id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
+      ticker, isin: "", name: symbol,
+      qty: vol, costBasisEUR, marketValueEUR,
+      pricePerShare: usePrice, priceCurrency: "EUR",
+      class: brokerPositionClassFromTicker(ticker),
+      positionKind: "market_snapshot",
+      snapshotDate: meta.asOfDate || isoToday(),
+      key: ""
+    };
+    pos.key = brokerPositionKey(pos);
+    positions.push(pos);
+  }
+  return positions;
+}
+
+/** XTB Cash Operations CSV (deposits, dividends, interest) */
+function parseXTBCashRows(rows, meta) {
+  const events = [];
+  for (const raw of (rows || [])) {
+    const r = normalizeRow(raw);
+    const typeRaw = String(r.tipo || r.type || r.tipo_de_operacao || r["tipo de operacao"] || "").trim();
+    const symbol  = String(r.simbolo || r.symbol || r.ticker || "").trim();
+    const amount  = parseNumberSmart(r.montante || r.amount || r.valor || r.profit || r.resultado);
+    const comment = String(r.comentario || r.comment || r.comments || r.descricao || "").trim();
+    const dateRaw = String(r.data || r.date || r.datetime || r.time || "").trim();
+
+    if (!Number.isFinite(amount) || amount === 0) continue;
+    const type = parseXTBNormalizeAction(typeRaw, comment);
+    if (type === "OTHER") continue;
+    const dateStr = normalizeDate(dateRaw.slice(0, 10)) || normalizeDate(dateRaw) || isoToday();
+    const ticker  = symbol ? xtbTickerToYahoo(symbol) : "";
+    const evt = {
+      id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
+      type, actionRaw: typeRaw,
+      date: dateStr, dateTime: dateRaw || dateStr,
+      ticker, isin: "", name: symbol || typeRaw,
+      qty: 0, pricePerShare: 0,
+      totalEUR: Math.abs(amount), totalCurrency: "EUR",
+      grossLocal: Math.abs(amount), localCurrency: "EUR",
+      taxEUR: 0, feeEUR: 0, resultEUR: amount,
+      notes: comment, key: ""
+    };
+    evt.key = brokerEventKey(evt);
+    events.push(evt);
+  }
+  return events;
+}
 async function parseBrokerImportFile(file) {
   const name = String(file?.name || "").toLowerCase();
   if (name.endsWith(".pdf")) {
@@ -5499,6 +5720,39 @@ async function importBrokerFiles(files) {
       meta.rows = positions.length;
       bd.files.push(meta);
       addedFiles++;
+      continue;
+    }
+    // ── XTB trade history (closed trades)
+    if (format === "xtb_trades") {
+      const evts = parseXTBTradesRows(rows, meta);
+      for (const evt of evts) {
+        if (existingEventKeys.has(evt.key)) continue;
+        existingEventKeys.add(evt.key); bd.events.push(evt); addedEvents++;
+      }
+      meta.events = evts.length;
+      bd.files.push(meta); addedFiles++;
+      continue;
+    }
+    // ── XTB open positions (portfolio snapshot)
+    if (format === "xtb_positions") {
+      const positions = parseXTBPositionsRows(rows, meta);
+      for (const pos of positions) {
+        if (existingPosKeys.has(pos.key)) continue;
+        existingPosKeys.add(pos.key); bd.positions.push(pos); addedPositions++;
+      }
+      meta.positions = positions.length;
+      bd.files.push(meta); addedFiles++;
+      continue;
+    }
+    // ── XTB cash operations (deposits, dividends, interest)
+    if (format === "xtb_cash") {
+      const evts = parseXTBCashRows(rows, meta);
+      for (const evt of evts) {
+        if (existingEventKeys.has(evt.key)) continue;
+        existingEventKeys.add(evt.key); bd.events.push(evt); addedEvents++;
+      }
+      meta.events = evts.length;
+      bd.files.push(meta); addedFiles++;
       continue;
     }
     unknownFiles++;
@@ -7052,6 +7306,22 @@ async function refreshLiveQuotes() {
   }));
   for (const c of ccysNeeded) if (!fxRates[c]) fxRates[c] = FX_FALLBACK[c] || 1;
 
+  // ── Store latest FX rates for offline/display use
+  if (!state.settings) state.settings = {};
+  state.settings.lastFxRates = fxRates;
+
+  // ── FX History
+  const isoToday2 = new Date().toISOString().slice(0, 10);
+  if (!state.fxHistory) state.fxHistory = {};
+  for (const [ccy, rate] of Object.entries(fxRates)) {
+    if (!state.fxHistory[ccy]) state.fxHistory[ccy] = [];
+    const fxh = state.fxHistory[ccy];
+    const fi  = fxh.findIndex(h => h.date === isoToday2);
+    const fe  = { date: isoToday2, rate: +rate.toFixed(8) };
+    if (fi >= 0) fxh[fi] = fe; else fxh.push(fe);
+    if (fxh.length > 1095) fxh.splice(0, fxh.length - 1095);
+  }
+
   const today = new Date().toLocaleDateString("pt-PT");
   for (const { asset, raw, yahoo } of tickerList) {
     const q = quoteMap[yahoo];
@@ -7081,6 +7351,22 @@ async function refreshLiveQuotes() {
     if (pmFromNotes) asset.pmOriginal = parseNum(pmFromNotes[1]);
     asset.lastPriceEur = priceEur;
     asset.lastUpdated  = today;
+    // ── Price history (store one entry per day per ticker)
+    if (!state.priceHistory) state.priceHistory = {};
+    const isoNow = new Date().toISOString().slice(0, 10);
+    const tkKey  = (raw || asset.name || "").trim().toUpperCase();
+    if (tkKey) {
+      if (!state.priceHistory[tkKey]) state.priceHistory[tkKey] = [];
+      const hist = state.priceHistory[tkKey];
+      const ccy  = (q.currency || "EUR").toUpperCase();
+      const locPrice = q.price; // price in original currency
+      // Replace entry for same day or append
+      const dayIdx = hist.findIndex(h => h.date === isoNow);
+      const entry  = { date: isoNow, priceEur: +priceEur.toFixed(6), priceLoc: +(locPrice||priceEur).toFixed(6), ccy };
+      if (dayIdx >= 0) hist[dayIdx] = entry; else hist.push(entry);
+      // Keep max 1095 days (3 years)
+      if (hist.length > 1095) hist.splice(0, hist.length - 1095);
+    }
     // Save sector/geography metadata for charts
     if (q.sector || q.country || q.exchange) {
       asset.meta = {
@@ -7530,41 +7816,143 @@ function renderHealthRatios() {
   const semaforo = (val, good, ok) => val <= good ? "🟢" : val <= ok ? "🟡" : "🔴";
   const semaforoInv = (val, good, ok) => val >= good ? "🟢" : val >= ok ? "🟡" : "🔴";
 
-  el.innerHTML = `
-    <div class="kpiRow healthKpiRow" style="margin-bottom:10px">
-      <div class="kpi">
-        <div class="kpi__k">Rácio dívida/activos ${semaforo(debtRatio, 30, 60)}</div>
-        <div class="kpi__v" style="color:${debtRatio <= 30 ? '#059669' : debtRatio <= 60 ? '#d97706' : '#dc2626'}">${fmt(debtRatio, 1)}%</div>
-        <div class="kpi__s">&lt;30% excelente · &lt;60% aceitável</div>
+  // ── Sugestões contextuais ──────────────────────────────────────────────
+  const tips = [];
+
+  // Dívida
+  if (debtRatio > 60) tips.push({ icon:"⚠️", color:"#dc2626", bg:"#fef2f2",
+    title:"Dívida elevada",
+    text:`O teu rácio de dívida é ${fmt(debtRatio,1)}% dos activos. Acima de 60% é território de risco: uma queda no valor dos activos pode tornar o teu balanço negativo. Prioriza amortizar o passivo mais caro (normalmente crédito ao consumo).` });
+  else if (debtRatio > 30) tips.push({ icon:"💡", color:"#d97706", bg:"#fffbeb",
+    title:"Dívida moderada",
+    text:`Rácio de dívida de ${fmt(debtRatio,1)}%. Nível aceitável, mas existe margem de melhoria. Se a taxa do crédito habitação > 3,5%, considera amortizações parciais antecipadas.` });
+  else tips.push({ icon:"✅", color:"#059669", bg:"#f0fdf4",
+    title:"Dívida controlada",
+    text:`Rácio de dívida de ${fmt(debtRatio,1)}% — excelente. O teu balanço é robusto e tens capacidade para suportar uma queda nos activos sem entrar em território negativo.` });
+
+  // Fundo de emergência (liquidez)
+  if (liquidMonths !== null) {
+    if (liquidMonths < 3) tips.push({ icon:"🚨", color:"#dc2626", bg:"#fef2f2",
+      title:"Fundo de emergência insuficiente",
+      text:`Tens apenas ${fmt(liquidMonths,1)} meses de despesas em liquidez. O mínimo recomendado são 3–6 meses. Em caso de perda de emprego ou despesa inesperada ficarias sem almofada. Prioridade: acumular ${fmtEUR(Math.max(0,(3-liquidMonths)*avgMonthlyExp))} em conta poupança ou DP com acesso imediato.` });
+    else if (liquidMonths < 6) tips.push({ icon:"💡", color:"#d97706", bg:"#fffbeb",
+      title:"Fundo de emergência razoável",
+      text:`Tens ${fmt(liquidMonths,1)} meses de despesas acessíveis. Está na margem — o ideal são 6 meses para uma família. Aumenta progressivamente até ${fmtEUR(6*avgMonthlyExp)}.` });
+    else if (liquidMonths > 24) tips.push({ icon:"💡", color:"#6366f1", bg:"#f5f3ff",
+      title:"Excesso de liquidez",
+      text:`Tens ${fmt(liquidMonths,1)} meses em liquidez — acima do necessário. O capital ocioso perde poder de compra com a inflação. Considera investir o excedente (acima de 6–12 meses) em activos com melhor rendimento.` });
+    else tips.push({ icon:"✅", color:"#059669", bg:"#f0fdf4",
+      title:"Fundo de emergência sólido",
+      text:`${fmt(liquidMonths,1)} meses de despesas em liquidez. Boa almofada de segurança.` });
+  }
+
+  // Taxa de poupança
+  if (savingsRate !== null) {
+    if (savingsRate < 10) tips.push({ icon:"🚨", color:"#dc2626", bg:"#fef2f2",
+      title:"Taxa de poupança baixa",
+      text:`Apenas ${fmtPct(savingsRate)} das entradas ficam retidas. Abaixo de 10% é difícil construir riqueza ao longo do tempo. Identifica as 3 categorias de maior despesa e testa reduzir cada uma 15%.` });
+    else if (savingsRate < 20) tips.push({ icon:"💡", color:"#d97706", bg:"#fffbeb",
+      title:"Poupança abaixo do ideal",
+      text:`Taxa de poupança de ${fmtPct(savingsRate)}. A regra dos 20% (regra 50/30/20) é um bom alvo. Aumentar ${fmtPct(20-savingsRate)} liberaria ${fmtEUR(avgMonthlyIn*(20-savingsRate)/100)}/mês para investir.` });
+    else tips.push({ icon:"✅", color:"#059669", bg:"#f0fdf4",
+      title:"Boa taxa de poupança",
+      text:`${fmtPct(savingsRate)} das entradas são poupadas — acima da regra dos 20%. Mantém a disciplina e garante que esse dinheiro é efectivamente investido.` });
+  }
+
+  // Rendimento passivo
+  if (passiveRatio < 2) tips.push({ icon:"💡", color:"#6366f1", bg:"#f5f3ff",
+    title:"Rendimento passivo baixo",
+    text:`O teu portfólio gera apenas ${fmtPct(passiveRatio)} de rendimento passivo anual sobre os activos. Considera re-alocar parte do capital para activos geradores de rendimento: depósitos a prazo, ETFs de dividendos, PPR ou obrigações.` });
+  else if (passiveRatio >= 4) tips.push({ icon:"✅", color:"#059669", bg:"#f0fdf4",
+    title:"Rendimento passivo forte",
+    text:`${fmtPct(passiveRatio)} de rendimento passivo sobre activos totais. O portfólio trabalha para ti de forma eficaz.` });
+
+  // Cobertura passiva das despesas
+  if (passiveCoverage !== null && passiveCoverage >= 100) tips.push({ icon:"🏆", color:"#059669", bg:"#f0fdf4",
+    title:"Independência financeira atingida!",
+    text:`O teu rendimento passivo (${fmtEUR(t.passiveAnnual/12)}/mês) já cobre ${fmtPct(passiveCoverage)} das despesas mensais. Estás na zona de independência financeira (FIRE).` });
+
+  // Construir o HTML das métricas
+  const metricCard = (icon, label, value, sub, colorVal, tip) => `
+    <div class="health-metric-card" style="background:var(--card2);border-radius:var(--r-sm);padding:12px 14px;border:1px solid var(--line);position:relative">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+        <div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;line-height:1.3">${icon} ${label}</div>
       </div>
-      <div class="kpi">
-        <div class="kpi__k">Rendimento base ponderado ${semaforoInv(passiveRatio, 4, 2)}</div>
-        <div class="kpi__v" style="color:${passiveRatio >= 4 ? '#059669' : passiveRatio >= 2 ? '#d97706' : '#94a3b8'}">${fmtPct(passiveRatio)}</div>
-        <div class="kpi__s">Rendimento passivo / activos</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi__k">Taxa de poupança ${savingsRate !== null ? semaforoInv(savingsRate, 20, 10) : ""}</div>
-        <div class="kpi__v" style="color:${savingsRate === null ? '#94a3b8' : savingsRate >= 20 ? '#059669' : savingsRate >= 10 ? '#d97706' : '#dc2626'}">${savingsRate !== null ? fmtPct(savingsRate) : "—"}</div>
-        <div class="kpi__s">Média dos últimos 6 meses</div>
-      </div>
-    </div>
-    <div class="kpiRow">
-      <div class="kpi">
-        <div class="kpi__k">Alavancagem ${semaforo(leverageRatio, 1.5, 3)}</div>
-        <div class="kpi__v">${fmt(leverageRatio, 2)}×</div>
-        <div class="kpi__s">Activos / Património líquido</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi__k">Autonomia financeira ${monthsOfRunway ? semaforoInv(monthsOfRunway, 24, 6) : ""}</div>
-        <div class="kpi__v">${monthsOfRunway ? fmt(monthsOfRunway, 0) + " meses" : "—"}</div>
-        <div class="kpi__s">Net worth / despesas mensais</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi__k">Reserva de liquidez ${liquidMonths !== null ? semaforoInv(liquidMonths, 12, 6) : ""}</div>
-        <div class="kpi__v">${liquidMonths !== null ? fmt(liquidMonths, 0) + " meses" : "—"}</div>
-        <div class="kpi__s">Liquidez + depósitos / despesas</div>
-      </div>
+      <div style="font-size:22px;font-weight:900;color:${colorVal};line-height:1;margin-bottom:3px">${value}</div>
+      <div style="font-size:11px;color:var(--muted);line-height:1.4">${sub}</div>
+      ${tip ? `<div class="health-tip-inline" style="margin-top:8px;font-size:11px;color:var(--muted);border-top:1px solid var(--line);padding-top:7px;line-height:1.5">${tip}</div>` : ""}
     </div>`;
+
+  const debtTip = debtRatio > 60
+    ? "Prioriza amortizar o passivo mais caro"
+    : debtRatio > 30 ? "Margem de melhoria: amortizações antecipadas" : "Balanço robusto ✓";
+  const passiveTip = passiveRatio < 2
+    ? "Considera ETFs de dividendos ou DP"
+    : passiveRatio >= 4 ? "Portfólio a gerar rendimento sólido ✓" : "Aumenta activos geradores de rendimento";
+  const savingsTip = savingsRate === null ? "" : savingsRate < 10
+    ? "Revê as 3 maiores categorias de despesa"
+    : savingsRate < 20 ? "Alvo: 20% — faltam "+fmtPct(20-savingsRate) : "Mantém a disciplina de poupança ✓";
+  const leverageTip = leverageRatio > 3 ? "Risco de alavancagem elevado" : leverageRatio > 1.5 ? "Alavancagem moderada — monitoriza" : "Alavancagem baixa ✓";
+  const runwayTip = monthsOfRunway === null ? "" : monthsOfRunway < 6
+    ? "Urgente: aumentar liquidez ou reduzir passivos"
+    : monthsOfRunway < 24 ? "Fundo de emergência a crescer ✓" : "Net worth cobre muitos anos de despesas ✓";
+  const liquidTip = liquidMonths === null ? "" : liquidMonths < 3
+    ? "🚨 Crítico: acumula 3–6 meses de despesas em DP/poupança"
+    : liquidMonths < 6 ? "Aumenta até 6 meses de reserva" : liquidMonths > 24 ? "Excesso — investe o excedente" : "Reserva sólida ✓";
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+      ${metricCard("🏦", "Rácio dívida/activos",
+        fmt(debtRatio,1)+"%",
+        "Passivos ÷ activos totais · &lt;30% excelente · &lt;60% aceitável",
+        debtRatio<=30?"#059669":debtRatio<=60?"#d97706":"#dc2626", debtTip)}
+      ${metricCard("💰", "Rendimento passivo",
+        fmtPct(passiveRatio),
+        "Rendimento anual ÷ activos · &gt;4% excelente · &gt;2% adequado",
+        passiveRatio>=4?"#059669":passiveRatio>=2?"#d97706":"#94a3b8", passiveTip)}
+      ${metricCard("💼", "Taxa de poupança",
+        savingsRate!==null?fmtPct(savingsRate):"—",
+        "Poupança ÷ entradas (últ. 6 meses) · alvo ≥20%",
+        savingsRate===null?"#94a3b8":savingsRate>=20?"#059669":savingsRate>=10?"#d97706":"#dc2626", savingsTip)}
+      ${metricCard("⚖️", "Alavancagem",
+        fmt(leverageRatio,2)+"×",
+        "Activos ÷ net worth · &lt;1,5× baixa · &lt;3× moderada",
+        leverageRatio<=1.5?"#059669":leverageRatio<=3?"#d97706":"#dc2626", leverageTip)}
+      ${metricCard("🛡️", "Autonomia financeira",
+        monthsOfRunway?fmt(monthsOfRunway,0)+" meses":"—",
+        "Net worth ÷ despesas/mês · alvo ≥24 meses",
+        monthsOfRunway?(monthsOfRunway>=24?"#059669":monthsOfRunway>=6?"#d97706":"#dc2626"):"#94a3b8", runwayTip)}
+      ${metricCard("🏧", "Reserva de liquidez",
+        liquidMonths!==null?fmt(liquidMonths,0)+" meses":"—",
+        "Liquidez+depósitos ÷ despesas/mês · alvo 3–12 meses",
+        liquidMonths!==null?(liquidMonths>=6?"#059669":liquidMonths>=3?"#d97706":"#dc2626"):"#94a3b8", liquidTip)}
+    </div>
+
+    ${passiveCoverage !== null ? `
+    <div style="margin-bottom:14px;background:var(--card2);border-radius:var(--r-sm);padding:12px 14px;border:1px solid var(--line)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+        <span style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">🎯 Cobertura passiva das despesas</span>
+        <span style="font-weight:900;font-size:15px;color:${passiveCoverage>=100?"#059669":passiveCoverage>=50?"#d97706":"#94a3b8"}">${fmt(Math.min(passiveCoverage,999),1)}%</span>
+      </div>
+      <div style="height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin-bottom:6px">
+        <div style="height:8px;background:${passiveCoverage>=100?"#059669":passiveCoverage>=50?"#f59e0b":"#6366f1"};border-radius:4px;width:${Math.min(100,passiveCoverage)}%;transition:width .8s"></div>
+      </div>
+      <div style="font-size:11px;color:var(--muted)">
+        ${passiveCoverage>=100
+          ? `🏆 Independência financeira atingida! O rendimento passivo (${fmtEUR(t.passiveAnnual/12)}/mês) cobre as tuas despesas.`
+          : `Rendimento passivo cobre ${fmt(passiveCoverage,1)}% das despesas mensais. Faltam ${fmtEUR(Math.max(0,(avgMonthlyExp - t.passiveAnnual/12)))} /mês para atingir independência.`}
+      </div>
+    </div>` : ""}
+
+    ${tips.length ? `
+    <div style="margin-bottom:4px;font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">💡 Sugestões de melhoria</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${tips.map(t => `
+        <div style="background:${t.bg};border-left:3px solid ${t.color};border-radius:var(--r-sm);padding:10px 12px">
+          <div style="font-weight:800;color:${t.color};font-size:13px;margin-bottom:3px">${t.icon} ${t.title}</div>
+          <div style="font-size:12px;color:#475569;line-height:1.55">${t.text}</div>
+        </div>`).join("")}
+    </div>` : ""}`;
 }
 
 /* ─── ALERTAS DE CONCENTRAÇÃO DE RISCO ─────────────────────── */
@@ -9168,6 +9556,334 @@ function renderEquityPnL() {
     </div>`;
 }
 
+
+
+
+/* ─── ALOCAÇÃO ALVO FIRE ─────────────────────────────────────
+   Sugestão baseada na literatura FIRE portuguesa (Frugalismo PT):
+   - Fase acumulação (net worth < FIRE número): crescimento agressivo
+   - Fase transição (50-90% FIRE): reduz risco gradualmente
+   - Fase independência (≥100% FIRE): preservação + rendimento
+──────────────────────────────────────────────────────────────── */
+const FIRE_ALLOCATION_PRESETS = {
+  acumulacao: {
+    label: "🚀 Acumulação",
+    desc: "Maximiza crescimento. Adequado quando ainda estás a construir o portfólio (< 50% FIRE número).",
+    classes: [
+      { class:"Ações/ETFs",       pct:60, tip:"ETF global (ex: VWCE/FWRG) — crescimento de longo prazo." },
+      { class:"Imobiliário",      pct:15, tip:"Imóvel arrendado ou REIT — rendimento passivo estável." },
+      { class:"PPR",              pct:10, tip:"PPR com benefício fiscal + componente obrigações." },
+      { class:"Depósitos a prazo",pct:5,  tip:"Fundo de emergência (3–6 meses de despesas)." },
+      { class:"Metais Preciosos", pct:5,  tip:"Ouro físico ou ETF — proteção contra inflação." },
+      { class:"Obrigações/Fundos",pct:5,  tip:"Obrigações soberanas PT/EU — amortecedor de volatilidade." },
+    ]
+  },
+  transicao: {
+    label: "⚖️ Transição",
+    desc: "Equilíbrio entre crescimento e segurança. Adequado quando estás entre 50–90% do FIRE número.",
+    classes: [
+      { class:"Ações/ETFs",       pct:45, tip:"Ainda o motor principal. Mantém ETF diversificado global." },
+      { class:"Imobiliário",      pct:20, tip:"Rendimento passivo real. Ideal se já tens imóvel arrendado." },
+      { class:"Obrigações/Fundos",pct:15, tip:"Amortecedor de crash — sequência de retornos desfavorável." },
+      { class:"PPR",              pct:10, tip:"PPR conservador (fase pré-reforma) para benefício fiscal." },
+      { class:"Depósitos a prazo",pct:5,  tip:"1–2 anos de despesas em liquidez — evita vender em bear market." },
+      { class:"Metais Preciosos", pct:5,  tip:"Hedge de inflação e descorrelação." },
+    ]
+  },
+  independencia: {
+    label: "🏖️ Independência",
+    desc: "Preservação de capital + rendimento passivo. Adequado quando atingiste o FIRE número.",
+    classes: [
+      { class:"Ações/ETFs",       pct:35, tip:"Mantém exposição para crescimento real vs inflação (regra 4%)." },
+      { class:"Imobiliário",      pct:25, tip:"Rendas cobrem parte das despesas. Fonte de rendimento estável." },
+      { class:"Obrigações/Fundos",pct:20, tip:"Âncora de segurança. Laddering obrigações para cashflow previsível." },
+      { class:"PPR",              pct:10, tip:"PPR desacumulação gradual — vantagem fiscal PT ao resgatar." },
+      { class:"Depósitos a prazo",pct:5,  tip:"1–2 anos em liquidez imediata — nunca vender acções em crash." },
+      { class:"Metais Preciosos", pct:5,  tip:"Reserva de valor. Gold ~5% é consenso para portfólios de reforma." },
+    ]
+  }
+};
+
+let _allocPreset = "acumulacao";
+let _allocCustom = null; // user overrides
+
+function detectFIREPhase() {
+  // Try to estimate FIRE phase from current data
+  const t = calcTotals();
+  const byMonth = new Map();
+  for (const tx of state.transactions) {
+    if (isInterAccountTransfer(tx)) continue;
+    const d = (tx.date||"").slice(0,7); if (!d) continue;
+    const cur = byMonth.get(d)||{out:0}; if (tx.type==="out") cur.out += parseNum(tx.amount);
+    byMonth.set(d, cur);
+  }
+  const last6 = [...byMonth.keys()].sort().slice(-6);
+  const avgExp = last6.length ? last6.reduce((s,k)=>s+(byMonth.get(k).out||0),0)/last6.length : 0;
+  const fireNum = avgExp > 0 ? avgExp * 12 / 0.04 : 0; // 4% SWR
+  if (fireNum <= 0 || t.assetsTotal <= 0) return "acumulacao";
+  const pct = t.assetsTotal / fireNum * 100;
+  if (pct >= 90) return "independencia";
+  if (pct >= 50) return "transicao";
+  return "acumulacao";
+}
+
+function renderAllocationPanel() {
+  const el = document.getElementById("allocationContent");
+  const gapCard = document.getElementById("allocationGapCard");
+  const gapEl   = document.getElementById("allocationGapContent");
+  if (!el) return;
+
+  // Auto-detect phase if not set by user
+  const savedPreset = (state.settings && state.settings.allocationPreset) || null;
+  if (savedPreset) _allocPreset = savedPreset;
+  else _allocPreset = detectFIREPhase();
+
+  const custom = (state.settings && state.settings.targetAllocation) || null;
+  const preset = FIRE_ALLOCATION_PRESETS[_allocPreset];
+  const alloc  = custom || preset.classes;
+
+  const t = calcTotals();
+
+  // Build HTML
+  el.innerHTML = `
+    <!-- Phase selector -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
+      ${Object.entries(FIRE_ALLOCATION_PRESETS).map(([key, p]) => `
+        <button class="btn ${_allocPreset===key?"btn--primary":"btn--outline"}" style="font-size:12px;padding:8px 6px;text-align:center"
+          onclick="window._allocPreset='${key}';renderAllocationPanel()">
+          ${p.label}
+        </button>`).join("")}
+    </div>
+    <div class="note" style="margin-bottom:14px">${preset.desc}</div>
+
+    <!-- Allocation sliders -->
+    <div style="display:flex;flex-direction:column;gap:10px">
+      ${alloc.map(a => {
+        // Find current value for this class
+        const actual = state.assets
+          .filter(x => (x.class||"").toLowerCase().includes(a.class.toLowerCase().split("/")[0].toLowerCase()))
+          .reduce((s,x)=>s+parseNum(x.value),0);
+        const actualPct = t.assetsTotal > 0 ? actual/t.assetsTotal*100 : 0;
+        const gap = a.pct - actualPct;
+        const gapCol = Math.abs(gap) < 3 ? "#059669" : Math.abs(gap) < 10 ? "#d97706" : "#dc2626";
+        return `<div style="background:var(--card2);border-radius:var(--r-sm);padding:12px 14px;border:1px solid var(--line)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <div>
+              <span style="font-weight:800;font-size:14px">${escapeHtml(a.class)}</span>
+              <span style="font-size:11px;color:var(--muted);margin-left:8px">${a.tip}</span>
+            </div>
+            <div style="text-align:right;flex-shrink:0;margin-left:8px">
+              <span style="font-weight:900;font-size:16px">${a.pct}%</span>
+              <span style="font-size:11px;color:${gapCol};display:block">actual ${fmtPct(actualPct)} · gap ${gap>=0?"+":""}${gap.toFixed(1)}pp</span>
+            </div>
+          </div>
+          <div style="height:8px;background:var(--line);border-radius:4px;overflow:hidden;position:relative">
+            <div style="position:absolute;height:8px;background:#e2e8f0;border-radius:4px;width:${Math.min(100,actualPct/a.pct*100)}%"></div>
+            <div style="position:absolute;top:0;height:8px;background:${gapCol};border-radius:4px;width:2px;left:${Math.min(99,actualPct)}%"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
+            <span>Actual: ${fmtEUR(actual)}</span>
+            <span>Alvo: ${fmtEUR(t.assetsTotal * a.pct / 100)}</span>
+          </div>
+        </div>`;
+      }).join("")}
+    </div>
+
+    <div class="note" style="margin-top:14px;font-size:12px">
+      💡 <b>Como usar:</b> Selecciona a fase FIRE que reflecte a tua situação. A app detecta automaticamente com base no teu net worth vs. FIRE número estimado.
+      Os rácios são sugestões baseadas na literatura de FIRE PT (Frugalismo PT / Bogleheads). Ajusta ao teu perfil de risco e horizonte temporal.
+    </div>`;
+
+  // Gap analysis
+  if (t.assetsTotal > 0 && gapCard && gapEl) {
+    gapCard.style.display = "";
+    const gaps = alloc.map(a => {
+      const actual = state.assets
+        .filter(x => (x.class||"").toLowerCase().includes(a.class.toLowerCase().split("/")[0].toLowerCase()))
+        .reduce((s,x)=>s+parseNum(x.value),0);
+      const target = t.assetsTotal * a.pct / 100;
+      return { class: a.class, actual, target, gap: target - actual, pct: a.pct };
+    }).sort((a,b) => b.gap - a.gap);
+
+    gapEl.innerHTML = gaps.map(g => {
+      const col = g.gap > 0 ? "#059669" : g.gap < 0 ? "#dc2626" : "#94a3b8";
+      const action = g.gap > 1000 ? `📈 Aumentar ${fmtEUR(g.gap)}` : g.gap < -1000 ? `📉 Reduzir ${fmtEUR(Math.abs(g.gap))}` : "✅ Em linha";
+      return `<div class="item" style="cursor:default">
+        <div class="item__l">
+          <div class="item__t">${escapeHtml(g.class)}</div>
+          <div class="item__s">${fmtEUR(g.actual)} actual → ${fmtEUR(g.target)} alvo (${g.pct}%)</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-weight:800;color:${col};font-size:14px">${action}</div>
+        </div>
+      </div>`;
+    }).join("");
+  } else if (gapCard) { gapCard.style.display = "none"; }
+
+  // Wire save button
+  const btn = document.getElementById("btnSaveAllocation");
+  if (btn) {
+    btn.onclick = () => {
+      if (!state.settings) state.settings = {};
+      state.settings.allocationPreset = _allocPreset;
+      saveState();
+      toast(`Alocação ${FIRE_ALLOCATION_PRESETS[_allocPreset].label} guardada ✅`);
+    };
+  }
+}
+/* ─── HISTÓRICO DE COTAÇÕES ─────────────────────────────────── */
+function renderPriceHistoryPanel() {
+  const el = document.getElementById("priceHistoryContent");
+  if (!el) return;
+
+  const hist = state.priceHistory || {};
+  const tickers = Object.keys(hist).filter(k => (hist[k]||[]).length > 0)
+    .sort((a,b) => a.localeCompare(b));
+
+  if (!tickers.length) {
+    el.innerHTML = `<div class="note">Sem histórico de cotações. Usa ⟳ Cotações para começar a registar.</div>`;
+    return;
+  }
+
+  const selEl = document.getElementById("priceHistoryTicker");
+  if (selEl) {
+    const prev = selEl.value;
+    selEl.innerHTML = tickers.map(t =>
+      `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`
+    ).join("");
+    if (tickers.includes(prev)) selEl.value = prev;
+  }
+
+  const ticker = (selEl && selEl.value) || tickers[0];
+  const points = (hist[ticker] || []).slice().sort((a,b)=>a.date.localeCompare(b.date));
+
+  if (!points.length) { el.innerHTML = `<div class="note">Sem dados para ${escapeHtml(ticker)}.</div>`; return; }
+
+  const labels  = points.map(p => p.date.slice(5)); // MM-DD
+  const prices  = points.map(p => p.priceEur);
+  const ccy     = points[points.length-1].ccy || "EUR";
+  const first   = prices[0], last = prices[prices.length-1];
+  const change  = first > 0 ? ((last-first)/first*100) : 0;
+  const changeCol = change >= 0 ? "#059669" : "#dc2626";
+  const n = points.length;
+
+  el.innerHTML = `
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+      <div style="flex:1;min-width:100px;background:var(--card2);border-radius:var(--r-sm);padding:10px 14px;border:1px solid var(--line)">
+        <div style="font-size:11px;color:var(--muted);font-weight:700">Preço actual</div>
+        <div style="font-size:20px;font-weight:900">${fmtEUR2(last)}</div>
+        <div style="font-size:11px;color:var(--muted)">${ccy !== "EUR" ? `${fmtCcy(points[points.length-1].priceLoc||last, ccy)} (${ccy})` : "EUR"}</div>
+      </div>
+      <div style="flex:1;min-width:100px;background:var(--card2);border-radius:var(--r-sm);padding:10px 14px;border:1px solid var(--line)">
+        <div style="font-size:11px;color:var(--muted);font-weight:700">Variação (${n} dias)</div>
+        <div style="font-size:20px;font-weight:900;color:${changeCol}">${change>=0?"+":""}${change.toFixed(2)}%</div>
+        <div style="font-size:11px;color:var(--muted)">${fmtEUR2(first)} → ${fmtEUR2(last)}</div>
+      </div>
+      <div style="flex:1;min-width:100px;background:var(--card2);border-radius:var(--r-sm);padding:10px 14px;border:1px solid var(--line)">
+        <div style="font-size:11px;color:var(--muted);font-weight:700">Registos</div>
+        <div style="font-size:20px;font-weight:900">${n}</div>
+        <div style="font-size:11px;color:var(--muted)">${points[0].date} → ${points[points.length-1].date}</div>
+      </div>
+    </div>
+    <div class="chartWrap"><canvas id="priceHistoryChart" height="220"></canvas></div>
+    <div style="margin-top:10px;font-size:11px;color:var(--muted)">
+      Cotações em EUR · Actualiza com ⟳ Cotações (uma entrada por dia por ticker)
+    </div>`;
+
+  const ctx2 = document.getElementById("priceHistoryChart");
+  if (!ctx2) return;
+  const ctx = ctx2.getContext("2d");
+
+  // Destroy previous chart if any
+  if (window._priceHistChart) { try { window._priceHistChart.destroy(); } catch(_){} }
+  window._priceHistChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: ticker + " (EUR)",
+        data: prices,
+        tension: 0.35,
+        borderColor: change >= 0 ? "#10b981" : "#ef4444",
+        backgroundColor: change >= 0 ? "rgba(16,185,129,.08)" : "rgba(239,68,68,.08)",
+        fill: true, pointRadius: points.length < 20 ? 3 : 0, borderWidth: 2
+      }]
+    },
+    options: {
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => fmtEUR2(c.raw) } } },
+      scales: { y: { ticks: { callback: v => fmtEUR2(v) } } }
+    }
+  });
+}
+
+function renderFXHistoryPanel() {
+  const el = document.getElementById("fxHistoryContent");
+  if (!el) return;
+  const fxH = state.fxHistory || {};
+  const ccys = Object.keys(fxH).filter(c => (fxH[c]||[]).length > 0).sort();
+  if (!ccys.length) {
+    el.innerHTML = `<div class="note">Sem histórico de câmbios. Actualiza ⟳ Cotações para registar taxas diárias.</div>`;
+    return;
+  }
+  el.innerHTML = ccys.map(ccy => {
+    const pts = (fxH[ccy]||[]).slice().sort((a,b)=>a.date.localeCompare(b.date));
+    const last = pts[pts.length-1];
+    const first = pts[0];
+    const chg = first.rate > 0 ? ((last.rate - first.rate)/first.rate*100) : 0;
+    const col = chg >= 0 ? "#059669" : "#dc2626";
+    return `<div class="item" style="cursor:default">
+      <div class="item__l">
+        <div class="item__t">${escapeHtml(ccy)}/EUR</div>
+        <div class="item__s">${pts.length} registos · ${first.date} → ${last.date}</div>
+      </div>
+      <div style="text-align:right">
+        <div class="item__v">${last.rate.toFixed(5)}</div>
+        <div style="font-size:11px;color:${col}">${chg>=0?"+":""}${chg.toFixed(2)}%</div>
+      </div>
+    </div>`;
+  }).join("");
+}
+/* ─── MODAL: Currency auto-conversion wiring ───────────────── */
+function wireCurrencyModal() {
+  const curSel = document.getElementById("mCurrency");
+  const vlEl   = document.getElementById("mValueLocal");
+  const eurEl  = $("mValue");
+  const fxNote = document.getElementById("mFxNote");
+  if (!curSel || !vlEl || !eurEl || !fxNote) return;
+
+  const update = () => {
+    const ccy = curSel.value || "EUR";
+    const vl  = parseNum(vlEl.value);
+    if (ccy === "EUR") {
+      fxNote.style.display = "none";
+      if (vl > 0) eurEl.value = String(vl.toFixed(2));
+      return;
+    }
+    const rate = brokerApproxFxToEUR(ccy);
+    const live = state && state.settings && state.settings.lastFxRates && state.settings.lastFxRates[ccy];
+    const src  = live ? "cotação actual" : "taxa aproximada";
+    if (vl > 0) {
+      const eur = vl * rate;
+      eurEl.value = String(eur.toFixed(2));
+      fxNote.style.display = "";
+      fxNote.textContent = `1 ${ccy} = ${rate.toFixed(4)} EUR (${src}) → ${fmtEUR2(eur)}`;
+    } else if (parseNum(eurEl.value) > 0) {
+      fxNote.style.display = "";
+      fxNote.textContent = `Taxa ${ccy}/EUR: ${rate.toFixed(4)} (${src}). Preenche o valor em ${ccy} para converter automaticamente.`;
+    } else {
+      fxNote.style.display = "none";
+    }
+  };
+
+  // Remove old listeners by cloning
+  const curSelNew = curSel.cloneNode(true);
+  const vlElNew   = vlEl.cloneNode(true);
+  curSel.parentNode.replaceChild(curSelNew, curSel);
+  vlEl.parentNode.replaceChild(vlElNew, vlEl);
+
+  curSelNew.addEventListener("change", update);
+  vlElNew.addEventListener("input", update);
+}
 /* ─── WIRE P&L ───────────────────────────────────────────────── */
 (function wirePnL() {
   const init = () => {
