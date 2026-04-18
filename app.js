@@ -2889,15 +2889,8 @@ function autoSyncDivSummariesFromImportedData() {
 
   if (!Array.isArray(state.divSummaries)) state.divSummaries = [];
 
-  const divPortfolioVal = (() => {
-    const divClasses = ["acoes/etfs", "fundos", "obrigacoes"];
-    return state.assets
-      .filter(a => {
-        const cls = normStr(a.class || "").replace(/ç/g,"c").replace(/[ãõ]/g,"").replace(/[áàâä]/g,"a");
-        return divClasses.some(c => cls.includes(c.split("/")[0]));
-      })
-      .reduce((s, a) => s + parseNum(a.value), 0);
-  })();
+  const linkedAssets = getDividendLinkedAssets();
+  const divPortfolioVal = linkedAssets.reduce((s, a) => s + parseNum(a.value), 0);
 
   for (const stat of stats) {
     const y = String(stat.year);
@@ -6139,17 +6132,17 @@ function renderBrokerImportStatus() {
     return;
   }
   box.style.display = "";
-  box.style.background = "#f0fdf4";
-  box.style.border = "1px solid #86efac";
+  box.style.background = "var(--card2)";
+  box.style.border = "1px solid rgba(34,197,94,.35)";
   box.style.borderRadius = "14px";
   box.style.padding = "12px 14px";
   box.innerHTML = `
-    <div style="font-weight:900;margin-bottom:6px">✅ Imports de corretoras activos</div>
+    <div style="font-weight:900;margin-bottom:6px;color:var(--text)">✅ Imports de corretoras activos</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px">
-      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Ficheiros</div><div style="font-weight:900">${stats.files}</div></div>
-      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Eventos</div><div style="font-weight:900">${stats.events}</div></div>
-      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Posições</div><div style="font-weight:900">${stats.positions}</div></div>
-      <div style="background:#fff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Anos</div><div style="font-weight:900">${stats.years}</div></div>
+      <div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px;text-align:center;color:var(--text)"><div style="font-size:11px;color:var(--muted)">Ficheiros</div><div style="font-weight:900">${stats.files}</div></div>
+      <div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px;text-align:center;color:var(--text)"><div style="font-size:11px;color:var(--muted)">Eventos</div><div style="font-weight:900">${stats.events}</div></div>
+      <div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px;text-align:center;color:var(--text)"><div style="font-size:11px;color:var(--muted)">Posições</div><div style="font-weight:900">${stats.positions}</div></div>
+      <div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px;text-align:center;color:var(--text)"><div style="font-size:11px;color:var(--muted)">Anos</div><div style="font-weight:900">${stats.years}</div></div>
     </div>`;
   const BROKER_LIMIT = 10;
   if (!window._brokerListExpanded) window._brokerListExpanded = false;
@@ -7860,8 +7853,15 @@ function toYahooTicker(raw) {
     tickerList.map(x => fetchQuote(x.yahoo, workerUrl))
   );
   const quoteMap = {};
+  const quoteErrMap = {};
   quoteResults.forEach((r, i) => {
-    if (r.status === "fulfilled" && r.value) quoteMap[tickerList[i].yahoo] = r.value;
+    const ref = tickerList[i];
+    if (!ref) return;
+    if (r.status === "fulfilled" && r.value) {
+      quoteMap[ref.yahoo] = r.value;
+    } else {
+      quoteErrMap[ref.yahoo] = (r && r.reason && r.reason.message) ? r.reason.message : "Erro ao obter cotação";
+    }
   });
 
   // Collect currencies needing FX (crypto always USD, others from quote)
@@ -7904,7 +7904,14 @@ function toYahooTicker(raw) {
   for (const { asset, raw, yahoo } of tickerList) {
     const q = quoteMap[yahoo];
     if (!q || !Number.isFinite(q.price) || q.price <= 0) {
-      failed++; errors.push(raw); continue;
+      failed++;
+      errors.push({
+        raw,
+        yahoo,
+        assetName: asset.name || raw || yahoo,
+        reason: quoteErrMap[yahoo] || "Não foi possível obter uma cotação válida"
+      });
+      continue;
     }
     const ccy = (q.currency||"EUR").toUpperCase();
     const fxToEur = ccy === "EUR" ? 1 : (fxRates[ccy] || FX_FALLBACK_LOCAL[ccy] || FX_FALLBACK_STATIC[ccy] || 1);
@@ -7994,15 +8001,27 @@ function showQuoteErrors(updated, failed, errors, updatedCount, failedCount) {
   const summary = document.getElementById("quoteErrorsSummary");
   const list = document.getElementById("quoteErrorsList");
   if (!summary || !list) return;
-  summary.textContent = `${updatedCount} actualizado${updatedCount !== 1 ? "s" : ""} com sucesso · ${failedCount} erro${failedCount !== 1 ? "s" : ""}`;
-  list.innerHTML = errors.map(e => {
-    // Try to find asset name for this ticker
-    const asset = state.assets.find(a => (a.name||"").toUpperCase() === e.toUpperCase());
-    const name = asset ? ` — ${escapeHtml(asset.name)}` : "";
-    return `<div class="item" style="cursor:default">
+  summary.textContent = `${updatedCount} actualizado${updatedCount !== 1 ? "s" : ""} com sucesso · ${failedCount} falha${failedCount !== 1 ? "s" : ""}`;
+  if (!errors || !errors.length) {
+    list.innerHTML = `<div class="note">Sem erros de cotação.</div>`;
+    return;
+  }
+  list.innerHTML = errors.map(err => {
+    const isObj = err && typeof err === "object";
+    const raw = isObj ? String(err.raw || "") : String(err || "");
+    const yahoo = isObj ? String(err.yahoo || "") : raw;
+    const reason = isObj ? String(err.reason || "Não encontrado no Yahoo Finance") : "Não encontrado no Yahoo Finance";
+    const assetName = isObj
+      ? String(err.assetName || "")
+      : String(((state.assets || []).find(a => String(a.ticker || a.name || "").toUpperCase() === raw.toUpperCase()) || {}).name || "");
+    return `<div class="item" style="cursor:default;align-items:flex-start">
       <div class="item__l">
-        <div class="item__t" style="font-family:monospace">${escapeHtml(e)}</div>
-        <div class="item__s">Não encontrado no Yahoo Finance${name}</div>
+        <div class="item__t">${escapeHtml(assetName || raw || yahoo || "Ativo")}</div>
+        <div class="item__s" style="margin-top:4px;line-height:1.5">
+          <div><b>Local:</b> ${escapeHtml(raw || "—")}</div>
+          <div><b>Yahoo:</b> ${escapeHtml(yahoo || "—")}</div>
+          <div><b>Motivo:</b> ${escapeHtml(reason || "Erro desconhecido")}</div>
+        </div>
       </div>
     </div>`;
   }).join("");
@@ -8057,6 +8076,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     state = safeClone(DEFAULT_STATE);
   }
   try { if (migrateDividendRecords()) await saveStateAsync(); } catch (e) { console.error("Falha na migração de dividendos", e); }
+  try { autoSyncDivSummariesFromImportedData(); await saveStateAsync(); } catch (e) { console.error("Falha na sincronização automática dos resumos de dividendos", e); }
   try { wire(); } catch (e) { console.error("Falha no binding dos botões", e); }
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
   try { autoSnapshotIfNeeded(); } catch (e) { console.error("Falha no auto snapshot", e); }
@@ -10574,11 +10594,11 @@ function renderAllocationPanel() {
     // Phase selector
     html += "<div style='margin-bottom:14px'>";
     html += "<div style='font-size:11px;color:var(--muted);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.4px'>Fase FIRE — selecciona a tua situação</div>";
-    html += "<div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px'>";
+    html += "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:10px'>";
     Object.entries(FIRE_ALLOCATION_PRESETS).forEach(([key, p]) => {
       const active = _allocPreset === key;
       html += "<button class='btn " + (active ? "btn--primary" : "btn--outline") + " js-alloc-phase'"
-        + " style='font-size:11px;padding:8px 6px;text-align:center;line-height:1.3'"
+        + " style='font-size:10px;padding:8px 6px;text-align:center;line-height:1.25;white-space:normal;word-break:break-word;min-height:54px;display:flex;align-items:center;justify-content:center;flex-direction:column'"
         + " data-phase='" + key + "'>"
         + escapeHtml(p.label) + "<br><span style='font-size:9px;opacity:.75'>" + escapeHtml(p.firePhase) + "</span>"
         + "</button>";
