@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260503").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260419a").catch(() => {});
     });
   }
 } catch (_) {}
@@ -8641,8 +8641,12 @@ function renderHealthRatios() {
   const leverageRatio = t.assetsTotal / Math.max(1, t.net);
   const py = calcPortfolioYield();
   const passiveRatioActual = t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0;
-  const passiveRatioProjected = parseNum(py && py.weightedProjectedPassivePct);
+  const passiveRatioProjectedRaw = parseNum(py && (py.weightedProjectedPassivePct ?? py.weightedYield ?? py.passiveYieldPct));
+  const passiveRatioProjected = passiveRatioProjectedRaw > 0 ? passiveRatioProjectedRaw : 0;
   const passiveRatio = passiveRatioProjected > 0 ? passiveRatioProjected : passiveRatioActual;
+  const passiveAnnualProjected = t.assetsTotal > 0 && passiveRatioProjected > 0
+    ? (t.assetsTotal * passiveRatioProjected / 100)
+    : parseNum(py && py.projectedPassiveAnnual);
 
   // Fluxo mensal médio (últimos 6 meses)
   const byMonth = new Map();
@@ -8744,8 +8748,8 @@ function renderHealthRatios() {
     ? "Prioriza amortizar o passivo mais caro"
     : debtRatio > 30 ? "Margem de melhoria: amortizações antecipadas" : "Balanço robusto ✓";
   const passiveTip = passiveRatio < 2
-    ? `Projetado ${fmtPct(passiveRatio)} · real actual ${fmtPct(passiveRatioActual)} · considera reforçar activos geradores de rendimento`
-    : passiveRatio >= 4 ? `Projetado ${fmtPct(passiveRatio)} · real actual ${fmtPct(passiveRatioActual)} · portfólio a gerar rendimento sólido ✓` : `Projetado ${fmtPct(passiveRatio)} · real actual ${fmtPct(passiveRatioActual)} · margem para optimização`;
+    ? `Projectado ${fmtPct(passiveRatio)} (${fmtEUR(passiveAnnualProjected || 0)}/ano) · real actual ${fmtPct(passiveRatioActual)} (${fmtEUR(t.passiveAnnual)}/ano) · considera reforçar activos geradores de rendimento`
+    : passiveRatio >= 4 ? `Projectado ${fmtPct(passiveRatio)} (${fmtEUR(passiveAnnualProjected || 0)}/ano) · real actual ${fmtPct(passiveRatioActual)} (${fmtEUR(t.passiveAnnual)}/ano) · portfólio a gerar rendimento sólido ✓` : `Projectado ${fmtPct(passiveRatio)} (${fmtEUR(passiveAnnualProjected || 0)}/ano) · real actual ${fmtPct(passiveRatioActual)} (${fmtEUR(t.passiveAnnual)}/ano) · margem para optimização`;
   const savingsTip = savingsRate === null ? "" : savingsRate < 10
     ? "Revê as 3 maiores categorias de despesa"
     : savingsRate < 20 ? "Alvo: 20% — faltam "+fmtPct(20-savingsRate) : "Mantém a disciplina de poupança ✓";
@@ -8765,7 +8769,7 @@ function renderHealthRatios() {
         debtRatio<=30?"#059669":debtRatio<=60?"#d97706":"#dc2626", debtTip)}
       ${metricCard("💰", "Rendimento passivo",
         fmtPct(passiveRatio),
-        `Yield passivo projectado ÷ activos · real actual ${fmtPct(passiveRatioActual)} · &gt;4% excelente · &gt;2% adequado`,
+        `Valor principal = yield passivo projectado sobre activos · real actual ${fmtPct(passiveRatioActual)} · proj. ${fmtEUR(passiveAnnualProjected || 0)}/ano · real ${fmtEUR(t.passiveAnnual)}/ano · &gt;4% excelente · &gt;2% adequado`,
         passiveRatio>=4?"#059669":passiveRatio>=2?"#d97706":"#94a3b8", passiveTip)}
       ${metricCard("💼", "Taxa de poupança",
         savingsRate!==null?fmtPct(savingsRate):"—",
