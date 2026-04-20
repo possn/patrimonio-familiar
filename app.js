@@ -6019,12 +6019,23 @@ function parseXTBPositionsRows(rows, meta) {
     const nativeCcy = xtbSymbolCurrency(symbol);
     const fx = brokerApproxFxToEUR(nativeCcy);
     const usePrice = Number.isFinite(mktPx) && mktPx > 0 ? mktPx : (Number.isFinite(openPx) ? openPx : 0);
-    // XTB: purchase_value is in account currency (EUR) — do NOT apply fx
-    // Market price is in native currency → apply fx
-    const costBasisEUR = Number.isFinite(purchaseValue) && purchaseValue > 0
-      ? purchaseValue  // already in EUR
+    // v19: purchase_value é o valor EUR real pago pela XTB (usa o FX do dia da compra).
+    // Para manter o market value ancorado em EUR (sem depender de FX estáticos),
+    // aplicamos a RAZÃO entre preço actual e preço de abertura nativo.
+    // market_value_EUR ≈ purchase_value_EUR × (preço_actual / preço_abertura)
+    // Isto herda o FX real da XTB e captura apenas a variação de preço.
+    const hasPV = Number.isFinite(purchaseValue) && purchaseValue > 0;
+    const costBasisEUR = hasPV
+      ? purchaseValue  // valor EUR exacto já pago
       : vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : usePrice) * fx;
-    const marketValueEUR = vol * usePrice * fx;
+    let marketValueEUR;
+    if (hasPV && Number.isFinite(openPx) && openPx > 0 && Number.isFinite(usePrice) && usePrice > 0) {
+      // Método proporcional — preserva o FX implícito da XTB
+      marketValueEUR = purchaseValue * (usePrice / openPx);
+    } else {
+      // Fallback: usar FX estático
+      marketValueEUR = vol * usePrice * fx;
+    }
 
     const pos = {
       id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
@@ -6251,7 +6262,42 @@ function rebuildBrokerGeneratedData() {
     }
   }
 
-  const events = (bd.events || []).slice().sort((a, b) => String(a.dateTime || a.date).localeCompare(String(b.dateTime || b.date)));
+  let events = (bd.events || []).slice().sort((a, b) => String(a.dateTime || a.date).localeCompare(String(b.dateTime || b.date)));
+
+  // v19: Merge XTB Withholding Tax (DIVIDEND_ADJ with taxEUR>0, totalEUR=0) into the
+  // adjacent DIVIDEND event for the same ticker+date. XTB exports them as two rows.
+  // Without merge: dividend records are duplicated AND gross is understated by WHT.
+  {
+    const merged = [];
+    const consumed = new Set();
+    for (let i = 0; i < events.length; i++) {
+      if (consumed.has(i)) continue;
+      const e = events[i];
+      if (e && e.type === "DIVIDEND" && parseNum(e.totalEUR) > 0) {
+        // Look ahead for a DIVIDEND_ADJ with same ticker+date, taxEUR>0, totalEUR=0
+        for (let j = i + 1; j < Math.min(i + 5, events.length); j++) {
+          if (consumed.has(j)) continue;
+          const a = events[j];
+          if (!a || a.type !== "DIVIDEND_ADJ") continue;
+          const sameTicker = String(a.ticker || "").toUpperCase() === String(e.ticker || "").toUpperCase();
+          const sameDate = String(a.date || "").slice(0,10) === String(e.date || "").slice(0,10);
+          if (sameTicker && sameDate && parseNum(a.taxEUR) > 0 && parseNum(a.totalEUR) === 0) {
+            // Merge: e becomes gross=(net+wht), tax=wht
+            const net = parseNum(e.totalEUR);
+            const wht = parseNum(a.taxEUR);
+            e.totalEUR = net + wht;  // gross = net received + WHT
+            e.taxEUR = (parseNum(e.taxEUR) || 0) + wht;
+            e.notes = (e.notes || "") + (e.notes ? " · " : "") + `WHT merged: ${fmtEUR2(wht)}`;
+            consumed.add(j);
+            break;
+          }
+        }
+      }
+      merged.push(e);
+    }
+    events = merged;
+  }
+
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
     const cls = brokerPositionClassFromTicker(e.ticker);
@@ -8783,16 +8829,26 @@ function toastClickable(msg, onClick, duration = 5000) {
 function checkDuplicateWarning() {
   const card = document.getElementById("dupWarningCard");
   if (!card) return;
-  if (!state.transactions || state.transactions.length < 10) {
+  // v19: Ignorar transações geradas pela importação de corretoras.
+  // Pagamentos recorrentes (dividendos mensais iguais, etc.) NÃO são duplicados reais.
+  const manualTx = (state.transactions || []).filter(t => !t.generatedFromBroker);
+  if (manualTx.length < 10) {
     card.style.display = "none";
     return;
   }
-  // Detect duplicates: same date + amount appearing 2+ times
+  // Detectar duplicados: mesmo dia + mesmo valor + mesma categoria + mesmas notas aparecendo 2+ vezes
+  // (usa chave mais específica para evitar falsos positivos com transações legítimas repetidas)
   const counts = {};
-  for (const tx of state.transactions) {
-    const k = `${String(tx.date||"").slice(0,10)}|${Math.round(Math.abs(parseNum(tx.amount))*100)}`;
+  for (const tx of manualTx) {
+    const k = [
+      String(tx.date||"").slice(0,10),
+      Math.round(Math.abs(parseNum(tx.amount))*100),
+      String(tx.category||"").toLowerCase(),
+      String(tx.notes||"").toLowerCase().slice(0,40)
+    ].join("|");
     counts[k] = (counts[k] || 0) + 1;
   }
+  // Só mostrar aviso se houver MESMA combinação exata 3+ vezes
   const hasDups = Object.values(counts).some(v => v >= 3);
   card.style.display = hasDups ? "" : "none";
 }
