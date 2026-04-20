@@ -1,4 +1,4 @@
-/* Património Familiar — v8 FINAL
+/* Património Familiar — v9 FINAL
    + Objetivo de rendimento passivo com barra de progresso
    + Alertas de vencimentos próximos (30 dias)
    + Editar/apagar movimentos de cashflow
@@ -5325,6 +5325,71 @@ async function fileToObjectRows(file) {
   return csvToObjects(text);
 }
 
+function xtbWorkbookSheetToRows(ws) {
+  if (typeof XLSX === "undefined" || !ws) return [];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false });
+  if (!Array.isArray(aoa) || !aoa.length) return [];
+
+  const HEADER_HINTS = new Set([
+    "id","position","symbol","simbolo","instrumento","type","tipo","volume","qty","quantity","quantidade",
+    "open_time","opentime","close_time","closetime","open_price","close_price","market_price",
+    "purchase_value","amount","montante","comment","comentario","time","date","data","profit","lucro",
+    "commission","comissao","swap","margin","market price","open price","close price"
+  ]);
+
+  let bestIdx = -1;
+  let bestScore = 0;
+  const maxScan = Math.min(aoa.length, 40);
+
+  for (let i = 0; i < maxScan; i++) {
+    const row = Array.isArray(aoa[i]) ? aoa[i] : [];
+    const normed = row.map(v => normKey(v)).filter(Boolean);
+    if (!normed.length) continue;
+    let score = 0;
+    normed.forEach(k => {
+      if (HEADER_HINTS.has(k) || HEADER_HINTS.has(k.replace(/_/g, " "))) score += 2;
+    });
+    if (normed.includes("symbol") || normed.includes("simbolo") || normed.includes("instrumento")) score += 4;
+    if (normed.includes("type") || normed.includes("tipo")) score += 3;
+    if (normed.includes("amount") || normed.includes("montante")) score += 3;
+    if (normed.includes("open_time") || normed.includes("close_time")) score += 3;
+    if (normed.includes("market_price") || normed.includes("open_price")) score += 3;
+    if (score > bestScore) { bestScore = score; bestIdx = i; }
+  }
+  if (bestIdx < 0 || bestScore < 5) return [];
+
+  const headerRow = Array.isArray(aoa[bestIdx]) ? aoa[bestIdx] : [];
+  let startCol = 0;
+  while (startCol < headerRow.length && !String(headerRow[startCol] || "").trim()) startCol++;
+
+  const rawHeaders = headerRow.slice(startCol).map(v => String(v || "").trim());
+  const headers = rawHeaders.map((h, idx) => h || `__col_${idx}`);
+  const out = [];
+
+  for (let r = bestIdx + 1; r < aoa.length; r++) {
+    const row = Array.isArray(aoa[r]) ? aoa[r].slice(startCol, startCol + headers.length) : [];
+    if (!row.some(v => String(v || "").trim() !== "")) continue;
+    const obj = {};
+    headers.forEach((h, c) => { obj[h] = row[c] ?? ""; });
+    out.push(obj);
+  }
+  return out;
+}
+
+function workbookToBrokerBlocks(wb) {
+  const blocks = [];
+  if (typeof XLSX === "undefined" || !wb || !Array.isArray(wb.SheetNames)) return blocks;
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    const rows = xtbWorkbookSheetToRows(ws);
+    if (!rows.length) continue;
+    const format = detectBrokerRowsFormat(rows);
+    if (format === "unknown") continue;
+    blocks.push({ sheetName, format, rows });
+  }
+  return blocks;
+}
+
 const FX_FALLBACK_STATIC = {
   EUR:1, USD:0.92, GBP:1.17, GBX:0.0117, CHF:1.05, CAD:0.68, AUD:0.59,
   DKK:0.134, SEK:0.087, NOK:0.085, PLN:0.23, JPY:0.006, HKD:0.118,
@@ -5590,12 +5655,16 @@ function parseXTBNormalizeAction(type, comment) {
   // Cash operations
   if (t.includes("deposit") || t.includes("deposito") || c.includes("deposit")) return "DEPOSIT";
   if (t.includes("withdraw") || t.includes("levantamento") || t.includes("retirada")) return "WITHDRAWAL";
-  if (t.includes("dividend") || t.includes("dividendo") || c.includes("dividend") || c.includes("dividendo")) return "DIVIDEND";
+  // XTB often exports the typo "DIVIDENT"
+  if (t.includes("divident") || t.includes("dividend") || t.includes("dividendo") || c.includes("dividend") || c.includes("dividendo")) return "DIVIDEND";
+  // Withholding/WHT rows should count as dividend tax, not as generic cash movement
+  if (t.includes("withholding tax") || t.includes("wht") || c.includes(" wht ")) return "DIVIDEND_TAX";
   // Swap = overnight financing cost for leveraged CFD positions → WITHDRAWAL (expense)
   if (t === "swap" || t.includes("rollover") || t.includes("overnight") || t.includes("financiamento")) return "WITHDRAWAL";
   // Interest income (on cash balance, not swap)
-  if (t.includes("interest") && !t.includes("swap") || t.includes("juro") && !t.includes("swap")) return "CASH_INTEREST";
+  if ((t.includes("interest") && !t.includes("swap") && !t.includes("tax")) || (t.includes("juro") && !t.includes("swap") && !t.includes("tax"))) return "CASH_INTEREST";
   if (c.includes("interest on") && !c.includes("swap")) return "CASH_INTEREST";
+  if ((t.includes("interest") && t.includes("tax")) || c.includes("interest tax")) return "CASH_INTEREST_TAX";
   // Commission as separate cash op (not embedded in trade)
   if (t.includes("commission") || t.includes("comissao") || t.includes("taxa")) return "OTHER";
   // Stock/ETF/Fund operations
@@ -5715,7 +5784,7 @@ function parseXTBCashRows(rows, meta) {
     const dateRaw = String(r.data || r.date || r.datetime || r.time || r.hora || r.data_operacao || "").trim();
 
     if (!Number.isFinite(amount) || amount === 0) continue;
-    const type = parseXTBNormalizeAction(typeRaw, comment);
+    let type = parseXTBNormalizeAction(typeRaw, comment);
     if (type === "OTHER") continue;
     const dateStr = normalizeDate(dateRaw.slice(0, 10)) || normalizeDate(dateRaw) || isoToday();
     const ticker  = symbol ? xtbTickerToYahoo(symbol) : "";
@@ -5730,6 +5799,18 @@ function parseXTBCashRows(rows, meta) {
       taxEUR: 0, feeEUR: 0, resultEUR: amount,
       notes: comment, key: ""
     };
+    if (type === "DIVIDEND_TAX") {
+      evt.type = "DIVIDEND_ADJ";
+      evt.totalEUR = 0;
+      evt.grossLocal = 0;
+      evt.taxEUR = Math.abs(amount);
+      evt.resultEUR = -Math.abs(amount);
+    } else if (type === "CASH_INTEREST_TAX") {
+      evt.type = "WITHDRAWAL";
+      evt.totalEUR = Math.abs(amount);
+      evt.grossLocal = Math.abs(amount);
+      evt.resultEUR = -Math.abs(amount);
+    }
     evt.key = brokerEventKey(evt);
     events.push(evt);
   }
@@ -5741,6 +5822,14 @@ async function parseBrokerImportFile(file) {
     const text = await extractTextFromPDF(file);
     const format = detectBrokerTextFormat(text);
     return { format, text, rows: [], textLength: text.length };
+  }
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+    if (typeof XLSX === "undefined") throw new Error("Biblioteca Excel não carregada.");
+    const ab = await file.arrayBuffer();
+    const wb = XLSX.read(ab, { type: "array", raw: false, cellDates: true });
+    const blocks = workbookToBrokerBlocks(wb);
+    if (blocks.length > 1) return { format: "workbook_multi", rows: [], text: "", blocks };
+    if (blocks.length === 1) return { format: blocks[0].format, rows: blocks[0].rows, text: "", blocks };
   }
   const rows = await fileToObjectRows(file);
   const format = detectBrokerRowsFormat(rows);
@@ -6321,6 +6410,73 @@ async function importBrokerFiles(files) {
     refreshKeySets();
     if (prevCount) replacedFiles++;
 
+    if (format === "workbook_multi") {
+      let fileEvents = 0, filePositions = 0, fileRows = 0, recognizedBlocks = 0;
+      for (const block of (parsed.blocks || [])) {
+        const blockRows = Array.isArray(block.rows) ? block.rows : [];
+        const blockMeta = { ...meta, name: `${file.name} — ${block.sheetName || block.format}`, format: block.format, rows: blockRows.length || 0 };
+        fileRows += blockRows.length || 0;
+        if (block.format === "broker_ledger") {
+          const evts = parseBrokerLedgerRows(blockRows, blockMeta);
+          for (const evt of evts) {
+            if (existingEventKeys.has(evt.key)) continue;
+            existingEventKeys.add(evt.key);
+            bd.events.push(evt);
+            addedEvents++; fileEvents++;
+          }
+          recognizedBlocks++;
+          continue;
+        }
+        if (block.format === "positions") {
+          const positions = parseBrokerPositionRows(blockRows, blockMeta);
+          for (const pos of positions) {
+            if (existingPosKeys.has(pos.key)) continue;
+            existingPosKeys.add(pos.key);
+            bd.positions.push(pos);
+            addedPositions++; filePositions++;
+          }
+          recognizedBlocks++;
+          continue;
+        }
+        if (block.format === "xtb_trades") {
+          const evts = parseXTBTradesRows(blockRows, blockMeta);
+          for (const evt of evts) {
+            if (existingEventKeys.has(evt.key)) continue;
+            existingEventKeys.add(evt.key); bd.events.push(evt); addedEvents++; fileEvents++;
+          }
+          recognizedBlocks++;
+          continue;
+        }
+        if (block.format === "xtb_positions") {
+          const positions = parseXTBPositionsRows(blockRows, blockMeta);
+          for (const pos of positions) {
+            if (existingPosKeys.has(pos.key)) continue;
+            existingPosKeys.add(pos.key); bd.positions.push(pos); addedPositions++; filePositions++;
+          }
+          recognizedBlocks++;
+          continue;
+        }
+        if (block.format === "xtb_cash") {
+          const evts = parseXTBCashRows(blockRows, blockMeta);
+          for (const evt of evts) {
+            if (existingEventKeys.has(evt.key)) continue;
+            existingEventKeys.add(evt.key); bd.events.push(evt); addedEvents++; fileEvents++;
+          }
+          recognizedBlocks++;
+          continue;
+        }
+      }
+      if (recognizedBlocks) {
+        meta.events = fileEvents;
+        meta.positions = filePositions;
+        meta.rows = fileRows;
+        meta.format = "workbook_multi";
+        meta.sheetNames = (parsed.blocks || []).map(b => b.sheetName).filter(Boolean).join(", ");
+        bd.files.push(meta);
+        addedFiles++;
+        continue;
+      }
+    }
     if (format === "broker_ledger") {
       const evts = parseBrokerLedgerRows(rows, meta);
       for (const evt of evts) {
