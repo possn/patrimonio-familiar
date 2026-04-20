@@ -1320,6 +1320,19 @@
       <input type="hidden" id="mId"><input type="hidden" id="mKind">
       <label class="lbl">Classe</label><select class="input" id="mClass"></select>
       <label class="lbl">Nome</label><input class="input" id="mName" placeholder="ex: VWCE, Apartamento, Ouro físico">
+      <!-- v21: Ticker + Quantidade para Ações/ETFs, Cripto, Fundos -->
+      <div id="marketRow" style="display:none">
+        <label class="lbl">Ticker / Símbolo <span style="font-size:11px;color:#94a3b8;font-weight:500">— ex: VWCE.DE, BTC, AAPL</span></label>
+        <input class="input" id="mTicker" placeholder="ex: BTC, VWCE.DE, AAPL" autocapitalize="characters">
+        <div style="display:grid;grid-template-columns:1fr auto;gap:10px;margin-top:10px;align-items:end">
+          <div>
+            <label class="lbl">Quantidade / unidades</label>
+            <input class="input" id="mQty" inputmode="decimal" placeholder="ex: 0.5 BTC, 100 ações">
+          </div>
+          <button type="button" class="btn" id="btnLookupQuote" style="height:44px;min-width:110px">🔍 Buscar cotação</button>
+        </div>
+        <div id="mLookupStatus" class="note" style="display:none;font-size:11px;margin-top:4px"></div>
+      </div>
       <label class="lbl">Valor atual (€ equivalente)</label><input class="input" id="mValue" inputmode="decimal" placeholder="ex: 12500">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
         <div>

@@ -2069,10 +2069,19 @@ function openItemModal(kind) {
   $("mNotes").value = "";
   const _cbEl = document.getElementById("mCostBasis");
   if (_cbEl) _cbEl.value = "";
+  // v21: limpar campos de mercado
+  const _tkEl  = document.getElementById("mTicker");
+  const _qtyEl = document.getElementById("mQty");
+  const _lsEl  = document.getElementById("mLookupStatus");
+  if (_tkEl)  _tkEl.value  = "";
+  if (_qtyEl) _qtyEl.value = "";
+  if (_lsEl)  { _lsEl.style.display = "none"; _lsEl.textContent = ""; }
   toggleYieldFields(kind);
+  toggleMarketFields(kind);
   $("btnSaveItem").dataset.kind = kind;
   openModal("modalItem");
   wireCurrencyModal();
+  wireMarketLookup();
 }
 
 function buildClassSelect(kind) {
@@ -2091,6 +2100,124 @@ function toggleYieldFields(kind) {
   $("mCompound").disabled = isLiab;
   const yieldRow = document.getElementById("yieldRow");
   if (yieldRow) yieldRow.style.display = isLiab ? "none" : "";
+}
+
+/* v21: Mostrar campos Ticker+Qty só quando a classe selecionada é de mercado */
+const MARKET_CLASSES_FOR_TICKER = new Set(["Ações/ETFs","Cripto","Fundos","Obrigações","Ouro","Prata"]);
+function toggleMarketFields(kind) {
+  const mr = document.getElementById("marketRow");
+  if (!mr) return;
+  if (kind === "liab") { mr.style.display = "none"; return; }
+  const cls = ($("mClass").value || "").trim();
+  mr.style.display = MARKET_CLASSES_FOR_TICKER.has(cls) ? "" : "none";
+}
+
+/* v21: Ligar classe change → toggle + botão Buscar cotação */
+function wireMarketLookup() {
+  const clsEl = document.getElementById("mClass");
+  if (clsEl && !clsEl._mktWired) {
+    clsEl.addEventListener("change", () => {
+      const k = $("btnSaveItem").dataset.kind || "asset";
+      toggleMarketFields(k);
+    });
+    clsEl._mktWired = true;
+  }
+  const btn = document.getElementById("btnLookupQuote");
+  if (!btn || btn._wired) return;
+  btn._wired = true;
+  btn.addEventListener("click", async () => {
+    const tk  = (($("mTicker") || {}).value || "").trim().toUpperCase();
+    const qty = parseNum(($("mQty") || {}).value);
+    const status = document.getElementById("mLookupStatus");
+    if (!tk) { if (status) { status.style.display=""; status.textContent="Introduz o ticker primeiro."; } return; }
+    const workerUrl = (state.settings && state.settings.workerUrl) || "";
+    if (!workerUrl) {
+      if (status) { status.style.display=""; status.textContent="⚠️ Worker URL não configurado. Clica em ⟳ Cotações para configurar."; }
+      return;
+    }
+    btn.disabled = true;
+    const origText = btn.textContent;
+    btn.textContent = "⏳ A procurar…";
+    if (status) { status.style.display=""; status.textContent="A consultar Yahoo Finance…"; }
+    try {
+      // Resolver candidatos (inclui cripto + overrides + ISIN map)
+      // Criar um "asset temporário" com a classe + ticker para reaproveitar buildYahooTickerCandidates
+      const fakeAsset = {
+        class: $("mClass").value || "Outros",
+        ticker: tk,
+        name: ($("mName").value || "").trim() || tk,
+        isin: ""
+      };
+      let candidates = [];
+      // Cripto: resolver directamente via CRYPTO_YAHOO_MAP
+      const clsNorm = String(fakeAsset.class).toLowerCase();
+      if (clsNorm === "cripto" || clsNorm === "crypto") {
+        const cTk = (typeof cryptoToYahoo === "function") ? cryptoToYahoo(tk) : null;
+        if (cTk) candidates.push(cTk);
+      }
+      // Adicionar também o ticker raw e variantes conhecidas
+      if (!candidates.includes(tk)) candidates.push(tk);
+      // Tentar com sufixos comuns se é cripto não listada
+      if (clsNorm === "cripto" && !tk.includes("-")) {
+        const fallback = tk + "-USD";
+        if (!candidates.includes(fallback)) candidates.push(fallback);
+      }
+
+      let quote = null, usedTk = null, lastErr = null;
+      for (const cand of candidates) {
+        try {
+          const q = await fetchQuote(cand, workerUrl);
+          if (q && Number.isFinite(q.price) && q.price > 0) { quote = q; usedTk = cand; break; }
+        } catch (e) { lastErr = e; }
+      }
+      if (!quote) throw lastErr || new Error("Sem cotação disponível para esse ticker");
+
+      // FX para EUR se preciso
+      const ccy = (quote.currency || "EUR").toUpperCase();
+      let fxToEur = 1;
+      if (ccy !== "EUR") {
+        try {
+          const fxQ = await fetchQuote(`EUR${ccy}=X`, workerUrl);
+          if (fxQ && fxQ.price > 0) fxToEur = 1 / fxQ.price;
+        } catch(_) {
+          const FX_LOCAL = {USD:0.92, GBP:1.17, CHF:1.05, CAD:0.68, AUD:0.59,
+            DKK:0.134, SEK:0.087, NOK:0.085, PLN:0.23, JPY:0.006};
+          fxToEur = FX_LOCAL[ccy] || 1;
+        }
+      }
+      const priceEur = quote.price * fxToEur;
+
+      // Preencher moeda e valor
+      const curSel = document.getElementById("mCurrency");
+      if (curSel) curSel.value = ccy;
+      const vlEl = document.getElementById("mValueLocal");
+      const valEl = document.getElementById("mValue");
+      if (qty > 0) {
+        // qty × preço (moeda original) → valor local
+        if (vlEl)  vlEl.value  = (quote.price * qty).toFixed(2);
+        if (valEl) valEl.value = (priceEur * qty).toFixed(2);
+      } else {
+        // sem qty → só preço unitário
+        if (vlEl)  vlEl.value  = String(quote.price);
+        if (valEl) valEl.value = priceEur.toFixed(2);
+      }
+      // Preencher nome se estiver vazio
+      const nmEl = document.getElementById("mName");
+      if (nmEl && !nmEl.value.trim() && quote.name) nmEl.value = quote.name;
+
+      if (status) {
+        const qtyPart = qty > 0 ? `${qty} × ` : "";
+        const ccyPart = ccy === "EUR" ? "" : ` (${quote.price.toFixed(4)} ${ccy})`;
+        status.style.display = "";
+        status.textContent = `✅ ${usedTk}: ${qtyPart}${fmtEUR2(priceEur)}${ccyPart}`;
+      }
+    } catch (e) {
+      if (status) { status.style.display=""; status.textContent = `❌ ${e.message || "Erro na consulta"}`; }
+    } finally {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  });
 }
 
 function editItem(id) {
@@ -2123,6 +2250,13 @@ function editItem(id) {
     $("mCompound").value = String(it.compoundFreq || 12);
     const cbEl = document.getElementById("mCostBasis");
     if (cbEl) cbEl.value = it.costBasis ? String(it.costBasis) : "";
+    // v21: ticker + qty
+    const tkEl = document.getElementById("mTicker");
+    const qtyEl = document.getElementById("mQty");
+    if (tkEl)  tkEl.value  = it.ticker || "";
+    if (qtyEl) qtyEl.value = it.qty ? String(it.qty) : "";
+    toggleMarketFields(kind);
+    wireMarketLookup();
   } else {
     $("mYieldType").value = "none";
     $("mYieldValue").value = "";
@@ -2156,6 +2290,18 @@ function saveItemFromModal() {
     valueLocal: savedVL || 0,
     notes: ($("mNotes").value || "").trim()
   };
+  // v21: Ticker + quantidade para classes de mercado
+  const tkEl  = document.getElementById("mTicker");
+  const qtyEl = document.getElementById("mQty");
+  const tk    = tkEl  ? String(tkEl.value  || "").trim().toUpperCase() : "";
+  const qty   = qtyEl ? parseNum(qtyEl.value || 0) : 0;
+  if (tk)  obj.ticker = tk;
+  if (qty > 0) obj.qty = qty;
+  // Se preencheu ticker + qty + valor, calcula PM (preço médio original) automaticamente
+  if (tk && qty > 0 && obj.value > 0) {
+    obj.pmOriginal = obj.value / qty;
+    obj.pmCcy = savedCcy || "EUR";
+  }
   if (!obj.name) { toast("Nome é obrigatório."); return; }
   if (!isLiab) {
     obj.yieldType = $("mYieldType").value || "none";
