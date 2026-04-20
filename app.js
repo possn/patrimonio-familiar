@@ -1,4 +1,5 @@
-/* Património Familiar — v9 FINAL
+/* Património Familiar — v18
+   Performance: memoização por ciclo de render (elimina cálculos redundantes)
    + Objetivo de rendimento passivo com barra de progresso
    + Alertas de vencimentos próximos (30 dias)
    + Editar/apagar movimentos de cashflow
@@ -12,7 +13,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260420d").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260420v18").catch(() => {});
     });
   }
 } catch (_) {}
@@ -410,6 +411,36 @@ let bankCsvSelectedFile = null;
 // Chart instances
 let distChart = null, trendChart = null, fireChart = null, compoundChart = null, forecastChart = null, compareChart = null;
 
+/* ─── RENDER CACHE — memoização por ciclo de render ──────────
+   Evita recalcular calcTotals/calcPortfolioYield/calcTWR/calcPortfolioRealMetrics
+   múltiplas vezes durante o mesmo frame de render.
+   Invalidado automaticamente após a micro-task atual.
+   Chamar invalidateRenderCache() sempre que o state muda.
+────────────────────────────────────────────────────────────── */
+let _rc = null;
+let _rcScheduled = false;
+
+function _scheduleRcInvalidate() {
+  if (_rcScheduled) return;
+  _rcScheduled = true;
+  Promise.resolve().then(() => { _rc = null; _rcScheduled = false; });
+}
+
+function invalidateRenderCache() { _rc = null; _rcScheduled = false; }
+
+function getRenderCache() {
+  if (_rc) return _rc;
+  // Calcular tudo uma única vez por ciclo — funções pesadas só aqui
+  const totals      = calcTotals();
+  const py          = calcPortfolioYield();
+  const twr         = calcTWR();
+  const realMetrics = calcPortfolioRealMetrics();
+  const divScore    = calcDiversificationScore();
+  _rc = { totals, py, twr, realMetrics, divScore };
+  _scheduleRcInvalidate();
+  return _rc;
+}
+
 /* ─── DOM HELPER ──────────────────────────────────────────── */
 const NOOP_EL = {
   _missing: true, addEventListener(){}, removeEventListener(){},
@@ -462,8 +493,8 @@ async function loadStateAsync() {
   } catch { return safeClone(DEFAULT_STATE); }
 }
 
-function saveState() { return storageSet(JSON.stringify(state)); }
-async function saveStateAsync() { await storageSet(JSON.stringify(state)); }
+function saveState() { invalidateRenderCache(); return storageSet(JSON.stringify(state)); }
+async function saveStateAsync() { invalidateRenderCache(); await storageSet(JSON.stringify(state)); }
 
 /* ─── TOTALS ──────────────────────────────────────────────── */
 function getLegacyPassiveMeta(it) {
@@ -628,7 +659,8 @@ function setDividendYieldDisplayMode(mode) {
   if (!state.settings) state.settings = {};
   state.settings.dividendYieldMode = mode === 'net' ? 'net' : 'gross';
   saveState();
-  renderDividends();
+  markViewsDirty(["dividends", "dashboard"]);
+  scheduleRenderView(currentView, { force: true, sync: true });
 }
 
 function getDividendSourceLabel(source) {
@@ -1087,25 +1119,28 @@ function renderGeoChart() {
 
 function renderAll(opts = {}) {
   const force = !!(opts && opts.force);
+  invalidateRenderCache(); // v18: garantir cálculos frescos
   updatePassiveBar();
   renderBrokerImportStatus();
   updateQuoteErrorIndicator();
 
   if (force) {
+    // v18: em vez de renderizar todas as views sincronamente (lento),
+    // marcar todas sujas e renderizar só a atual agora.
+    // As restantes são renderizadas on-demand ao navegar.
     markViewsDirty(RENDERABLE_VIEWS);
-    RENDERABLE_VIEWS.forEach(v => scheduleRenderView(v, { force: true, sync: true }));
+    scheduleRenderView(currentView, { force: true, sync: true });
     return;
   }
 
-  // Data changed: refresh current view now, keep the remaining views dirty so navigation stays instant
-  // until the user opens them again.
+  // Data changed: refresh current view now, mark others dirty for lazy render
   markViewsDirty(["dashboard", "assets", "cashflow", "dividends", "analysis", "settings", "import"]);
   scheduleRenderView(currentView, { force: true, sync: true });
 }
 
 /* ─── DASHBOARD ───────────────────────────────────────────── */
 function updatePassiveBar() {
-  const t = calcTotals();
+  const t = _rc ? _rc.totals : calcTotals();
   const barA = document.getElementById("barPassiveAnnual");
   const barM = document.getElementById("barPassiveMonthly");
   if (barA) barA.textContent = fmtEUR(t.passiveAnnual);
@@ -1115,7 +1150,7 @@ function updatePassiveBar() {
 /* ─── 1. OBJETIVO DE RENDIMENTO PASSIVO ───────────────────── */
 function renderGoal() {
   const goal = parseNum(state.settings.goalMonthly || 0);
-  const t = calcTotals();
+  const t = _rc ? _rc.totals : calcTotals();
   const monthly = t.passiveAnnual / 12;
   const subtitle = $("goalSubtitle");
   const wrap = $("goalProgressWrap");
@@ -1454,7 +1489,10 @@ function renderDivYTD() {
 }
 
 function renderDashboard() {
-  const t = calcTotals();
+  // v18: usar render cache — calcTotals/calcPortfolioYield/calcTWR/calcPortfolioRealMetrics
+  // calculados UMA vez por ciclo de render, partilhados por todas as sub-funções.
+  const rc = getRenderCache();
+  const t = rc.totals;
 
   // ── Hero ──────────────────────────────────────────────────
   $("kpiNet").textContent = fmtEUR(t.net);
@@ -1499,22 +1537,21 @@ function renderDashboard() {
   if (pm2) pm2.textContent = fmtEUR(t.passiveAnnual / 12);
   if (pa2) pa2.textContent = fmtEUR(t.passiveAnnual) + "/ano";
 
-  // Yield de dividendos: sempre calculado na base distribuidora correcta
+  // Yield de dividendos
   const yieldEl = document.getElementById("kpiYield");
   if (yieldEl) {
     const prefDiv = getPreferredDividendYieldData();
     yieldEl.textContent = fmtPct(prefDiv.selectedYieldPct || 0);
   }
 
-  // P&L realizado (de vendas) — substituiu Autonomia passiva (duplicava health card)
+  // P&L realizado — usa cache
   const autEl = document.getElementById("kpiAutonomy");
   if (autEl) {
-    const rm0b = calcPortfolioRealMetrics();
+    const rm0b = rc.realMetrics;
     if (rm0b.hasData && rm0b.totalRealizedPnL !== 0) {
       autEl.textContent = (rm0b.totalRealizedPnL >= 0 ? "+" : "") + fmtEUR(rm0b.totalRealizedPnL);
       autEl.style.color = rm0b.totalRealizedPnL >= 0 ? "#059669" : "#dc2626";
     } else {
-      // Fallback to autonomia if no broker data
       const byMonth = new Map();
       for (const tx of (state.transactions||[])) {
         if (isInterAccountTransfer(tx)) continue;
@@ -1536,7 +1573,6 @@ function renderDashboard() {
   renderGoal();
   renderAlerts();
   renderDivYTD();
-  // Sync secondary DivYTD
   const d2 = document.getElementById("kpiDivYTD2");
   const dc2 = document.getElementById("kpiDivCount2");
   if (d2) d2.textContent = $("kpiDivYTD").textContent;
@@ -1545,20 +1581,19 @@ function renderDashboard() {
   renderSummary();
   renderDistChart();
   renderTrendChart();
-  // v15
   renderSnapshotTable();
   renderIRSCard();
-  renderHealthRatios();
-  renderRiskAlerts();
+  renderHealthRatios(rc);
+  renderRiskAlerts(rc);
   renderMilestones();
   renderMaturityAlerts();
-  renderPortfolioQuality();
-  checkNegativeReturn();
+  renderPortfolioQuality(rc);
+  checkNegativeReturn(rc);
 }
 
 /* ─── ALERTA: RENTABILIDADE NEGATIVA ────────────────────────── */
-function checkNegativeReturn() {
-  const twr = calcTWR();
+function checkNegativeReturn(rc) {
+  const twr = rc ? rc.twr : calcTWR();
   if (!twr) return;
   const el = document.getElementById("negReturnAlert");
   if (!el) return;
@@ -4241,7 +4276,8 @@ function calcDividendYield() {
 // Separa yield passivo (juros/rendas/dividendos) do retorno total (inclui valorização acções)
 function calcPortfolioYield() {
 
-  const totals = calcTotals();
+  // v18: usar cache se disponível para evitar calcTotals() redundante
+  const totals = _rc ? _rc.totals : calcTotals();
   const assetRows = state.assets.map(a => {
     const value = parseNum(a.value);
     const passiveRatePct = getAssetPassiveRatePct(a, { allowClassFallback: true });
@@ -8967,16 +9003,16 @@ function printDashboard() { window.print(); }
    ═══════════════════════════════════════════════════════════════ */
 
 /* ─── SAÚDE FINANCEIRA (rácios) ─────────────────────────────── */
-function renderHealthRatios() {
+function renderHealthRatios(rc) {
   const el = document.getElementById("debtRatioContent");
   if (!el) return;
 
-  const t = calcTotals();
+  const t = rc ? rc.totals : calcTotals();
   if (t.assetsTotal === 0) { el.innerHTML = "<div class='note'>Sem ativos registados.</div>"; return; }
 
   const debtRatio = t.liabsTotal / t.assetsTotal * 100;
   const leverageRatio = t.assetsTotal / Math.max(1, t.net);
-  const py = calcPortfolioYield();
+  const py = rc ? rc.py : calcPortfolioYield();
   const passiveRatioActual = t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0;
   const directProjectedAnnual = (state.assets || []).reduce((sum, a) => {
     const v = parseNum(a && a.value);
@@ -9157,12 +9193,12 @@ function renderHealthRatios() {
 }
 
 /* ─── ALERTAS DE CONCENTRAÇÃO DE RISCO ─────────────────────── */
-function renderRiskAlerts() {
+function renderRiskAlerts(rc) {
   const card = document.getElementById("riskAlertCard");
   const content = document.getElementById("riskAlertContent");
   if (!card || !content) return;
 
-  const t = calcTotals();
+  const t = rc ? rc.totals : calcTotals();
   if (t.assetsTotal === 0) { card.style.display = "none"; return; }
 
   const alerts = [];
@@ -9420,7 +9456,7 @@ function renderMilestones() {
   const card = document.getElementById("milestonesCard");
   if (!el) return;
 
-  const t = calcTotals();
+  const t = _rc ? _rc.totals : calcTotals();
   const net = t.net;
   if (net <= 0) { if (card) card.style.display = "none"; return; }
   if (card) card.style.display = "";
@@ -9530,13 +9566,13 @@ function calcDiversificationScore() {
 }
 
 /* ─── RENDER: PAINEL LATERAL DE QUALIDADE DO PORTFÓLIO ──────── */
-function renderPortfolioQuality() {
+function renderPortfolioQuality(rc) {
   const el = document.getElementById("portfolioQualityContent");
   const card = document.getElementById("portfolioQualityCard");
   if (!el) return;
 
-  const div = calcDiversificationScore();
-  const t = calcTotals();
+  const div = rc ? rc.divScore : calcDiversificationScore();
+  const t = rc ? rc.totals : calcTotals();
 
   // Yield coverage — rendimento passivo cobre despesas?
   const byMonth = new Map();

@@ -1,5 +1,5 @@
-/* Património Familiar — Service Worker v10 */
-const CACHE_NAME = "pf-cache-20260420_perf2";
+/* Património Familiar — Service Worker v18 */
+const CACHE_NAME = "pf-cache-v18";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest"];
 
 self.addEventListener("install", event => {
@@ -43,7 +43,7 @@ self.addEventListener("fetch", event => {
   const req = event.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return; // não interceptar worker/API externos
+  if (url.origin !== self.location.origin) return;
 
   if (req.mode === "navigate" || req.destination === "document") {
     event.respondWith(networkFirst(req));
