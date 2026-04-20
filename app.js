@@ -46,13 +46,30 @@ function parseNum(x) {
   let t = s.replace(/[^0-9,.\-]+/g, "").replace(/\s/g, "");
   const hasComma = t.includes(","), hasDot = t.includes(".");
   if (hasComma && hasDot) {
+    // Formato misto: o ÚLTIMO separador é o decimal
     if (t.lastIndexOf(",") > t.lastIndexOf(".")) t = t.replace(/\./g,"").replace(/,/g,".");
     else t = t.replace(/,/g,"");
   } else if (hasComma && !hasDot) {
-    t = /,[0-9]{1,2}$/.test(t) ? t.replace(/,/g,".") : t.replace(/,/g,"");
+    // Só vírgula: decimal por defeito, EXCEPTO se for claramente separador de milhares
+    // (exactamente 3 dígitos depois, e parte antes ≠ "0"). Isto preserva cripto com 4+ casas
+    // decimais (0,1805, 0,00000021) e dinheiro PT (12,500 = doze mil e quinhentos).
+    if ((t.match(/,/g) || []).length === 1) {
+      const [before, after] = t.split(",");
+      const isThousands = /^[0-9]{3}$/.test(after) && before !== "0" && before.length >= 1;
+      t = isThousands ? t.replace(/,/g,"") : t.replace(/,/g,".");
+    } else {
+      t = t.replace(/,/g,"");  // múltiplas vírgulas = milhares
+    }
   } else if (!hasComma && hasDot) {
-    const parts = t.split(".");
-    if (parts.length > 2 && !/\.[0-9]{1,2}$/.test(t)) t = t.replace(/\./g,"");
+    // Só ponto: decimal por defeito, EXCEPTO se for claramente separador de milhares.
+    // Regra igual: "12.500" = 12500, mas "0.1805" = 0.1805 e "100.5" = 100.5
+    if ((t.match(/\./g) || []).length === 1) {
+      const [before, after] = t.split(".");
+      const isThousands = /^[0-9]{3}$/.test(after) && before !== "0" && before.length >= 1;
+      t = isThousands ? t.replace(/\./g,"") : t;
+    } else {
+      t = t.replace(/\./g,"");  // múltiplos pontos = milhares
+    }
   }
   const n = Number(t);
   return neg ? -(Number.isFinite(n) ? n : 0) : (Number.isFinite(n) ? n : 0);
