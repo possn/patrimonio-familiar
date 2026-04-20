@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260420c").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260420d").catch(() => {});
     });
   }
 } catch (_) {}
@@ -395,6 +395,11 @@ const ISIN_YAHOO_MAP = {
 
 let state = safeClone(DEFAULT_STATE);
 let currentView = "dashboard";
+const RENDERABLE_VIEWS = ["dashboard", "assets", "cashflow", "dividends", "analysis", "settings", "import"];
+const dirtyViews = new Set(RENDERABLE_VIEWS);
+const renderedViews = new Set();
+let pendingViewRenderToken = 0;
+let pendingViewRenderFrame = null;
 let showingLiabs = false;
 let summaryExpanded = false;
 let txExpanded = false;
@@ -849,18 +854,53 @@ function effectiveRate(nominalPct, freq) {
 }
 
 /* ─── NAVIGATION ──────────────────────────────────────────── */
+function markViewsDirty(views = RENDERABLE_VIEWS) {
+  const list = Array.isArray(views) ? views : [views];
+  list.forEach(v => { if (v) dirtyViews.add(v); });
+}
+
+function markViewRendered(view) {
+  if (!view) return;
+  renderedViews.add(view);
+  dirtyViews.delete(view);
+}
+
+function renderView(view, opts = {}) {
+  const force = !!(opts && opts.force);
+  if (!force && renderedViews.has(view) && !dirtyViews.has(view)) return;
+  if (view === "dashboard") renderDashboard();
+  if (view === "assets") { renderItems(); renderEquityPnL(); updateQuoteErrorIndicator(); }
+  if (view === "cashflow") renderCashflow();
+  if (view === "analysis") renderAnalysis();
+  if (view === "dividends") renderDividends();
+  if (view === "settings") renderReturnSettingsCard();
+  if (view === "import") checkDuplicateWarning();
+  markViewRendered(view);
+}
+
+function scheduleRenderView(view, opts = {}) {
+  pendingViewRenderToken += 1;
+  const token = pendingViewRenderToken;
+  if (pendingViewRenderFrame) {
+    try { cancelAnimationFrame(pendingViewRenderFrame); } catch (_) {}
+    pendingViewRenderFrame = null;
+  }
+  const run = () => {
+    pendingViewRenderFrame = null;
+    if (token !== pendingViewRenderToken) return;
+    renderView(view, opts);
+  };
+  if (opts && opts.sync) run();
+  else pendingViewRenderFrame = requestAnimationFrame(run);
+}
+
 function setView(view) {
   currentView = view;
   document.querySelectorAll(".view").forEach(s => { s.hidden = s.dataset.view !== view; });
   document.querySelectorAll(".navbtn").forEach(b => { b.classList.toggle("navbtn--active", b.dataset.view === view); });
-  if (view === "dashboard") renderDashboard();
-  if (view === "assets") { renderItems(); renderEquityPnL(); updateQuoteErrorIndicator(); }
-  if (view === "cashflow") renderCashflow();
-  if (view === "analysis") { renderAnalysis(); }
-  if (view === "dividends") renderDividends();
-  if (view === "settings") renderReturnSettingsCard();
-  if (view === "import") checkDuplicateWarning();
-  window.scrollTo({ top: 0, behavior: "instant" });
+  if (view === "assets") updateQuoteErrorIndicator();
+  scheduleRenderView(view, { force: false, sync: false });
+  try { window.scrollTo(0, 0); } catch (_) {}
 }
 
 function openModal(id) { $(id).setAttribute("aria-hidden", "false"); }
@@ -1051,12 +1091,16 @@ function renderAll(opts = {}) {
   renderBrokerImportStatus();
   updateQuoteErrorIndicator();
 
-  if (force || currentView === "dashboard") renderDashboard();
-  if (force || currentView === "assets") { renderItems(); renderEquityPnL(); }
-  if (force || currentView === "cashflow") renderCashflow();
-  if (force || currentView === "dividends") renderDividends();
-  if (force || currentView === "analysis") renderAnalysis();
-  if (force || currentView === "settings") renderReturnSettingsCard();
+  if (force) {
+    markViewsDirty(RENDERABLE_VIEWS);
+    RENDERABLE_VIEWS.forEach(v => scheduleRenderView(v, { force: true, sync: true }));
+    return;
+  }
+
+  // Data changed: refresh current view now, keep the remaining views dirty so navigation stays instant
+  // until the user opens them again.
+  markViewsDirty(["dashboard", "assets", "cashflow", "dividends", "analysis", "settings", "import"]);
+  scheduleRenderView(currentView, { force: true, sync: true });
 }
 
 /* ─── DASHBOARD ───────────────────────────────────────────── */
