@@ -85,12 +85,15 @@ function fmtPct(n) { return fmt(n, 2) + "%"; }
 function normalizeDate(s) {
   if (!s) return null;
   s = String(s).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  const parts = s.split(/[\/\-\.]/).filter(Boolean);
+  // Strip time portion if present: "2024-01-15 14:32:11" → "2024-01-15"
+  // "15.01.2024 14:32:11" → "15.01.2024"
+  const noTime = s.replace(/[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/, "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(noTime)) return noTime;
+  const parts = noTime.split(/[\/\-\.]/).filter(Boolean);
   if (parts.length === 3) {
     const [a, b, c] = parts.map(Number);
-    if (c > 1000) return `${c}-${String(b).padStart(2,"0")}-${String(a).padStart(2,"0")}`;
-    if (a > 1000) return `${a}-${String(b).padStart(2,"0")}-${String(c).padStart(2,"0")}`;
+    if (Number.isFinite(c) && c > 1000) return `${c}-${String(b).padStart(2,"0")}-${String(a).padStart(2,"0")}`;
+    if (Number.isFinite(a) && a > 1000) return `${a}-${String(b).padStart(2,"0")}-${String(c).padStart(2,"0")}`;
   }
   return null;
 }
@@ -5516,8 +5519,10 @@ function xtbWorkbookSheetToRows(ws) {
   if (!Array.isArray(aoa) || !aoa.length) return [];
 
   const HEADER_HINTS = new Set([
-    "id","position","symbol","simbolo","instrumento","type","tipo","volume","qty","quantity","quantidade",
+    "id","position","posicao","symbol","simbolo","instrumento","type","tipo","volume","qty","quantity","quantidade",
     "open_time","opentime","close_time","closetime","open_price","close_price","market_price",
+    "hora_de_abertura","hora_abertura","hora_de_fecho","hora_fecho",
+    "preco_de_abertura","preco_de_fecho","preco_atual","preco_de_mercado",
     "purchase_value","amount","montante","comment","comentario","time","date","data","profit","lucro",
     "commission","comissao","swap","margin","market price","open price","close price"
   ]);
@@ -5537,8 +5542,10 @@ function xtbWorkbookSheetToRows(ws) {
     if (normed.includes("symbol") || normed.includes("simbolo") || normed.includes("instrumento")) score += 4;
     if (normed.includes("type") || normed.includes("tipo")) score += 3;
     if (normed.includes("amount") || normed.includes("montante")) score += 3;
-    if (normed.includes("open_time") || normed.includes("close_time")) score += 3;
-    if (normed.includes("market_price") || normed.includes("open_price")) score += 3;
+    if (normed.includes("open_time") || normed.includes("close_time") ||
+        normed.includes("hora_de_abertura") || normed.includes("hora_de_fecho")) score += 3;
+    if (normed.includes("market_price") || normed.includes("open_price") ||
+        normed.includes("preco_de_abertura") || normed.includes("preco_atual")) score += 3;
     if (score > bestScore) { bestScore = score; bestIdx = i; }
   }
   if (bestIdx < 0 || bestScore < 5) return [];
@@ -5662,8 +5669,10 @@ function detectBrokerRowsFormat(rows) {
   // EN cols: Symbol,Type,Open time,Close time,Open price,Close price,Volume,Profit,Commission,Swap
   // PT cols (after normKey accent strip): simbolo,tipo,data_de_abertura,data_de_fecho,preco_de_abertura,preco_de_fecho,volume,lucro,comissao,swap
   const hasSymbolOrSimb = has("symbol","simbolo","instrumento");
-  const hasOpenTime  = has("open_time","opentime","data_de_abertura","data_abertura","abertura");
-  const hasCloseTime = has("close_time","closetime","data_de_fecho","data_fecho","fecho");
+  const hasOpenTime  = has("open_time","opentime","data_de_abertura","data_abertura","abertura",
+                          "hora_de_abertura","hora_abertura","hora de abertura","open_hour");
+  const hasCloseTime = has("close_time","closetime","data_de_fecho","data_fecho","fecho",
+                          "hora_de_fecho","hora_fecho","hora de fecho","close_hour");
   const hasVolume    = has("volume","qty","quantity","quantidade");
   const hasProfit    = has("profit","lucro","resultado","pl","profit_loss");
   if (hasSymbolOrSimb && has("type","tipo") && hasOpenTime && hasCloseTime && hasVolume) return "xtb_trades";
@@ -5860,22 +5869,29 @@ function parseXTBNormalizeAction(type, comment) {
   if (t === "buy" || t === "compra" || t === "bought" || t === "compra_mercado" || t === "compra_limite") return "BUY";
   if (t === "sell" || t === "venda" || t === "sold" || t === "venda_mercado" || t === "venda_limite") return "SELL";
   // Cash operations
-  if (t.includes("deposit") || t.includes("deposito") || c.includes("deposit")) return "DEPOSIT";
-  if (t.includes("withdraw") || t.includes("levantamento") || t.includes("retirada")) return "WITHDRAWAL";
-  // XTB often exports the typo "DIVIDENT"
-  if (t.includes("divident") || t.includes("dividend") || t.includes("dividendo") || c.includes("dividend") || c.includes("dividendo")) return "DIVIDEND";
-  // Withholding/WHT rows should count as dividend tax, not as generic cash movement
-  if (t.includes("withholding tax") || t.includes("wht") || c.includes(" wht ")) return "DIVIDEND_TAX";
-  // Swap = overnight financing cost for leveraged CFD positions → WITHDRAWAL (expense)
+  if (t.includes("deposit") || t.includes("deposito") || t.includes("depositar") || c.includes("deposit")) return "DEPOSIT";
+  if (t.includes("withdraw") || t.includes("levantamento") || t.includes("retirada") || t.includes("levantar")) return "WITHDRAWAL";
+  // XTB often exports the typo "DIVIDENT"; also PT "Dividendo"
+  if (t.includes("divident") || t.includes("dividend") || t.includes("dividendo") ||
+      c.includes("dividend") || c.includes("dividendo")) return "DIVIDEND";
+  // Withholding tax — PT: "Imposto retido na fonte", "Retenção na fonte"
+  if (t.includes("withholding") || t.includes("wht") || t.includes("imposto retido") ||
+      t.includes("retencao na fonte") || t.includes("retencao") ||
+      c.includes(" wht ") || c.includes("retido na fonte")) return "DIVIDEND_TAX";
+  // Swap = overnight/financing cost → treat as cost (WITHDRAWAL)
   if (t === "swap" || t.includes("rollover") || t.includes("overnight") || t.includes("financiamento")) return "WITHDRAWAL";
-  // Interest income (on cash balance, not swap)
-  if ((t.includes("interest") && !t.includes("swap") && !t.includes("tax")) || (t.includes("juro") && !t.includes("swap") && !t.includes("tax"))) return "CASH_INTEREST";
+  // Interest on cash balance — PT: "Juros sobre saldo", "Juro sobre saldo"
+  if ((t.includes("juro") || t.includes("interest")) &&
+      !t.includes("swap") && !t.includes("tax") && !t.includes("imposto") && !t.includes("retencao")) return "CASH_INTEREST";
   if (c.includes("interest on") && !c.includes("swap")) return "CASH_INTEREST";
+  // Interest tax
   if ((t.includes("interest") && t.includes("tax")) || c.includes("interest tax")) return "CASH_INTEREST_TAX";
-  // Commission as separate cash op (not embedded in trade)
-  if (t.includes("commission") || t.includes("comissao") || t.includes("taxa")) return "OTHER";
-  // Stock/ETF/Fund operations
+  // Commission as separate cash op
+  if (t.includes("commission") || t.includes("comissao") || t === "taxa") return "OTHER";
+  // Stock/ETF/Fund BUY operations in cash ledger
   if (t.includes("stock") || t.includes("acao") || t.includes("etf")) return "BUY";
+  // XTB PT: "Correcao de saldo" or "Ajuste de saldo"
+  if (t.includes("correc") || t.includes("ajuste") || t.includes("adjustment") || t.includes("correction")) return "OTHER";
   return "OTHER";
 }
 
@@ -5889,6 +5905,14 @@ function xtbTickerToYahoo(symbol) {
   if (s.endsWith(".PT")) return s.slice(0, -3) + ".LS";
   // .UK → .L (London)
   if (s.endsWith(".UK")) return s.slice(0, -3) + ".L";
+  // .HK → .HK (Hong Kong — same)
+  // .CN → .SS or .SZ (China — can't determine, keep as-is)
+  // .SG → .SI (Singapore)
+  if (s.endsWith(".SG")) return s.slice(0, -3) + ".SI";
+  // .AU → .AX (Australia)
+  if (s.endsWith(".AU")) return s.slice(0, -3) + ".AX";
+  // .JP → .T (Tokyo)
+  if (s.endsWith(".JP")) return s.slice(0, -3) + ".T";
   return s;
 }
 
@@ -5910,8 +5934,10 @@ function parseXTBTradesRows(rows, meta) {
     const r = normalizeRow(raw);
     const symbol   = String(r.symbol || r.simbolo || r.instrumento || r.ticker || "").trim();
     const typeRaw  = String(r.type || r.tipo || r.direction || r.direcao || "").trim();
-    const openTime = String(r.open_time || r.opentime || r.data_de_abertura || r.data_abertura || r.abertura || "").trim();
-    const closeTime= String(r.close_time || r.closetime || r.data_de_fecho || r.data_fecho || r.fecho || "").trim();
+    const openTime = String(r.open_time || r.opentime || r.hora_de_abertura || r.hora_abertura ||
+                             r.data_de_abertura || r.data_abertura || r.abertura || "").trim();
+    const closeTime= String(r.close_time || r.closetime || r.hora_de_fecho || r.hora_fecho ||
+                            r.data_de_fecho || r.data_fecho || r.fecho || "").trim();
     const openPx   = parseNumberSmart(r.open_price || r.openprice || r.preco_de_abertura || r.preco_abertura || r.preco_entrada);
     const closePx  = parseNumberSmart(r.close_price || r.closeprice || r.preco_de_fecho || r.preco_fecho || r.preco_saida);
     const vol      = parseNumberSmart(r.volume || r.qty || r.quantity || r.quantidade || r.units);
@@ -6819,6 +6845,12 @@ async function importBrokerFiles(files) {
       meta.positions = (xtbRows.positions||[]).length;
       bd.files.push(meta); addedFiles++;
       continue;
+    }
+    // Show debug info for unrecognized files
+    const diagEl2 = document.getElementById("brokerImportDiag");
+    if (diagEl2) {
+      const sampleHeaders = (rows.slice(0,1)[0] ? Object.keys(rows[0]).slice(0,8).join(", ") : "—");
+      console.warn(`[Import] Ficheiro não reconhecido: ${file.name} | formato detectado: ${format} | colunas: ${sampleHeaders}`);
     }
     unknownFiles++;
   }
@@ -8041,9 +8073,28 @@ function wire() {
       const orig = btnImportBrokerFiles.textContent;
       btnImportBrokerFiles.textContent = "A importar…";
       try {
-        await importBrokerFiles(files);
+        const result = await importBrokerFiles(files);
+        // Show diagnostic if some files not recognized
+        if (result && result.unknownFiles > 0) {
+          const diagEl = document.getElementById("brokerImportDiag");
+          if (diagEl) {
+            diagEl.style.display = "";
+            diagEl.style.cssText = "padding:10px;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;font-size:13px;margin-top:8px;color:#9a3412";
+            diagEl.innerHTML = `⚠️ ${result.unknownFiles} ficheiro${result.unknownFiles !== 1 ? "s" : ""} não reconhecido${result.unknownFiles !== 1 ? "s" : ""}.<br>
+              <span style="font-size:12px">Formatos suportados: XTB (Excel/CSV histórico operações, posições abertas, operações de caixa), Trading 212 (CSV, PDF holdings).<br>
+              Verifica se o ficheiro está em Excel (.xlsx) ou CSV e se corresponde a um destes formatos.</span>`;
+          }
+        }
       } catch (e) {
-        toast("Falha no import das corretoras: " + (e && e.message ? e.message : String(e)), 4500);
+        const msg = e && e.message ? e.message : String(e);
+        toast("Falha no import: " + msg, 5000);
+        console.error("importBrokerFiles error:", e);
+        const diagEl = document.getElementById("brokerImportDiag");
+        if (diagEl) {
+          diagEl.style.display = "";
+          diagEl.style.cssText = "padding:10px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;font-size:13px;margin-top:8px;color:#991b1b";
+          diagEl.innerHTML = `❌ Erro no import: <b>${escapeHtml(msg)}</b>`;
+        }
       } finally {
         btnImportBrokerFiles.disabled = false;
         btnImportBrokerFiles.textContent = orig;
