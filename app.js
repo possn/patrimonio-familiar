@@ -5726,7 +5726,8 @@ function normalizeBrokerAction(raw) {
   if (n.startsWith("dividend")) return "DIVIDEND";
   if (n.includes("stock split open")) return "SPLIT_OPEN";
   if (n.includes("stock split close")) return "SPLIT_CLOSE";
-  if (n.includes("stock distribution")) return "STOCK_DISTRIBUTION";
+  if (n.includes("stock distribution") || n.includes("custom stock distribution")) return "STOCK_DISTRIBUTION";
+  if (n.includes("spin off") || n.includes("spin_off")) return "STOCK_DISTRIBUTION"; // treat spin-off as stock event
   return "OTHER";
 }
 
@@ -5888,10 +5889,22 @@ function parseXTBNormalizeAction(type, comment) {
   if ((t.includes("interest") && t.includes("tax")) || c.includes("interest tax")) return "CASH_INTEREST_TAX";
   // Commission as separate cash op
   if (t.includes("commission") || t.includes("comissao") || t === "taxa") return "OTHER";
-  // Stock/ETF/Fund BUY operations in cash ledger
-  if (t.includes("stock") || t.includes("acao") || t.includes("etf")) return "BUY";
+  // "Stock purchase" / "Stock sale" in XTB cash ledger = accounting records for positions
+  // already tracked in OPEN/CLOSED sheets → skip to avoid duplicates
+  if (t.includes("stock purchase") || t.includes("stock sale")) return "OTHER";
+  // "close trade" = closed CFD/position record → skip (P&L from CLOSED sheet)
+  if (t.includes("close trade") || t.includes("fechar") || t.includes("closing")) return "OTHER";
+  // "fractional shares" = fractional DRS credit → skip
+  if (t.includes("fractional")) return "OTHER";
+  // Spin-off = corporate action → skip (no cash in/out)
+  if (t.includes("spin") || t.includes("spin_off")) return "OTHER";
+  // Transaction taxes / fees → skip
+  if (t.includes("stamp") || t.includes("sec fee") || t.includes("iftt") || t.includes("tobin")) return "OTHER";
+  // XTB EN: "Free-funds Interest" → CASH_INTEREST (already handled by interest check above, this is a fallback)
   // XTB PT: "Correcao de saldo" or "Ajuste de saldo"
   if (t.includes("correc") || t.includes("ajuste") || t.includes("adjustment") || t.includes("correction")) return "OTHER";
+  // Legacy: some XTB exports mark stock ops as "stock" type → skip
+  if (t.includes("stock") || t.includes("acao") || t.includes("etf")) return "OTHER";
   return "OTHER";
 }
 
@@ -5941,7 +5954,7 @@ function parseXTBTradesRows(rows, meta) {
     const openPx   = parseNumberSmart(r.open_price || r.openprice || r.preco_de_abertura || r.preco_abertura || r.preco_entrada);
     const closePx  = parseNumberSmart(r.close_price || r.closeprice || r.preco_de_fecho || r.preco_fecho || r.preco_saida);
     const vol      = parseNumberSmart(r.volume || r.qty || r.quantity || r.quantidade || r.units);
-    const profit   = parseNumberSmart(r.profit || r.lucro || r.resultado || r.pl || r.profit_loss);
+    const profit   = parseNumberSmart(r.profit || r.lucro || r.resultado || r.pl || r.profit_loss || r.gross_p_l || r.gross_pl);
     const commission = parseNumberSmart(r.commission || r.comissao || r.comissoes || 0);
     const swap     = parseNumberSmart(r.swap || r.swap_points || 0);
     const purchaseValue = parseNumberSmart(r.purchase_value || r["purchase value"] || r.valor_de_compra || r.valor_compra);
@@ -5957,9 +5970,16 @@ function parseXTBTradesRows(rows, meta) {
     const pricePerShare = Number.isFinite(closePx) && closePx > 0 ? closePx : openPx;
     const swapCost = Number.isFinite(swap) && swap < 0 ? Math.abs(swap) : 0;
     const feeEUR   = Math.abs(commission) + swapCost;
-    const costEUR  = (Number.isFinite(purchaseValue) && purchaseValue > 0 ? purchaseValue : vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : pricePerShare)) * fx;
-    const proceedsEUR = (Number.isFinite(saleValue) && saleValue > 0 ? saleValue : vol * (Number.isFinite(closePx) && closePx > 0 ? closePx : pricePerShare)) * fx;
-    const pnlEUR = Number.isFinite(profit) ? profit : (proceedsEUR - costEUR - feeEUR);
+    // XTB: purchase_value and sale_value are in account currency (EUR) — do NOT apply fx
+    // Only apply fx when computing from price×qty (native currency)
+    const costEUR  = Number.isFinite(purchaseValue) && purchaseValue > 0
+      ? purchaseValue  // already in EUR
+      : vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : pricePerShare) * fx;
+    const proceedsEUR = Number.isFinite(saleValue) && saleValue > 0
+      ? saleValue  // already in EUR
+      : vol * (Number.isFinite(closePx) && closePx > 0 ? closePx : pricePerShare) * fx;
+    // Prefer broker-reported Gross P/L; fallback to computed
+    const pnlEUR = Number.isFinite(profit) && profit !== 0 ? profit : (proceedsEUR - costEUR - feeEUR);
 
     const evt = {
       id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
@@ -5999,10 +6019,12 @@ function parseXTBPositionsRows(rows, meta) {
     const nativeCcy = xtbSymbolCurrency(symbol);
     const fx = brokerApproxFxToEUR(nativeCcy);
     const usePrice = Number.isFinite(mktPx) && mktPx > 0 ? mktPx : (Number.isFinite(openPx) ? openPx : 0);
-    const costNative = Number.isFinite(purchaseValue) && purchaseValue > 0 ? purchaseValue : vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : usePrice);
-    const marketNative = vol * usePrice;
-    const costBasisEUR = costNative * fx;
-    const marketValueEUR = marketNative * fx;
+    // XTB: purchase_value is in account currency (EUR) — do NOT apply fx
+    // Market price is in native currency → apply fx
+    const costBasisEUR = Number.isFinite(purchaseValue) && purchaseValue > 0
+      ? purchaseValue  // already in EUR
+      : vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : usePrice) * fx;
+    const marketValueEUR = vol * usePrice * fx;
 
     const pos = {
       id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
@@ -6012,8 +6034,6 @@ function parseXTBPositionsRows(rows, meta) {
       class: brokerPositionClassFromTicker(ticker),
       positionKind: "market_snapshot",
       snapshotDate: meta.asOfDate || isoToday(),
-      valueNative: marketNative,
-      costNative,
       key: ""
     };
     pos.key = brokerPositionKey(pos);
@@ -6210,11 +6230,19 @@ function rebuildBrokerGeneratedData() {
     const pos = touchPos({ ticker: p.ticker, isin: p.isin, name: p.name, cls, sourceName: p.sourceName, currency: p.priceCurrency || "EUR" });
     if (p.positionKind === "market_snapshot") {
       const d = String(p.snapshotDate || "");
-      if (!pos.hasSnapshot || !pos.snapshotDate || (d && d >= pos.snapshotDate)) {
+      if (!pos.hasSnapshot || !pos.snapshotDate || (d && d > pos.snapshotDate)) {
+        // Newer snapshot date → reset and use this one
         pos.snapshotDate = d;
         pos.snapshotQty = parseNum(p.qty);
         pos.marketValueEUR = Math.max(0, parseNum(p.marketValueEUR));
+        pos.costBasis = Math.max(0, parseNum(p.costBasisEUR));
         pos.hasSnapshot = pos.marketValueEUR > 0 || pos.snapshotQty > 0;
+      } else if (d === pos.snapshotDate) {
+        // SAME snapshot date → ACCUMULATE across lots (e.g. XTB has 1 row per open lot)
+        pos.snapshotQty += parseNum(p.qty);
+        pos.marketValueEUR += Math.max(0, parseNum(p.marketValueEUR));
+        pos.costBasis += Math.max(0, parseNum(p.costBasisEUR));
+        pos.hasSnapshot = true;
       }
     } else {
       pos.qty += parseNum(p.qty);
