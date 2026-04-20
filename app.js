@@ -12,7 +12,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260419a").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260420c").catch(() => {});
     });
   }
 } catch (_) {}
@@ -423,9 +423,24 @@ async function loadStateAsync() {
     const raw = await storageGet();
     if (!raw) return safeClone(DEFAULT_STATE);
     const p = JSON.parse(raw);
+    const assets = Array.isArray(p.assets) ? p.assets.map(a => {
+      const out = { ...a };
+      if ((!out.yieldType || out.yieldType === "none") && parseNum(out.yieldValue) <= 0) {
+        const legacy = getLegacyPassiveMeta(out);
+        if (legacy.type !== "none") {
+          out.yieldType = legacy.type;
+          out.yieldValue = parseNum(legacy.value);
+        }
+      }
+      if ((out.appreciationPct === undefined || out.appreciationPct === null || String(out.appreciationPct).trim() === "")) {
+        const legacyApp = parseNum(out.appreciationRatePct ?? out.expectedAppreciationPct ?? out.capitalReturnPct ?? out.returnPct);
+        if (legacyApp) out.appreciationPct = legacyApp;
+      }
+      return out;
+    }) : [];
     return {
       settings: { currency: "EUR", goalMonthly: 0, returnDefaults: safeClone(DEFAULT_RETURN_SETTINGS), ...( p.settings || {}) },
-      assets: Array.isArray(p.assets) ? p.assets : [],
+      assets,
       liabilities: Array.isArray(p.liabilities) ? p.liabilities : [],
       transactions: Array.isArray(p.transactions) ? p.transactions : [],
       dividends: Array.isArray(p.dividends) ? p.dividends : [],
@@ -446,11 +461,35 @@ function saveState() { return storageSet(JSON.stringify(state)); }
 async function saveStateAsync() { await storageSet(JSON.stringify(state)); }
 
 /* ─── TOTALS ──────────────────────────────────────────────── */
+function getLegacyPassiveMeta(it) {
+  if (!it) return { type: "none", value: 0 };
+  const yearlyCandidates = [
+    it.annualIncome, it.passiveAnnual, it.annualYieldEur,
+    it.annualInterestEur, it.incomeYear, it.jurosAno
+  ].map(parseNum).filter(v => v > 0);
+  if (yearlyCandidates.length) return { type: "yield_eur_year", value: yearlyCandidates[0] };
+
+  const monthlyRentCandidates = [it.rentMonthly, it.monthlyRent, it.rendaMensal].map(parseNum).filter(v => v > 0);
+  if (monthlyRentCandidates.length) return { type: "rent_month", value: monthlyRentCandidates[0] };
+
+  const pctCandidates = [
+    it.yieldPct, it.passivePct, it.interestPct, it.ratePct,
+    it.apy, it.couponPct, it.taxaJuro, it.taxa
+  ].map(parseNum).filter(v => v > 0);
+  if (pctCandidates.length) return { type: "yield_pct", value: pctCandidates[0] };
+
+  return { type: "none", value: 0 };
+}
+
 function passiveFromItem(it) {
-  const v = parseNum(it.value), yv = parseNum(it.yieldValue), yt = it.yieldType || "none";
+  const v = parseNum(it && it.value), yv = parseNum(it && it.yieldValue), yt = it && it.yieldType || "none";
   if (yt === "yield_pct") return v * (yv / 100);
   if (yt === "yield_eur_year") return yv;
   if (yt === "rent_month") return yv * 12;
+  const legacy = getLegacyPassiveMeta(it);
+  if (legacy.type === "yield_pct") return v * (parseNum(legacy.value) / 100);
+  if (legacy.type === "yield_eur_year") return parseNum(legacy.value);
+  if (legacy.type === "rent_month") return parseNum(legacy.value) * 12;
   return 0;
 }
 
@@ -702,7 +741,8 @@ function hasExplicitAppreciationPct(asset) {
 function hasExplicitPassiveYield(asset) {
   if (!asset) return false;
   const yt = asset.yieldType || "none";
-  return yt !== "none";
+  if (yt !== "none") return true;
+  return getLegacyPassiveMeta(asset).type !== "none";
 }
 
 function getAssetPassiveRatePct(asset, opts = {}) {
@@ -714,6 +754,10 @@ function getAssetPassiveRatePct(asset, opts = {}) {
   if (yt === "yield_pct") return yv;
   if (yt === "yield_eur_year") return yv / Math.max(1, v) * 100;
   if (yt === "rent_month") return yv * 12 / Math.max(1, v) * 100;
+  const legacy = getLegacyPassiveMeta(asset);
+  if (legacy.type === "yield_pct") return parseNum(legacy.value);
+  if (legacy.type === "yield_eur_year") return parseNum(legacy.value) / Math.max(1, v) * 100;
+  if (legacy.type === "rent_month") return parseNum(legacy.value) * 12 / Math.max(1, v) * 100;
   if (!allowClassFallback) return 0;
   const rs = getReturnSettings();
   return parseNum(rs.classPassivePct[assetClassKey(asset)] || 0);
@@ -1001,16 +1045,18 @@ function renderGeoChart() {
   if (lbl) lbl.textContent = `${assets.length} activos · ${labels.length} regiões`;
 }
 
-function renderAll() {
-  renderDashboard();
-  renderItems();
-  renderCashflow();
-  renderDividends();
+function renderAll(opts = {}) {
+  const force = !!(opts && opts.force);
   updatePassiveBar();
   renderBrokerImportStatus();
   updateQuoteErrorIndicator();
-  if (currentView === "analysis") { renderSectorChart(); renderGeoChart(); }
-  if (currentView === "settings") renderReturnSettingsCard();
+
+  if (force || currentView === "dashboard") renderDashboard();
+  if (force || currentView === "assets") { renderItems(); renderEquityPnL(); }
+  if (force || currentView === "cashflow") renderCashflow();
+  if (force || currentView === "dividends") renderDividends();
+  if (force || currentView === "analysis") renderAnalysis();
+  if (force || currentView === "settings") renderReturnSettingsCard();
 }
 
 /* ─── DASHBOARD ───────────────────────────────────────────── */
@@ -5299,6 +5345,25 @@ function ensureBrokerData() {
   return state.brokerData;
 }
 
+function getBrokerDataSignature() {
+  const bd = ensureBrokerData();
+  const fileHashes = (bd.files || []).map(f => String(f.hash || '')).sort().join('|');
+  return [
+    (bd.files || []).length,
+    (bd.events || []).length,
+    (bd.positions || []).length,
+    fileHashes
+  ].join('::');
+}
+
+function hasBrokerGeneratedMirror() {
+  return !!(
+    (state.assets || []).some(a => a && a.generatedFromBroker) ||
+    (state.dividends || []).some(d => d && d.generatedFromBroker) ||
+    (state.transactions || []).some(t => t && t.generatedFromBroker)
+  );
+}
+
 async function hashFile(file) {
   try {
     if (crypto && crypto.subtle && file && typeof file.arrayBuffer === "function") {
@@ -6105,6 +6170,18 @@ function rebuildBrokerGeneratedData() {
     }
   }
 
+  const cutoffDiv12m = new Date(new Date().getFullYear() - 1, new Date().getMonth(), new Date().getDate()).toISOString().slice(0, 10);
+  const divNet12mBySecurity = new Map();
+  for (const e of (bd.events || [])) {
+    if (!(e && (e.type === "DIVIDEND" || e.type === "ROC" || e.type === "DIVIDEND_ADJ"))) continue;
+    if (String(e.date || "") < cutoffDiv12m) continue;
+    const secKey = makeBrokerSecurityKey(e);
+    if (!secKey) continue;
+    const net = Math.max(0, parseNum(e.totalEUR) - parseNum(e.taxEUR));
+    if (net <= 0) continue;
+    divNet12mBySecurity.set(secKey, (divNet12mBySecurity.get(secKey) || 0) + net);
+  }
+
   for (const p of posMap.values()) {
     const finalQty = p.hasSnapshot && p.snapshotQty > 0 ? p.snapshotQty : p.qty;
     const finalValue = p.hasSnapshot && p.marketValueEUR > 0 ? p.marketValueEUR : (p.marketValueEUR > 0 ? p.marketValueEUR : p.costBasis);
@@ -6123,17 +6200,7 @@ function rebuildBrokerGeneratedData() {
     noteBits.push(`Fontes=${Array.from(p.sourceNames || []).join(", ") || "import"}`);
     // ── Compute annualised dividend yield from imported dividend events
     const secKey  = makeBrokerSecurityKey(p);
-    const now     = new Date();
-    const curYear = now.getFullYear();
-    const cutoff  = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
-
-    // Collect dividend events for this security (last 12 months)
-    const divEvts = (bd.events || []).filter(e =>
-      (e.type === "DIVIDEND" || e.type === "ROC" || e.type === "DIVIDEND_ADJ") &&
-      makeBrokerSecurityKey(e) === secKey &&
-      String(e.date || "") >= cutoff
-    );
-    const totalDivEUR12m = divEvts.reduce((s, e) => s + Math.max(0, parseNum(e.totalEUR) - parseNum(e.taxEUR)), 0);
+    const totalDivEUR12m = divNet12mBySecurity.get(secKey) || 0;
 
     // Annualised yield = net dividends last 12m / current value
     let assetYieldType = "none", assetYieldValue = 0;
@@ -6156,6 +6223,8 @@ function rebuildBrokerGeneratedData() {
       generatedFromBroker: true
     });
   }
+  if (!state.settings) state.settings = {};
+  state.settings.brokerRebuildSig = getBrokerDataSignature();
 }
 
 
@@ -6629,9 +6698,11 @@ async function importBrokerFiles(files) {
   bd.files = Array.from(uniqueFiles.values());
 
   rebuildBrokerGeneratedData();
+  if (!state.settings) state.settings = {};
+  state.settings.brokerRebuildSig = getBrokerDataSignature();
   autoSyncDivSummariesFromImportedData(); // auto-fill annual summaries from real data
   await saveStateAsync();
-  renderAll();
+  renderAll({ force: true });
 
   const msg = `Corretoras: ${addedFiles} ficheiro${addedFiles !== 1 ? 's' : ''} · ${addedEvents} evento${addedEvents !== 1 ? 's' : ''} · ${addedPositions} posição${addedPositions !== 1 ? 'ões' : ''}${replacedFiles ? ` · ${replacedFiles} substituído${replacedFiles !== 1 ? 's' : ''}` : ''}${unknownFiles ? ` · ${unknownFiles} não reconhecido${unknownFiles !== 1 ? 's' : ''}` : ''}`;
   toast(msg, 4500);
@@ -6649,6 +6720,8 @@ function clearBrokerImports() {
   // Also clear auto-generated annual summaries
   state.divSummaries = (state.divSummaries || []).filter(s => !s.generatedFromBroker);
   state.brokerData = { files: [], events: [], positions: [] };
+  if (!state.settings) state.settings = {};
+  delete state.settings.brokerRebuildSig;
   saveState();
   renderAll();
   toast(`🗑️ ${n} import${n !== 1 ? 's' : ''} de corretora apagado${n !== 1 ? 's' : ''}.`, 4000);
@@ -7686,6 +7759,8 @@ function setSettingsPane(which) {
 
 /* ─── WIRING ──────────────────────────────────────────────── */
 function wire() {
+  if (window.__PF_MAIN_WIRED) return;
+  window.__PF_MAIN_WIRED = true;
   wireModalClosers();
 
   // Nav
@@ -8524,8 +8599,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (migrateDividendRecords()) changed = true;
     const bd = ensureBrokerData();
     if ((bd.files||[]).length || (bd.events||[]).length || (bd.positions||[]).length) {
-      rebuildBrokerGeneratedData();
-      changed = true;
+      const sig = getBrokerDataSignature();
+      const prevSig = (((state || {}).settings || {}).brokerRebuildSig) || "";
+      if (!hasBrokerGeneratedMirror() || sig !== prevSig) {
+        rebuildBrokerGeneratedData();
+        if (!state.settings) state.settings = {};
+        state.settings.brokerRebuildSig = sig;
+        changed = true;
+      }
     }
     autoSyncDivSummariesFromImportedData();
     if (pruneGeneratedDividendSummaries()) changed = true;
@@ -8818,6 +8899,8 @@ function printDashboard() { window.print(); }
 (function wireV15() {
   // Aguardar DOM pronto
   const init = () => {
+    if (window.__PF_WIRE_V15_DONE) return;
+    window.__PF_WIRE_V15_DONE = true;
     const b = id => document.getElementById(id);
     if (b("btnExportCashflowCSV")) b("btnExportCashflowCSV").addEventListener("click", exportCashflowCSV);
     if (b("btnExportPortfolioCSV")) b("btnExportPortfolioCSV").addEventListener("click", exportPortfolioCSV);
@@ -8851,12 +8934,15 @@ function renderHealthRatios() {
   const leverageRatio = t.assetsTotal / Math.max(1, t.net);
   const py = calcPortfolioYield();
   const passiveRatioActual = t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0;
-  const passiveRatioProjectedRaw = parseNum(py && (py.weightedProjectedPassivePct ?? py.weightedYield ?? py.passiveYieldPct));
-  const passiveRatioProjected = passiveRatioProjectedRaw > 0 ? passiveRatioProjectedRaw : 0;
+  const directProjectedAnnual = (state.assets || []).reduce((sum, a) => {
+    const v = parseNum(a && a.value);
+    if (v <= 0) return sum;
+    return sum + v * (getAssetPassiveRatePct(a, { allowClassFallback: true }) / 100);
+  }, 0);
+  const helperProjectedAnnual = parseNum(py && py.projectedPassiveAnnual);
+  const passiveAnnualProjected = Math.max(directProjectedAnnual, helperProjectedAnnual, 0);
+  const passiveRatioProjected = t.assetsTotal > 0 ? (passiveAnnualProjected / t.assetsTotal * 100) : 0;
   const passiveRatio = passiveRatioProjected > 0 ? passiveRatioProjected : passiveRatioActual;
-  const passiveAnnualProjected = t.assetsTotal > 0 && passiveRatioProjected > 0
-    ? (t.assetsTotal * passiveRatioProjected / 100)
-    : parseNum(py && py.projectedPassiveAnnual);
 
   // Fluxo mensal médio (últimos 6 meses)
   const byMonth = new Map();
@@ -8979,7 +9065,7 @@ function renderHealthRatios() {
         debtRatio<=30?"#059669":debtRatio<=60?"#d97706":"#dc2626", debtTip)}
       ${metricCard("💰", "Rendimento passivo",
         fmtPct(passiveRatio),
-        `Valor principal = yield passivo projectado sobre activos · real actual ${fmtPct(passiveRatioActual)} · proj. ${fmtEUR(passiveAnnualProjected || 0)}/ano · real ${fmtEUR(t.passiveAnnual)}/ano · &gt;4% excelente · &gt;2% adequado`,
+        `Valor principal = yield passivo projectado sobre activos · real actual ${fmtPct(passiveRatioActual)} · proj. ${fmtEUR(passiveAnnualProjected || 0)}/ano · real ${fmtEUR(t.passiveAnnual)}/ano · cálculo directo por activo/classe · &gt;4% excelente · &gt;2% adequado`,
         passiveRatio>=4?"#059669":passiveRatio>=2?"#d97706":"#94a3b8", passiveTip)}
       ${metricCard("💼", "Taxa de poupança",
         savingsRate!==null?fmtPct(savingsRate):"—",
@@ -9219,6 +9305,8 @@ function exportFiscalCSV() {
 /* ─── WIRE v15 PARTE 2 ───────────────────────────────────────── */
 (function wireV15b() {
   const init = () => {
+    if (window.__PF_WIRE_V15B_DONE) return;
+    window.__PF_WIRE_V15B_DONE = true;
     // Simulador E-se?
     const btnWI = document.getElementById("btnWhatIf");
     if (btnWI) btnWI.addEventListener("click", runWhatIf);
@@ -10007,6 +10095,8 @@ function renderDrawdownPanel() {
 /* ─── WIRE v16 ───────────────────────────────────────────────── */
 (function wireV16() {
   const init = () => {
+    if (window.__PF_WIRE_V16_DONE) return;
+    window.__PF_WIRE_V16_DONE = true;
     // Drawdown recalc
     ["drawdownWithdrawal","drawdownReturn","drawdownInflation","drawdownYears"].forEach(id => {
       const el = document.getElementById(id);
@@ -10539,6 +10629,8 @@ function clearAIKey(provider) {
 /* ─── WIRE IA ────────────────────────────────────────────────── */
 (function wireAI() {
   const init = () => {
+    if (window.__PF_WIRE_AI_DONE) return;
+    window.__PF_WIRE_AI_DONE = true;
     const btn = document.getElementById("btnAiAnalyse");
     if (btn) btn.addEventListener("click", runAIAnalysis);
 
@@ -11404,6 +11496,8 @@ function wireCurrencyModal() {
 /* ─── WIRE P&L ───────────────────────────────────────────────── */
 (function wirePnL() {
   const init = () => {
+    if (window.__PF_WIRE_PNL_DONE) return;
+    window.__PF_WIRE_PNL_DONE = true;
     // Renderizar P&L quando entra na tab "assets" e quando cotações são actualizadas
     document.addEventListener("quotesUpdated", renderEquityPnL);
   };

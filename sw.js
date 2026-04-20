@@ -1,5 +1,5 @@
-/* Património Familiar — Service Worker v7 — network-first para garantir updates */
-const CACHE_NAME = "pf-cache-20260420_xtb1";
+/* Património Familiar — Service Worker v9 */
+const CACHE_NAME = "pf-cache-20260420_perf1";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest"];
 
 self.addEventListener("install", event => {
@@ -17,18 +17,38 @@ self.addEventListener("activate", event => {
   })());
 });
 
-// Network-first para todos os pedidos — garante sempre versão mais recente
+async function networkFirst(request) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const fresh = await fetch(request);
+    cache.put(request, fresh.clone()).catch(() => {});
+    return fresh;
+  } catch {
+    const cached = await cache.match(request);
+    return cached || new Response("Offline", { status: 503 });
+  }
+}
+
+async function staleWhileRevalidate(request) {
+  const cache = await caches.open(CACHE_NAME);
+  const cached = await cache.match(request);
+  const fetchPromise = fetch(request).then(resp => {
+    cache.put(request, resp.clone()).catch(() => {});
+    return resp;
+  }).catch(() => cached || new Response("Offline", { status: 503 }));
+  return cached || fetchPromise;
+}
+
 self.addEventListener("fetch", event => {
-  if (event.request.method !== "GET") return;
-  event.respondWith((async () => {
-    try {
-      const fresh = await fetch(event.request);
-      const cache = await caches.open(CACHE_NAME);
-      cache.put(event.request, fresh.clone()).catch(() => {});
-      return fresh;
-    } catch {
-      const cached = await caches.match(event.request);
-      return cached || new Response("Offline", { status: 503 });
-    }
-  })());
+  const req = event.request;
+  if (req.method !== "GET") return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return; // não interceptar worker/API externos
+
+  if (req.mode === "navigate" || req.destination === "document") {
+    event.respondWith(networkFirst(req));
+    return;
+  }
+
+  event.respondWith(staleWhileRevalidate(req));
 });
