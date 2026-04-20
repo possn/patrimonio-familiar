@@ -1,6 +1,6 @@
 /**
  * Cloudflare Worker — Proxy de Cotações (Yahoo Finance)
- * Versão 2.0 — inclui sector, country, exchange para gráficos de análise
+ * Versão 2.1 — fallbacks extra para tickers difíceis
  */
 
 const CACHE_TTL = 300; // 5 minutos
@@ -79,35 +79,67 @@ async function fetchYahooQuote(ticker, ctx) {
     });
   } catch(e) { throw new Error(`Falha de rede: ${e.message}`); }
 
-  if (!resp.ok) throw new Error(`Yahoo Finance: HTTP ${resp.status} para ${ticker}`);
+  if (resp && resp.ok) {
+    const json = await resp.json();
+    const meta = json?.chart?.result?.[0]?.meta;
+    if (meta) {
+      const { price, ccy } = normCcy(meta.regularMarketPrice || meta.previousClose, meta.currency);
+      const result = {
+        ticker: ticker.toUpperCase(),
+        price,
+        currency: ccy,
+        name: meta.shortName || meta.symbol || ticker,
+        change_pct: meta.regularMarketPrice && meta.previousClose
+          ? ((meta.regularMarketPrice - meta.previousClose) / meta.previousClose) * 100 : 0,
+        sector: "",
+        industry: "",
+        country: "",
+        exchange: meta.exchangeName || "",
+        quote_type: meta.instrumentType || "",
+        updated: new Date().toISOString(),
+      };
 
-  const json = await resp.json();
-  const meta = json?.chart?.result?.[0]?.meta;
-  if (!meta) throw new Error(`Sem dados para ${ticker}`);
+      if (Number.isFinite(result.price) && result.price > 0) {
+        ctx.waitUntil(cache.put(cacheUrl, new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` }
+        })));
+        return result;
+      }
+    }
+  }
 
-  const { price, ccy } = normCcy(meta.regularMarketPrice || meta.previousClose, meta.currency);
-  const result = {
-    ticker: ticker.toUpperCase(),
-    price,
-    currency: ccy,
-    name: meta.shortName || meta.symbol || ticker,
-    change_pct: meta.regularMarketPrice && meta.previousClose
-      ? ((meta.regularMarketPrice - meta.previousClose) / meta.previousClose) * 100 : 0,
-    sector: "",
-    industry: "",
-    country: "",
-    exchange: meta.exchangeName || "",
-    quote_type: meta.instrumentType || "",
-    updated: new Date().toISOString(),
-  };
+  // Extra fallback: quoteSummary price module (alguns tickers europeus só respondem aqui)
+  const qsUrl = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=price`;
+  try {
+    const qsResp = await fetch(qsUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
+    if (qsResp.ok) {
+      const qsJson = await qsResp.json();
+      const priceNode = qsJson?.quoteSummary?.result?.[0]?.price;
+      const rawPrice = priceNode?.regularMarketPrice?.raw ?? priceNode?.regularMarketPreviousClose?.raw;
+      if (Number.isFinite(rawPrice) && rawPrice > 0) {
+        const { price, ccy } = normCcy(rawPrice, priceNode?.currency);
+        const result = {
+          ticker: ticker.toUpperCase(),
+          price,
+          currency: ccy,
+          name: priceNode?.shortName || priceNode?.longName || ticker,
+          change_pct: Number.isFinite(priceNode?.regularMarketChangePercent?.raw) ? priceNode.regularMarketChangePercent.raw : 0,
+          sector: "",
+          industry: "",
+          country: "",
+          exchange: priceNode?.exchangeName || priceNode?.exchange || "",
+          quote_type: priceNode?.quoteType || "",
+          updated: new Date().toISOString(),
+        };
+        ctx.waitUntil(cache.put(cacheUrl, new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` }
+        })));
+        return result;
+      }
+    }
+  } catch (_) {}
 
-  if (!Number.isFinite(result.price) || result.price <= 0)
-    throw new Error(`Preço inválido para ${ticker}: ${result.price}`);
-
-  ctx.waitUntil(cache.put(cacheUrl, new Response(JSON.stringify(result), {
-    headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` }
-  })));
-  return result;
+  throw new Error(`Sem dados para ${ticker}`);
 }
 
 export default {

@@ -384,7 +384,7 @@ const ISIN_YAHOO_MAP = {
   "IE000OJ5TQP4":"NATP.IR","IE000W8WMSL2":"QWTM.IR","IE00B3WJKG14":"QDVE.IR",
   "IE00B53SZB19":"SXRV.IR","IE00BFXR7892":"KWEB.IR","IE00BGV5VN51":"XAIX.IR",
   "IE00BKVD2N49":"STX.IR","IE00BLCHJ534":"PAVE.IR","IE00BLH3CV30":"UFOP.IR",
-  "IE00BLS09M33":"PNR.IR","IE00BQT3WG13":"CNYA.IR","IE00BTN1Y115":"MDT.IR",
+  "IE00BLS09M33":"PNR.IR","IE00BQT3WG13":"CNYA.DE","IE00BTN1Y115":"MDT.IR",
   "IE00BY7QL619":"JCI.IR",
   "IT0003128367":"ENL.MI",
   "LU1598757687":"MT.LU",
@@ -396,6 +396,135 @@ const ISIN_YAHOO_MAP = {
   "PTMEN0AE0005":"EGL.LS","PTPTC0AM0009":"PHR.LS","PTREL0AM0008":"RENE.LS",
   "PTSON0AM0001":"SON.LS"
 };
+
+/* ─── CRIPTOMOEDAS — Top 100 por market cap ──────────────────
+   Mapeamento: nome/símbolo comum → ticker Yahoo Finance (formato XXX-USD).
+   O Worker do Cloudflare já suporta estes tickers via v8 chart API sem alterações.
+   Fonte: CoinGecko top 100 (actualizado em 2026-04).
+*/
+const CRYPTO_YAHOO_MAP = {
+  // Top 20
+  "BTC":"BTC-USD", "BITCOIN":"BTC-USD",
+  "ETH":"ETH-USD", "ETHEREUM":"ETH-USD",
+  "USDT":"USDT-USD", "TETHER":"USDT-USD",
+  "BNB":"BNB-USD", "BINANCE COIN":"BNB-USD", "BINANCECOIN":"BNB-USD",
+  "SOL":"SOL-USD", "SOLANA":"SOL-USD",
+  "XRP":"XRP-USD", "RIPPLE":"XRP-USD",
+  "USDC":"USDC-USD", "USD COIN":"USDC-USD",
+  "DOGE":"DOGE-USD", "DOGECOIN":"DOGE-USD",
+  "ADA":"ADA-USD", "CARDANO":"ADA-USD",
+  "TRX":"TRX-USD", "TRON":"TRX-USD",
+  "TON":"TON11419-USD", "TONCOIN":"TON11419-USD",
+  "AVAX":"AVAX-USD", "AVALANCHE":"AVAX-USD",
+  "SHIB":"SHIB-USD", "SHIBA INU":"SHIB-USD",
+  "LINK":"LINK-USD", "CHAINLINK":"LINK-USD",
+  "DOT":"DOT-USD", "POLKADOT":"DOT-USD",
+  "MATIC":"MATIC-USD", "POLYGON":"MATIC-USD", "POL":"POL-USD",
+  "BCH":"BCH-USD", "BITCOIN CASH":"BCH-USD",
+  "LTC":"LTC-USD", "LITECOIN":"LTC-USD",
+  "NEAR":"NEAR-USD",
+  "DAI":"DAI-USD",
+  // 20-40
+  "UNI":"UNI7083-USD", "UNISWAP":"UNI7083-USD",
+  "LEO":"LEO-USD",
+  "KAS":"KAS-USD", "KASPA":"KAS-USD",
+  "PEPE":"PEPE24478-USD",
+  "ICP":"ICP-USD", "INTERNET COMPUTER":"ICP-USD",
+  "FET":"FET-USD",
+  "ETC":"ETC-USD", "ETHEREUM CLASSIC":"ETC-USD",
+  "APT":"APT21794-USD", "APTOS":"APT21794-USD",
+  "XLM":"XLM-USD", "STELLAR":"XLM-USD",
+  "RNDR":"RNDR-USD", "RENDER":"RENDER-USD",
+  "CRO":"CRO-USD", "CRONOS":"CRO-USD",
+  "ATOM":"ATOM-USD", "COSMOS":"ATOM-USD",
+  "HBAR":"HBAR-USD", "HEDERA":"HBAR-USD",
+  "FIL":"FIL-USD", "FILECOIN":"FIL-USD",
+  "MNT":"MNT27075-USD", "MANTLE":"MNT27075-USD",
+  "STX":"STX4847-USD", "STACKS":"STX4847-USD",
+  "IMX":"IMX10603-USD", "IMMUTABLE":"IMX10603-USD", "IMMUTABLEX":"IMX10603-USD",
+  "OKB":"OKB-USD",
+  "MKR":"MKR-USD", "MAKER":"MKR-USD",
+  "VET":"VET-USD", "VECHAIN":"VET-USD",
+  // 40-60
+  "INJ":"INJ-USD", "INJECTIVE":"INJ-USD",
+  "TIA":"TIA22861-USD", "CELESTIA":"TIA22861-USD",
+  "LDO":"LDO-USD", "LIDO":"LDO-USD", "LIDODAO":"LDO-USD",
+  "GRT":"GRT6719-USD", "THE GRAPH":"GRT6719-USD",
+  "ARB":"ARB11841-USD", "ARBITRUM":"ARB11841-USD",
+  "OP":"OP-USD", "OPTIMISM":"OP-USD",
+  "THETA":"THETA-USD",
+  "AR":"AR-USD", "ARWEAVE":"AR-USD",
+  "RUNE":"RUNE-USD", "THORCHAIN":"RUNE-USD",
+  "FTM":"FTM-USD", "FANTOM":"FTM-USD",
+  "SUI":"SUI20947-USD",
+  "BGB":"BGB-USD", "BITGET":"BGB-USD",
+  "SEI":"SEI-USD",
+  "BONK":"BONK-USD",
+  "JUP":"JUP29210-USD", "JUPITER":"JUP29210-USD",
+  "AAVE":"AAVE-USD",
+  "ALGO":"ALGO-USD", "ALGORAND":"ALGO-USD",
+  "FLR":"FLR-USD", "FLARE":"FLR-USD",
+  "XTZ":"XTZ-USD", "TEZOS":"XTZ-USD",
+  "FLOW":"FLOW-USD",
+  // 60-80
+  "WIF":"WIF-USD", "DOGWIFHAT":"WIF-USD",
+  "PYTH":"PYTH-USD",
+  "TAO":"TAO22974-USD", "BITTENSOR":"TAO22974-USD",
+  "KAVA":"KAVA-USD",
+  "SAND":"SAND-USD", "SANDBOX":"SAND-USD",
+  "MANA":"MANA-USD", "DECENTRALAND":"MANA-USD",
+  "EOS":"EOS-USD",
+  "AXS":"AXS-USD",
+  "WLD":"WLD-USD", "WORLDCOIN":"WLD-USD",
+  "NEO":"NEO-USD",
+  "XEC":"XEC-USD", "ECASH":"XEC-USD",
+  "CHZ":"CHZ-USD", "CHILIZ":"CHZ-USD",
+  "CRV":"CRV-USD", "CURVE":"CRV-USD", "CURVE DAO":"CRV-USD",
+  "SNX":"SNX-USD", "SYNTHETIX":"SNX-USD",
+  "COMP":"COMP5692-USD", "COMPOUND":"COMP5692-USD",
+  "ENS":"ENS-USD",
+  "GALA":"GALA-USD",
+  "ROSE":"ROSE-USD", "OASIS":"ROSE-USD",
+  "IOTA":"MIOTA-USD", "MIOTA":"MIOTA-USD",
+  "BAT":"BAT-USD",
+  // 80-100
+  "ZEC":"ZEC-USD", "ZCASH":"ZEC-USD",
+  "DASH":"DASH-USD",
+  "QNT":"QNT-USD", "QUANT":"QNT-USD",
+  "DYDX":"DYDX-USD",
+  "STRK":"STRK22691-USD", "STARKNET":"STRK22691-USD",
+  "ORDI":"ORDI-USD",
+  "PENDLE":"PENDLE-USD",
+  "SUSHI":"SUSHI-USD",
+  "1INCH":"1INCH-USD",
+  "GMX":"GMX11857-USD",
+  "CAKE":"CAKE-USD", "PANCAKESWAP":"CAKE-USD",
+  "RON":"RON14101-USD", "RONIN":"RON14101-USD",
+  "XMR":"XMR-USD", "MONERO":"XMR-USD",
+  "FLOKI":"FLOKI-USD",
+  "AKT":"AKT-USD", "AKASH":"AKT-USD",
+  "ENJ":"ENJ-USD", "ENJIN":"ENJ-USD",
+  "BTT":"BTT-USD", "BITTORRENT":"BTT-USD",
+  "IOTX":"IOTX-USD",
+  "ZIL":"ZIL-USD", "ZILLIQA":"ZIL-USD",
+  "KSM":"KSM-USD", "KUSAMA":"KSM-USD"
+};
+
+/** Normaliza um nome/ticker de cripto e devolve o ticker Yahoo (XXX-USD), ou null. */
+function cryptoToYahoo(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim().toUpperCase();
+  // Já está no formato Yahoo (BTC-USD, ETH-USD, etc)
+  if (/^[A-Z0-9]{2,8}-USD$/.test(s)) return s;
+  // Sufixo .CC → remover e acrescentar -USD
+  if (s.endsWith(".CC")) return s.slice(0, -3) + "-USD";
+  // Lookup directo na tabela
+  if (CRYPTO_YAHOO_MAP[s]) return CRYPTO_YAHOO_MAP[s];
+  // Tentar sem espaços/hífens
+  const compact = s.replace(/[\s\-]/g, "");
+  if (CRYPTO_YAHOO_MAP[compact]) return CRYPTO_YAHOO_MAP[compact];
+  return null;
+}
 
 let state = safeClone(DEFAULT_STATE);
 let currentView = "dashboard";
@@ -828,44 +957,76 @@ function getAssetTotalReturnPct(asset, opts = {}) {
   return getAssetPassiveRatePct(asset, opts) + getAssetAppreciationPct(asset, opts);
 }
 
-function calcTotals() {
-  const assetsTotal = state.assets.reduce((a, x) => a + parseNum(x.value), 0);
-  const liabsTotal = state.liabilities.reduce((a, x) => a + parseNum(x.value), 0);
-  const net = assetsTotal - liabsTotal;
-
+function calcPassiveAnnualSummary() {
   const divData = calcDividendYield();
-  const passiveBreakdown = {};
-  let passiveFromNonDiv = 0;
+  const breakdownReal = {};
+  const breakdownProjected = {};
+  let realNonDiv = 0;
+  let projectedNonDiv = 0;
 
   for (const a of (state.assets || [])) {
     if (isDividendAsset(a)) continue;
-    const p = passiveFromItem(a);
-    if (p <= 0) continue;
-    passiveFromNonDiv += p;
+    const val = parseNum(a && a.value);
+    if (val <= 0) continue;
     const cls = a.class || "Outros";
-    passiveBreakdown[cls] = (passiveBreakdown[cls] || 0) + p;
+
+    const real = Math.max(0, passiveFromItem(a));
+    if (real > 0) {
+      realNonDiv += real;
+      breakdownReal[cls] = (breakdownReal[cls] || 0) + real;
+    }
+
+    const ratePct = Math.max(0, getAssetPassiveRatePct(a, { allowClassFallback: true }));
+    const projected = val * (ratePct / 100);
+    if (projected > 0) {
+      projectedNonDiv += projected;
+      breakdownProjected[cls] = (breakdownProjected[cls] || 0) + projected;
+    }
   }
 
-  const passiveFromDivAssets = Math.max(0, parseNum(divData.net));
-  if (passiveFromDivAssets > 0) {
+  const divAnnual = Math.max(0, parseNum(divData.net));
+  if (divAnnual > 0) {
     const label = divData.source === "summary"
       ? "Dividendos (resumo anual)"
       : divData.period === "ttm"
         ? "Dividendos (últ.12m)"
         : "Dividendos (estimados)";
-    passiveBreakdown[label] = passiveFromDivAssets;
+    breakdownReal[label] = (breakdownReal[label] || 0) + divAnnual;
+    breakdownProjected[label] = (breakdownProjected[label] || 0) + divAnnual;
   }
 
-  const passiveAnnual = passiveFromNonDiv + passiveFromDivAssets;
+  const realAnnual = realNonDiv + divAnnual;
+  const projectedAnnual = projectedNonDiv + divAnnual;
+  return {
+    divData,
+    realAnnual,
+    projectedAnnual,
+    breakdownReal,
+    breakdownProjected
+  };
+}
+
+function calcTotals() {
+  const assetsTotal = state.assets.reduce((a, x) => a + parseNum(x.value), 0);
+  const liabsTotal = state.liabilities.reduce((a, x) => a + parseNum(x.value), 0);
+  const net = assetsTotal - liabsTotal;
+
+  const passive = calcPassiveAnnualSummary();
+  const passiveAnnualReal = passive.realAnnual;
+  const passiveAnnualProjected = passive.projectedAnnual > 0 ? passive.projectedAnnual : passiveAnnualReal;
+
   return {
     assetsTotal,
     liabsTotal,
     net,
-    passiveAnnual,
-    theoreticalPassive: passiveAnnual,
-    realDividends12m: divData.period === "ttm" ? passiveFromDivAssets : 0,
-    summaryNet: divData.source === "summary" ? passiveFromDivAssets : 0,
-    passiveBreakdown
+    passiveAnnual: passiveAnnualProjected,
+    passiveAnnualReal,
+    passiveAnnualProjected,
+    theoreticalPassive: passiveAnnualProjected,
+    realDividends12m: passive.divData.period === "ttm" ? Math.max(0, parseNum(passive.divData.net)) : 0,
+    summaryNet: passive.divData.source === "summary" ? Math.max(0, parseNum(passive.divData.net)) : 0,
+    passiveBreakdown: passive.breakdownProjected,
+    passiveBreakdownReal: passive.breakdownReal
   };
 }
 
@@ -1158,15 +1319,17 @@ function updatePassiveBar() {
   const t = _rc ? _rc.totals : calcTotals();
   const barA = document.getElementById("barPassiveAnnual");
   const barM = document.getElementById("barPassiveMonthly");
-  if (barA) barA.textContent = fmtEUR(t.passiveAnnual);
-  if (barM) barM.textContent = fmtEUR(t.passiveAnnual / 12);
+  const passiveAnnualDisplay = parseNum(t.passiveAnnualProjected != null ? t.passiveAnnualProjected : t.passiveAnnual);
+  if (barA) barA.textContent = fmtEUR(passiveAnnualDisplay);
+  if (barM) barM.textContent = fmtEUR(passiveAnnualDisplay / 12);
 }
 
 /* ─── 1. OBJETIVO DE RENDIMENTO PASSIVO ───────────────────── */
 function renderGoal() {
   const goal = parseNum(state.settings.goalMonthly || 0);
   const t = _rc ? _rc.totals : calcTotals();
-  const monthly = t.passiveAnnual / 12;
+  const passiveAnnualDisplay = parseNum(t.passiveAnnualProjected != null ? t.passiveAnnualProjected : t.passiveAnnual);
+  const monthly = passiveAnnualDisplay / 12;
   const subtitle = $("goalSubtitle");
   const wrap = $("goalProgressWrap");
   const fill = $("goalProgressFill");
@@ -1197,7 +1360,7 @@ function renderGoal() {
     else {
       // Compact 2-column grid — no run-on inline text
       const rows = entries.map(([cls, v]) => {
-        const pct = t.passiveAnnual > 0 ? (v / t.passiveAnnual * 100) : 0;
+        const pct = passiveAnnualDisplay > 0 ? (v / passiveAnnualDisplay * 100) : 0;
         const barW = Math.round(pct);
         return `<div style="display:flex;align-items:center;justify-content:space-between;
             padding:4px 0;border-bottom:1px solid var(--line);gap:6px">
@@ -1213,7 +1376,7 @@ function renderGoal() {
         </div>`;
       }).join("");
       const totalRow = `<div style="display:flex;justify-content:space-between;padding:5px 0;font-weight:800;font-size:12px">
-        <span>Total anual</span><span style="color:#6366f1">${fmtEUR(t.passiveAnnual)}</span>
+        <span>Total anual</span><span style="color:#6366f1">${fmtEUR(passiveAnnualDisplay)}</span>
       </div>`;
       breakEl.innerHTML = rows + totalRow;
       breakEl.style.display = "";
@@ -1549,13 +1712,14 @@ function renderDashboard() {
   }
 
   // ── KPIs secundários ──────────────────────────────────────
-  $("kpiPassiveAnnual").textContent = fmtEUR(t.passiveAnnual);
-  $("kpiPassiveMonthly").textContent = fmtEUR(t.passiveAnnual / 12);
+  const passiveAnnualDisplay = parseNum(t.passiveAnnualProjected != null ? t.passiveAnnualProjected : t.passiveAnnual);
+  $("kpiPassiveAnnual").textContent = fmtEUR(passiveAnnualDisplay);
+  $("kpiPassiveMonthly").textContent = fmtEUR(passiveAnnualDisplay / 12);
 
   const pm2 = document.getElementById("kpiPassiveMonthly2");
   const pa2 = document.getElementById("kpiPassiveAnnualSub");
-  if (pm2) pm2.textContent = fmtEUR(t.passiveAnnual / 12);
-  if (pa2) pa2.textContent = fmtEUR(t.passiveAnnual) + "/ano";
+  if (pm2) pm2.textContent = fmtEUR(passiveAnnualDisplay / 12);
+  if (pa2) pa2.textContent = fmtEUR(passiveAnnualDisplay) + "/ano";
 
   // Yield de dividendos
   const yieldEl = document.getElementById("kpiYield");
@@ -1582,7 +1746,8 @@ function renderDashboard() {
       const last6 = [...byMonth.keys()].sort().slice(-6);
       const avgOut = last6.length ? last6.reduce((s,k)=>s+(byMonth.get(k).out||0),0)/last6.length : 0;
       const exp12 = avgOut * 12;
-      const pct = exp12 > 0 ? Math.min(999, t.passiveAnnual / exp12 * 100) : 0;
+      const passiveAnnualDisplay = parseNum(t.passiveAnnualProjected != null ? t.passiveAnnualProjected : t.passiveAnnual);
+      const pct = exp12 > 0 ? Math.min(999, passiveAnnualDisplay / exp12 * 100) : 0;
       autEl.textContent = pct > 0 ? fmtPct(pct) : "—";
       autEl.style.color = pct >= 100 ? "#059669" : pct >= 50 ? "#f59e0b" : "#8b5cf6";
     }
@@ -4342,8 +4507,9 @@ function calcPortfolioYield() {
   }).filter(r => r.value > 0);
 
   const totalValue = assetRows.reduce((s, r) => s + r.value, 0);
-  const totalPassive = totals.passiveAnnual;
-  const actualPassiveYieldPct = totalValue > 0 ? (totalPassive / totalValue) * 100 : 0;
+  const totalPassiveActual = parseNum(totals.passiveAnnualReal != null ? totals.passiveAnnualReal : totals.passiveAnnual);
+  const totalPassiveProjectedFromTotals = parseNum(totals.passiveAnnualProjected != null ? totals.passiveAnnualProjected : totals.passiveAnnual);
+  const actualPassiveYieldPct = totalValue > 0 ? (totalPassiveActual / totalValue) * 100 : 0;
   const weightedProjectedPassivePct = totalValue > 0
     ? assetRows.reduce((s, r) => s + r.value * r.passiveRatePct, 0) / totalValue
     : 0;
@@ -4357,12 +4523,16 @@ function calcPortfolioYield() {
   const hasRobustTWR = !!(rs.preferTWR && twr && twr.years >= rs.twrMinYears && Math.abs(twr.annualised) < 80);
   const totalReturnAnnual = hasRobustTWR ? twr.annualised : fallbackTotalReturn;
 
+  const projectedPassiveAnnual = totalPassiveProjectedFromTotals > 0
+    ? totalPassiveProjectedFromTotals
+    : totalValue * weightedProjectedPassivePct / 100;
+
   return {
     totalValue,
-    totalPassive,
-    actualPassiveAnnual: totalPassive,
+    totalPassive: projectedPassiveAnnual,
+    actualPassiveAnnual: totalPassiveActual,
     actualPassiveYieldPct,
-    projectedPassiveAnnual: totalValue * weightedProjectedPassivePct / 100,
+    projectedPassiveAnnual,
     weightedProjectedPassivePct,
     weightedYield: weightedProjectedPassivePct,
     passiveYieldPct: weightedProjectedPassivePct,
@@ -5912,6 +6082,22 @@ function xtbTickerToYahoo(symbol) {
   // XTB uses suffixes like AAPL.US, VOW3.DE, VWCE.DE, etc.
   if (!symbol) return symbol;
   const s = symbol.toUpperCase().trim();
+  const directMap = {
+    // Brookfield Asset Management — XTB exports "BAM1.US", Yahoo uses "BAM" (NYSE)
+    "BAM1.US":"BAM",
+    "BAM1":"BAM",
+    // Volkswagen preference shares — XTB "VOW1.DE", Yahoo Xetra is VOW3.DE (VOW.DE is delisted)
+    "VOW1.DE":"VOW3.DE",
+    "VOW1":"VOW3.DE",
+    // VanEck Junior Gold Miners UCITS — Xetra symbol G2XJ
+    "GDXJ.DE":"G2XJ.DE",
+    // Novo Nordisk B — Copenhagen uses hyphen in Yahoo
+    "NOVOB.DK":"NOVO-B.CO",
+    "NOVOB":"NOVO-B.CO",
+    // iShares NASDAQ US Biotech UCITS — listed in London, not Xetra
+    "BTEC.DE":"BTEC.L"
+  };
+  if (directMap[s]) return directMap[s];
   // Remove .US suffix – Yahoo uses bare ticker for US stocks
   if (s.endsWith(".US")) return s.slice(0, -3);
   // .PT → .LS (Euronext Lisbon)
@@ -6013,28 +6199,27 @@ function parseXTBPositionsRows(rows, meta) {
     const openPx   = parseNumberSmart(r.open_price || r["open price"] || r.openprice || r.preco_de_abertura || r.preco_abertura || r.preco_entrada);
     const mktPx    = parseNumberSmart(r.market_price || r["market price"] || r.marketprice || r["current price"] || r.preco_atual || r.preco_de_mercado);
     const purchaseValue = parseNumberSmart(r.purchase_value || r["purchase value"] || r.valor_de_compra || r.valor_compra);
-    const grossPL  = parseNumberSmart(r.gross_p_l || r.gross_pl || r.grossp_l || r.grosspl || r.profit || r.lucro || r.resultado);
 
     if (!symbol || !Number.isFinite(vol) || vol <= 0) continue;
     const ticker = xtbTickerToYahoo(symbol);
     const nativeCcy = xtbSymbolCurrency(symbol);
     const fx = brokerApproxFxToEUR(nativeCcy);
     const usePrice = Number.isFinite(mktPx) && mktPx > 0 ? mktPx : (Number.isFinite(openPx) ? openPx : 0);
-
-    // Prefer the EUR figures already calculated by XTB.
-    // purchase_value is the actual EUR amount invested and Gross P/L is the current unrealised P/L in EUR.
-    // This is simpler and more accurate than reconstructing with static FX or proportional price ratios.
+    // v19: purchase_value é o valor EUR real pago pela XTB (usa o FX do dia da compra).
+    // Para manter o market value ancorado em EUR (sem depender de FX estáticos),
+    // aplicamos a RAZÃO entre preço actual e preço de abertura nativo.
+    // market_value_EUR ≈ purchase_value_EUR × (preço_actual / preço_abertura)
+    // Isto herda o FX real da XTB e captura apenas a variação de preço.
     const hasPV = Number.isFinite(purchaseValue) && purchaseValue > 0;
-    const hasGrossPL = Number.isFinite(grossPL);
     const costBasisEUR = hasPV
-      ? purchaseValue
+      ? purchaseValue  // valor EUR exacto já pago
       : vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : usePrice) * fx;
     let marketValueEUR;
-    if (hasPV && hasGrossPL) {
-      marketValueEUR = Math.max(0, purchaseValue + grossPL);
-    } else if (hasPV && Number.isFinite(openPx) && openPx > 0 && Number.isFinite(usePrice) && usePrice > 0) {
+    if (hasPV && Number.isFinite(openPx) && openPx > 0 && Number.isFinite(usePrice) && usePrice > 0) {
+      // Método proporcional — preserva o FX implícito da XTB
       marketValueEUR = purchaseValue * (usePrice / openPx);
     } else {
+      // Fallback: usar FX estático
       marketValueEUR = vol * usePrice * fx;
     }
 
@@ -6283,9 +6468,10 @@ function rebuildBrokerGeneratedData() {
           const sameTicker = String(a.ticker || "").toUpperCase() === String(e.ticker || "").toUpperCase();
           const sameDate = String(a.date || "").slice(0,10) === String(e.date || "").slice(0,10);
           if (sameTicker && sameDate && parseNum(a.taxEUR) > 0 && parseNum(a.totalEUR) === 0) {
-            // XTB cash ledger stores the positive DIVIDENT row as the GROSS dividend in EUR
-            // and the withholding tax as a separate negative row. Keep gross unchanged.
+            // Merge: e becomes gross=(net+wht), tax=wht
+            const net = parseNum(e.totalEUR);
             const wht = parseNum(a.taxEUR);
+            e.totalEUR = net + wht;  // gross = net received + WHT
             e.taxEUR = (parseNum(e.taxEUR) || 0) + wht;
             e.notes = (e.notes || "") + (e.notes ? " · " : "") + `WHT merged: ${fmtEUR2(wht)}`;
             consumed.add(j);
@@ -6391,17 +6577,15 @@ function rebuildBrokerGeneratedData() {
   }
 
   const cutoffDiv12m = new Date(new Date().getFullYear() - 1, new Date().getMonth(), new Date().getDate()).toISOString().slice(0, 10);
-  const divGross12mBySecurity = new Map();
   const divNet12mBySecurity = new Map();
-  for (const e of events) {
+  for (const e of (bd.events || [])) {
     if (!(e && (e.type === "DIVIDEND" || e.type === "ROC" || e.type === "DIVIDEND_ADJ"))) continue;
     if (String(e.date || "") < cutoffDiv12m) continue;
     const secKey = makeBrokerSecurityKey(e);
     if (!secKey) continue;
-    const gross = Math.max(0, parseNum(e.totalEUR));
-    const net = Math.max(0, gross - parseNum(e.taxEUR));
-    if (gross > 0) divGross12mBySecurity.set(secKey, (divGross12mBySecurity.get(secKey) || 0) + gross);
-    if (net > 0) divNet12mBySecurity.set(secKey, (divNet12mBySecurity.get(secKey) || 0) + net);
+    const net = Math.max(0, parseNum(e.totalEUR) - parseNum(e.taxEUR));
+    if (net <= 0) continue;
+    divNet12mBySecurity.set(secKey, (divNet12mBySecurity.get(secKey) || 0) + net);
   }
 
   for (const p of posMap.values()) {
@@ -6422,21 +6606,14 @@ function rebuildBrokerGeneratedData() {
     noteBits.push(`Fontes=${Array.from(p.sourceNames || []).join(", ") || "import"}`);
     // ── Compute annualised dividend yield from imported dividend events
     const secKey  = makeBrokerSecurityKey(p);
-    const totalDivGrossEUR12m = divGross12mBySecurity.get(secKey) || 0;
-    const totalDivNetEUR12m = divNet12mBySecurity.get(secKey) || 0;
+    const totalDivEUR12m = divNet12mBySecurity.get(secKey) || 0;
 
-    // Use gross 12m dividends for cross-app passive/yield consistency.
-    // Keep the net amount visible in the notes for auditability.
+    // Annualised yield = net dividends last 12m / current value
     let assetYieldType = "none", assetYieldValue = 0;
-    if (totalDivGrossEUR12m > 0 && finalValue > 0) {
+    if (totalDivEUR12m > 0 && finalValue > 0) {
       assetYieldType  = "yield_eur_year";
-      assetYieldValue = +totalDivGrossEUR12m.toFixed(4);
-      const grossPct = totalDivGrossEUR12m / finalValue * 100;
-      const netPct = totalDivNetEUR12m > 0 ? (totalDivNetEUR12m / finalValue * 100) : 0;
-      noteBits.push(`Div bruto(12m)=${fmtEUR2(totalDivGrossEUR12m)}/ano · Yield bruto≈${fmtPct(grossPct)}`);
-      if (totalDivNetEUR12m > 0 && Math.abs(totalDivNetEUR12m - totalDivGrossEUR12m) > 0.005) {
-        noteBits.push(`Div líquido(12m)=${fmtEUR2(totalDivNetEUR12m)}/ano · Yield líquido≈${fmtPct(netPct)}`);
-      }
+      assetYieldValue = +totalDivEUR12m.toFixed(4);
+      noteBits.push(`Div(12m)=${fmtEUR2(totalDivEUR12m)}/ano · Yield≈${fmtPct(totalDivEUR12m / finalValue * 100)}`);
     }
 
     if (p.realizedPnL !== undefined && p.realizedPnL !== 0) {
@@ -8476,7 +8653,8 @@ async function refreshLiveQuotes() {
   // Convert local / broker tickers into Yahoo candidates.
   // Several imports keep a stale ISIN→Yahoo guess; try that first, then sensible fallbacks.
   const SKIP_TICKERS = new Set(["WBA","14","DN3.DE","OD7F.DE","U9UA.DE"]);
-  const ALT_EXCHANGE_SUFFIXES = [".TO", ".V", ".NE", ".F", ".DE", ".AS", ".L", ".MI", ".PA", ".SW", ".MC", ".LS", ".VI", ".BR", ".T"];
+  // v21: Reduzido para evitar cascata absurda. Ordem por prevalência para equities dual-listed.
+  const ALT_EXCHANGE_SUFFIXES = [".DE", ".L", ".PA", ".TO"];
   const YAHOO_TICKER_OVERRIDES = {
     "WCP": "WCP.TO",
     "GRA": "GRA.TO",
@@ -8484,6 +8662,19 @@ async function refreshLiveQuotes() {
     "ISO": "ISO.TO",
     "DN3": "DN3.F",
     "U9UA": "U9UA.F",
+    "CNYA.IR": "CNYA.DE",
+    "CNYA": "CNYA.DE",
+    "BAM1": "BAM",
+    "BAM1.US": "BAM",
+    // Volkswagen: VOW.DE está delisted; Xetra tem VOW3.DE (preferred)
+    "VOW1": "VOW3.DE",
+    "VOW1.DE": "VOW3.DE",
+    "VOW.DE": "VOW3.DE",
+    "GDXJ.DE": "G2XJ.DE",
+    "GDXJ": "G2XJ.DE",
+    "NOVOB": "NOVO-B.CO",
+    "NOVOB.DK": "NOVO-B.CO",
+    "BTEC.DE": "BTEC.L"
   };
 
   function normalizeTickerLookupKey(v) {
@@ -8507,6 +8698,9 @@ async function refreshLiveQuotes() {
     const t = (raw||"").trim().toUpperCase();
     if (!t || SKIP_TICKERS.has(t)) return null;
     if (YAHOO_TICKER_OVERRIDES[t]) return YAHOO_TICKER_OVERRIDES[t];
+    // Cripto: BTC, ETH, BTC.CC, "Bitcoin" → BTC-USD (via tabela top 100)
+    const cryptoTk = cryptoToYahoo(t);
+    if (cryptoTk) return cryptoTk;
     if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD");
     const xmap = {".PT":".LS",".GB":".L",".PL":".WA",".CH":".SW",
       ".DK":".CO",".SE":".ST",".NO":".OL",".FI":".HE",
@@ -8542,14 +8736,28 @@ async function refreshLiveQuotes() {
       if (!val || out.includes(val)) return;
       out.push(val);
     };
-    push(getStoredYahooTicker(asset));
-    const isin = String(asset.isin || "").trim().toUpperCase();
-    if (isin && ISIN_YAHOO_MAP[isin]) push(ISIN_YAHOO_MAP[isin]);
+    // Cripto tem prioridade — tenta resolver pelo nome E pelo ticker
+    const clsNorm = String(asset.class || "").trim().toLowerCase();
+    if (clsNorm === "cripto" || clsNorm === "crypto") {
+      const tk  = String(asset.ticker || "").trim();
+      const nm  = String(asset.name || "").trim();
+      // Remover prefixos comuns (ex: "BTC — Bitcoin" → "BTC")
+      const nmHead = nm.split(/[—\-·]/)[0].trim();
+      const cand1 = cryptoToYahoo(tk) || cryptoToYahoo(nm) || cryptoToYahoo(nmHead);
+      if (cand1) { out.push(cand1); return out; }
+      // Fallback: continuar fluxo normal (pode ser cripto não listada na tabela)
+    }
     const raw = getRawTickerForAsset(asset);
     push(raw);
     const normRaw = toYahooTicker(raw);
+    push(getStoredYahooTicker(asset));
+    const isin = String(asset.isin || "").trim().toUpperCase();
+    if (isin && ISIN_YAHOO_MAP[isin]) push(ISIN_YAHOO_MAP[isin]);
     if (normRaw && normRaw !== raw) push(normRaw);
-    if (raw && !/[.=\-]/.test(raw)) {
+    // v21: Só fazer scan de sufixos se não houver override directo nem ISIN mapeado
+    // (caso contrário estamos a fazer 15 tentativas desnecessárias para tickers já resolvidos)
+    const hasDirectMapping = YAHOO_TICKER_OVERRIDES[raw] || (isin && ISIN_YAHOO_MAP[isin]);
+    if (raw && !/[.=\-]/.test(raw) && !hasDirectMapping) {
       ALT_EXCHANGE_SUFFIXES.forEach(suf => push(raw + suf));
     }
     return out;
@@ -8646,8 +8854,10 @@ async function refreshLiveQuotes() {
     const fxToEur = ccy === "EUR" ? 1 : (fxRates[ccy] || FX_FALLBACK_LOCAL[ccy] || FX_FALLBACK_STATIC[ccy] || 1);
     const priceEur = q.price * fxToEur;
 
+    const qtyField = parseNum(asset.qty || 0);
     const qtyMatch = (asset.notes||"").match(/Qty=([\d.,]+)/);
-    const qty = qtyMatch ? parseFloat(qtyMatch[1].replace(",", ".")) : null;
+    const qtyFromNotes = qtyMatch ? parseFloat(qtyMatch[1].replace(",", ".")) : null;
+    const qty = qtyField > 0 ? qtyField : qtyFromNotes;
     const newValue = qty ? qty * priceEur : priceEur;
 
     const priceLabel = ccy === "EUR"
@@ -8766,43 +8976,15 @@ function openDividendBaseModal() {
 
 function updateQuoteErrorIndicator() {
   const btn = document.getElementById('btnQuoteErrors');
-  const preview = document.getElementById('quoteErrorsPreview');
+  if (!btn) return;
   const report = (((state || {}).settings || {}).lastQuoteRefresh) || null;
-  const hasErrors = !!(report && Array.isArray(report.errors) && report.errors.length);
-
-  if (btn) {
-    if (!hasErrors) {
-      btn.style.display = 'none';
-      btn.textContent = '⚠️ Ver erros';
-    } else {
-      btn.style.display = '';
-      btn.textContent = `⚠️ ${report.errors.length} erro${report.errors.length !== 1 ? 's' : ''}`;
-    }
-  }
-
-  if (!preview) return;
-  if (!hasErrors) {
-    preview.style.display = 'none';
-    preview.innerHTML = '';
+  if (!report || !Array.isArray(report.errors) || !report.errors.length) {
+    btn.style.display = 'none';
+    btn.textContent = '⚠️ Ver erros';
     return;
   }
-
-  const top = report.errors.slice(0, 3).map(err => {
-    const isObj = err && typeof err === 'object';
-    const raw = isObj ? String(err.raw || '') : String(err || '');
-    const yahoo = isObj ? String(err.yahoo || raw || '') : raw;
-    const reason = isObj ? String(err.reason || 'Não encontrado no Yahoo Finance') : 'Não encontrado no Yahoo Finance';
-    const assetName = isObj ? String(err.assetName || raw || yahoo || 'Ativo') : raw;
-    return `<div style="margin-top:4px"><b>${escapeHtml(assetName)}</b> · ${escapeHtml(reason)}${yahoo && yahoo !== raw ? ` · Yahoo: ${escapeHtml(yahoo)}` : ''}</div>`;
-  }).join('');
-
-  preview.style.display = '';
-  preview.innerHTML = `<div class="note" style="margin-top:10px;border-color:#f59e0b;background:rgba(245,158,11,.08)">
-    <div><b>Falhas na última atualização de cotações:</b> ${report.errors.length}</div>
-    ${top}
-    ${report.errors.length > 3 ? `<div style="margin-top:4px">…e mais ${report.errors.length - 3}.</div>` : ''}
-    <div style="margin-top:6px">Toca em <b>⚠️ Erros</b> para ver a lista completa.</div>
-  </div>`;
+  btn.style.display = '';
+  btn.textContent = `⚠️ ${report.errors.length} erro${report.errors.length !== 1 ? 's' : ''}`;
 }
 
 // Populate the quote errors modal
@@ -9245,21 +9427,23 @@ function renderHealthRatios(rc) {
   if (t.assetsTotal === 0) { el.innerHTML = "<div class='note'>Sem ativos registados.</div>"; return; }
 
   // v18: skip render if key values unchanged (evita reflow desnecessário)
-  const _hrHash = `${t.assetsTotal}|${t.liabsTotal}|${t.passiveAnnual}|${(state.transactions||[]).length}`;
+  const _hrHash = `${t.assetsTotal}|${t.liabsTotal}|${t.passiveAnnual}|${t.passiveAnnualReal||0}|${t.passiveAnnualProjected||0}|${(state.transactions||[]).length}|${JSON.stringify(getReturnSettings())}`;
   if (renderHealthRatios._lastHash === _hrHash) return;
   renderHealthRatios._lastHash = _hrHash;
 
   const debtRatio = t.liabsTotal / t.assetsTotal * 100;
   const leverageRatio = t.assetsTotal / Math.max(1, t.net);
   const py = rc ? rc.py : calcPortfolioYield();
-  const passiveRatioActual = t.assetsTotal > 0 ? (t.passiveAnnual / t.assetsTotal * 100) : 0;
+  const passiveAnnualReal = parseNum(t.passiveAnnualReal != null ? t.passiveAnnualReal : t.passiveAnnual);
+  const passiveAnnualProjectedFromTotals = parseNum(t.passiveAnnualProjected != null ? t.passiveAnnualProjected : t.passiveAnnual);
+  const passiveRatioActual = t.assetsTotal > 0 ? (passiveAnnualReal / t.assetsTotal * 100) : 0;
   const directProjectedAnnual = (state.assets || []).reduce((sum, a) => {
     const v = parseNum(a && a.value);
     if (v <= 0) return sum;
     return sum + v * (getAssetPassiveRatePct(a, { allowClassFallback: true }) / 100);
   }, 0);
   const helperProjectedAnnual = parseNum(py && py.projectedPassiveAnnual);
-  const passiveAnnualProjected = Math.max(directProjectedAnnual, helperProjectedAnnual, 0);
+  const passiveAnnualProjected = Math.max(passiveAnnualProjectedFromTotals, directProjectedAnnual, helperProjectedAnnual, 0);
   const passiveRatioProjected = t.assetsTotal > 0 ? (passiveAnnualProjected / t.assetsTotal * 100) : 0;
   const passiveRatio = passiveRatioProjected > 0 ? passiveRatioProjected : passiveRatioActual;
 
@@ -9278,7 +9462,7 @@ function renderHealthRatios(rc) {
   const avgMonthlyIn = last6.length ? last6.reduce((s, k) => s + (byMonth.get(k).in || 0), 0) / last6.length : 0;
   const monthsOfRunway = avgMonthlyExp > 0 ? t.net / avgMonthlyExp : null;
   const savingsRate = avgMonthlyIn > 0 ? Math.max(0, ((avgMonthlyIn - avgMonthlyExp) / avgMonthlyIn) * 100) : null;
-  const passiveCoverage = avgMonthlyExp > 0 ? (t.passiveAnnual / (avgMonthlyExp * 12)) * 100 : null;
+  const passiveCoverage = avgMonthlyExp > 0 ? (passiveAnnualProjected / (avgMonthlyExp * 12)) * 100 : null;
 
   // Liquidez imediata = Liquidez + Depósitos / despesas médias mensais
   const liquidAssets = state.assets
@@ -9346,7 +9530,7 @@ function renderHealthRatios(rc) {
   // Cobertura passiva das despesas
   if (passiveCoverage !== null && passiveCoverage >= 100) tips.push({ icon:"🏆", color:"#059669", bg:"#f0fdf4",
     title:"Independência financeira atingida!",
-    text:`O teu rendimento passivo (${fmtEUR(t.passiveAnnual/12)}/mês) já cobre ${fmtPct(passiveCoverage)} das despesas mensais. Estás na zona de independência financeira (FIRE).` });
+    text:`O teu rendimento passivo projectado (${fmtEUR(passiveAnnualProjected/12)}/mês) já cobre ${fmtPct(passiveCoverage)} das despesas mensais. Estás na zona de independência financeira (FIRE).` });
 
   // Construir o HTML das métricas
   const metricCard = (icon, label, value, sub, colorVal, tip) => `
@@ -9363,8 +9547,8 @@ function renderHealthRatios(rc) {
     ? "Prioriza amortizar o passivo mais caro"
     : debtRatio > 30 ? "Margem de melhoria: amortizações antecipadas" : "Balanço robusto ✓";
   const passiveTip = passiveRatio < 2
-    ? `Projectado ${fmtPct(passiveRatio)} (${fmtEUR(passiveAnnualProjected || 0)}/ano) · real actual ${fmtPct(passiveRatioActual)} (${fmtEUR(t.passiveAnnual)}/ano) · considera reforçar activos geradores de rendimento`
-    : passiveRatio >= 4 ? `Projectado ${fmtPct(passiveRatio)} (${fmtEUR(passiveAnnualProjected || 0)}/ano) · real actual ${fmtPct(passiveRatioActual)} (${fmtEUR(t.passiveAnnual)}/ano) · portfólio a gerar rendimento sólido ✓` : `Projectado ${fmtPct(passiveRatio)} (${fmtEUR(passiveAnnualProjected || 0)}/ano) · real actual ${fmtPct(passiveRatioActual)} (${fmtEUR(t.passiveAnnual)}/ano) · margem para optimização`;
+    ? `Projectado ${fmtPct(passiveRatio)} (${fmtEUR(passiveAnnualProjected || 0)}/ano) · real actual ${fmtPct(passiveRatioActual)} (${fmtEUR(passiveAnnualReal)}/ano) · considera reforçar activos geradores de rendimento`
+    : passiveRatio >= 4 ? `Projectado ${fmtPct(passiveRatio)} (${fmtEUR(passiveAnnualProjected || 0)}/ano) · real actual ${fmtPct(passiveRatioActual)} (${fmtEUR(passiveAnnualReal)}/ano) · portfólio a gerar rendimento sólido ✓` : `Projectado ${fmtPct(passiveRatio)} (${fmtEUR(passiveAnnualProjected || 0)}/ano) · real actual ${fmtPct(passiveRatioActual)} (${fmtEUR(passiveAnnualReal)}/ano) · margem para optimização`;
   const savingsTip = savingsRate === null ? "" : savingsRate < 10
     ? "Revê as 3 maiores categorias de despesa"
     : savingsRate < 20 ? "Alvo: 20% — faltam "+fmtPct(20-savingsRate) : "Mantém a disciplina de poupança ✓";
@@ -9384,7 +9568,7 @@ function renderHealthRatios(rc) {
         debtRatio<=30?"#059669":debtRatio<=60?"#d97706":"#dc2626", debtTip)}
       ${metricCard("💰", "Rendimento passivo",
         fmtPct(passiveRatio),
-        `Valor principal = yield passivo projectado sobre activos · real actual ${fmtPct(passiveRatioActual)} · proj. ${fmtEUR(passiveAnnualProjected || 0)}/ano · real ${fmtEUR(t.passiveAnnual)}/ano · cálculo directo por activo/classe · &gt;4% excelente · &gt;2% adequado`,
+        `Valor principal = yield passivo projectado sobre activos · real actual ${fmtPct(passiveRatioActual)} · proj. ${fmtEUR(passiveAnnualProjected || 0)}/ano · real ${fmtEUR(passiveAnnualReal)}/ano · cálculo directo por activo/classe · &gt;4% excelente · &gt;2% adequado`,
         passiveRatio>=4?"#059669":passiveRatio>=2?"#d97706":"#94a3b8", passiveTip)}
       ${metricCard("💼", "Taxa de poupança",
         savingsRate!==null?fmtPct(savingsRate):"—",
@@ -9415,8 +9599,8 @@ function renderHealthRatios(rc) {
       </div>
       <div style="font-size:11px;color:var(--muted)">
         ${passiveCoverage>=100
-          ? `🏆 Independência financeira atingida! O rendimento passivo (${fmtEUR(t.passiveAnnual/12)}/mês) cobre as tuas despesas.`
-          : `Rendimento passivo cobre ${fmt(passiveCoverage,1)}% das despesas mensais. Faltam ${fmtEUR(Math.max(0,(avgMonthlyExp - t.passiveAnnual/12)))} /mês para atingir independência.`}
+          ? `🏆 Independência financeira atingida! O rendimento passivo projectado (${fmtEUR(passiveAnnualProjected/12)}/mês) cobre as tuas despesas.`
+          : `Rendimento passivo projectado cobre ${fmt(passiveCoverage,1)}% das despesas mensais. Faltam ${fmtEUR(Math.max(0,(avgMonthlyExp - passiveAnnualProjected/12)))} /mês para atingir independência.`}
       </div>
     </div>` : ""}
 
@@ -11026,8 +11210,8 @@ function parsePositionFromAsset(asset) {
   // Sanity check: if currentValue is >20× costBasis AND no live price today,
   // it's almost certainly a stale wrong ticker quote — fall back to cost basis
   // (avoids showing +3000% gains for Portuguese stocks fetched as US tickers)
-  const isStaleQuote = !asset.lastUpdated ||
-    !String(asset.lastUpdated || "").includes(new Date().toLocaleDateString("pt-PT").split("/").join("."));
+  const todayPt = new Date().toLocaleDateString("pt-PT");
+  const isStaleQuote = !asset.lastUpdated || String(asset.lastUpdated || "") !== todayPt;
   if (isStaleQuote && currentValue > costBasis * 20 && costBasis > 0) {
     currentValue = costBasis; // show P&L=0 rather than wildly wrong value
   }
