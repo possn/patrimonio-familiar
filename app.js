@@ -781,6 +781,8 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
+const BROKER_REBUILD_SCHEMA_VERSION = 2;
+
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
   classAppreciationPct: { ...APPRECIATION_DEFAULTS },
@@ -831,11 +833,14 @@ function getDividendSourceLabel(source) {
 }
 
 function getRealDividendRecords(opts = {}) {
-  const all = Array.isArray(state.dividends) ? state.dividends.slice() : [];
+  const all = Array.isArray(state.dividends) ? state.dividends.slice().filter(Boolean) : [];
   const broker = all.filter(d => d && d.generatedFromBroker);
+  const manual = all.filter(d => d && !d.generatedFromBroker);
   if (opts.source === 'broker') return broker;
+  if (opts.source === 'manual') return manual;
   if (opts.source === 'all') return all;
-  return broker.length ? broker : all;
+  if (opts.preferBrokerOnly && broker.length) return broker;
+  return all;
 }
 
 function getDividendBaseAssetsForRecords(divRecords, opts = {}) {
@@ -1125,7 +1130,13 @@ function _initViewCache() {
 }
 
 function setView(view) {
+  const prevView = currentView;
   currentView = view;
+  if (view === "dashboard" && prevView !== "dashboard") summaryExpanded = false;
+  if (view === "assets" && prevView !== "assets") {
+    itemsExpanded = false;
+    window._pnlExpanded = false;
+  }
   _initViewCache();
   for (const s of _viewEls) s.hidden = s.dataset.view !== view;
   for (const b of _navEls) b.classList.toggle("navbtn--active", b.dataset.view === view);
@@ -5979,12 +5990,15 @@ function normalizeISIN(v) {
   return /^[A-Z]{2}[A-Z0-9]{9}\d$/.test(s) ? s : "";
 }
 
-function makeBrokerSecurityKey({ isin = "", ticker = "", name = "" } = {}) {
+function makeBrokerSecurityKey({ isin = "", ticker = "", name = "", currency = "", priceCurrency = "", totalCurrency = "" } = {}) {
   const i = normalizeISIN(isin);
   if (i) return `ISIN:${i}`;
   const t = String(ticker || "").trim().toUpperCase();
+  const n = String(name || "").trim().toUpperCase().replace(/\s+/g, ' ');
+  const c = String(currency || priceCurrency || totalCurrency || "").trim().toUpperCase();
+  if (t && n) return `TICKER_NAME:${t}|${n}`;
+  if (t && c) return `TICKER_CCY:${t}|${c}`;
   if (t) return `TICKER:${t}`;
-  const n = String(name || "").trim().toUpperCase();
   return `NAME:${n}`;
 }
 
@@ -6560,10 +6574,34 @@ function rebuildBrokerGeneratedData() {
 
   const posMap = new Map();
   const touchPos = ({ ticker = "", isin = "", name = "", cls = "", currency = "EUR", sourceName = "" } = {}) => {
-    const key = makeBrokerSecurityKey({ isin, ticker, name });
+    const isinNorm = normalizeISIN(isin);
+    const tickerNorm = String(ticker || "").trim().toUpperCase();
+    const nameNorm = String(name || "").trim().toUpperCase().replace(/\s+/g, ' ');
+    const currencyNorm = String(currency || "EUR").trim().toUpperCase();
+    let key = makeBrokerSecurityKey({ isin: isinNorm, ticker: tickerNorm, name: nameNorm, currency: currencyNorm });
+
+    if (!isinNorm && tickerNorm) {
+      const matches = [];
+      for (const [k, existing] of posMap.entries()) {
+        const sameTicker = String(existing.ticker || "").trim().toUpperCase() === tickerNorm;
+        if (!sameTicker) continue;
+        const existingName = String(existing.name || "").trim().toUpperCase().replace(/\s+/g, ' ');
+        const sameName = !nameNorm || !existingName || existingName === nameNorm;
+        const sameCurrency = !currencyNorm || !existing.currency || String(existing.currency || '').trim().toUpperCase() === currencyNorm;
+        if (sameName || sameCurrency) matches.push(k);
+      }
+      if (matches.length === 1) key = matches[0];
+    } else if (isinNorm && !posMap.has(key) && tickerNorm) {
+      for (const [k, existing] of posMap.entries()) {
+        const sameTicker = String(existing.ticker || "").trim().toUpperCase() === tickerNorm;
+        const existingIsin = normalizeISIN(existing.isin);
+        if (sameTicker && !existingIsin) { key = k; break; }
+      }
+    }
+
     const prev = posMap.get(key) || {
-      ticker: String(ticker || "").trim(),
-      isin: normalizeISIN(isin),
+      ticker: String(tickerNorm || ticker || "").trim(),
+      isin: isinNorm,
       name: String(name || ticker || isin || "").trim(),
       class: cls || brokerPositionClassFromTicker(ticker),
       qty: 0,
@@ -6571,15 +6609,15 @@ function rebuildBrokerGeneratedData() {
       marketValueEUR: 0,
       snapshotQty: 0,
       snapshotDate: "",
-      currency: currency || "EUR",
+      currency: currencyNorm || "EUR",
       sourceNames: new Set(),
       hasSnapshot: false
     };
-    if (!prev.ticker && ticker) prev.ticker = String(ticker).trim();
-    if (!prev.isin && isin) prev.isin = normalizeISIN(isin);
+    if (!prev.ticker && tickerNorm) prev.ticker = tickerNorm;
+    if (!prev.isin && isinNorm) prev.isin = isinNorm;
     if ((!prev.name || prev.name === prev.isin) && name) prev.name = String(name).trim();
     if (!prev.class && cls) prev.class = cls;
-    if (currency) prev.currency = currency;
+    if (currencyNorm) prev.currency = currencyNorm;
     if (sourceName) prev.sourceNames.add(sourceName);
     posMap.set(key, prev);
     return prev;
@@ -6787,13 +6825,14 @@ function rebuildBrokerGeneratedData() {
       yieldType: assetYieldType, yieldValue: assetYieldValue, compoundFreq: 12,
       notes: `Gerado por importação de corretora. ${noteBits.join(" · ")}`,
       qty: finalQty, costBasis: p.costBasis, pmOriginal: finalQty > 0 && p.costBasis > 0 ? p.costBasis / finalQty : 0, pmCcy: "EUR",
-      ticker: p.ticker || "", isin: p.isin || "", brokerMarketSnapshot: !!p.hasSnapshot, brokerSnapshotDate: p.snapshotDate || "",
+      ticker: p.ticker || "", yahooTicker: correctYahoo || "", isin: p.isin || "", brokerMarketSnapshot: !!p.hasSnapshot, brokerSnapshotDate: p.snapshotDate || "",
       realizedPnL: p.realizedPnL || 0, sellTrades: p.sellTrades || [],
       generatedFromBroker: true
     });
   }
   if (!state.settings) state.settings = {};
   state.settings.brokerRebuildSig = getBrokerDataSignature();
+  state.settings.brokerRebuildSchemaVersion = BROKER_REBUILD_SCHEMA_VERSION;
 }
 
 
@@ -8899,30 +8938,36 @@ async function refreshLiveQuotes() {
       if (!val || out.includes(val)) return;
       out.push(val);
     };
-    // Cripto tem prioridade — tenta resolver pelo nome E pelo ticker
+
     const clsNorm = String(asset.class || "").trim().toLowerCase();
     if (clsNorm === "cripto" || clsNorm === "crypto") {
       const tk  = String(asset.ticker || "").trim();
       const nm  = String(asset.name || "").trim();
-      // Remover prefixos comuns (ex: "BTC — Bitcoin" → "BTC")
       const nmHead = nm.split(/[—\-·]/)[0].trim();
       const cand1 = cryptoToYahoo(tk) || cryptoToYahoo(nm) || cryptoToYahoo(nmHead);
       if (cand1) { out.push(cand1); return out; }
-      // Fallback: continuar fluxo normal (pode ser cripto não listada na tabela)
     }
+
     const raw = getRawTickerForAsset(asset);
-    push(raw);
-    const normRaw = toYahooTicker(raw);
-    push(getStoredYahooTicker(asset));
     const isin = String(asset.isin || "").trim().toUpperCase();
+    const storedYahoo = getStoredYahooTicker(asset);
+    const directMapped = storedYahoo || (isin && ISIN_YAHOO_MAP[isin]) || YAHOO_TICKER_OVERRIDES[raw] || "";
+
+    // Ordem crítica: preferir ticker Yahoo já resolvido / ISIN / overrides.
+    // Isto evita colisões como COR -> COR (EUA) em vez de COR.LS.
+    if (storedYahoo) push(storedYahoo);
     if (isin && ISIN_YAHOO_MAP[isin]) push(ISIN_YAHOO_MAP[isin]);
-    if (normRaw && normRaw !== raw) push(normRaw);
-    // v21: Só fazer scan de sufixos se não houver override directo nem ISIN mapeado
-    // (caso contrário estamos a fazer 15 tentativas desnecessárias para tickers já resolvidos)
-    const hasDirectMapping = YAHOO_TICKER_OVERRIDES[raw] || (isin && ISIN_YAHOO_MAP[isin]);
-    if (raw && !/[.=\-]/.test(raw) && !hasDirectMapping) {
+    if (raw && YAHOO_TICKER_OVERRIDES[raw]) push(YAHOO_TICKER_OVERRIDES[raw]);
+
+    const normRaw = toYahooTicker(raw);
+    if (!directMapped && raw) push(raw);
+    if (!directMapped && normRaw && normRaw !== raw) push(normRaw);
+
+    // Só testar sufixos alternativos quando não há mapeamento directo.
+    if (raw && !/[.=\-]/.test(raw) && !directMapped) {
       ALT_EXCHANGE_SUFFIXES.forEach(suf => push(raw + suf));
     }
+
     return out;
   }
 
@@ -8939,10 +8984,21 @@ async function refreshLiveQuotes() {
     throw lastErr || new Error("Não foi possível obter uma cotação válida");
   }
 
-  const tickerList = candidates.map(asset => {
+  const rawTickerRefs = candidates.map(asset => {
     const raw = getRawTickerForAsset(asset);
     return { asset, raw, candidates: buildYahooTickerCandidates(asset) };
-  }).filter(x => x.candidates && x.candidates.length);
+  });
+  const noCandidateRefs = rawTickerRefs.filter(x => !(x.candidates && x.candidates.length));
+  const tickerList = rawTickerRefs.filter(x => x.candidates && x.candidates.length);
+  noCandidateRefs.forEach(ref => {
+    failed++;
+    errors.push({
+      raw: ref.raw,
+      yahoo: "",
+      assetName: ref.asset.name || ref.raw || "Ativo",
+      reason: "Sem ticker Yahoo reconhecível para este activo"
+    });
+  });
 
   const quoteResults = await Promise.allSettled(
     tickerList.map(x => fetchQuoteWithFallback(x))
@@ -9031,10 +9087,13 @@ async function refreshLiveQuotes() {
       .replace(/\s*·?\s*Preço:[^·]*/g,"")
       .replace(/\s*·?\s*⚠️ Custo histórico[^·]*/g,"").trim();
     asset.value = newValue;
-    // Keep valueLocal in sync for multi-currency display
+    // Keep valueLocal in sync for multi-currency display and clear stale FX badges when asset returns to EUR.
     if (ccy !== "EUR") {
       asset.currency   = ccy;
       asset.valueLocal = qty ? +(qty * q.price).toFixed(6) : +q.price.toFixed(6);
+    } else {
+      asset.currency = "EUR";
+      delete asset.valueLocal;
     }
     asset.notes = `${noteBase}${noteBase?" · ":""}Preço: ${priceLabel} (${today})`;
     // Guardar qty e pm como campos dedicados para P&L
@@ -9148,6 +9207,8 @@ function updateQuoteErrorIndicator() {
   }
   btn.style.display = '';
   btn.textContent = `⚠️ ${report.errors.length} erro${report.errors.length !== 1 ? 's' : ''}`;
+  btn.title = 'Ver detalhes dos erros de cotação';
+  showQuoteErrors(report.updated || 0, report.failed || report.errors.length || 0, report.errors || [], report.updated || 0, report.failed || report.errors.length || 0);
 }
 
 // Populate the quote errors modal
@@ -9248,10 +9309,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     if ((bd.files||[]).length || (bd.events||[]).length || (bd.positions||[]).length) {
       const sig = getBrokerDataSignature();
       const prevSig = (((state || {}).settings || {}).brokerRebuildSig) || "";
-      if (!hasBrokerGeneratedMirror() || sig !== prevSig) {
+      const prevSchema = parseInt((((state || {}).settings || {}).brokerRebuildSchemaVersion) || 0, 10) || 0;
+      if (!hasBrokerGeneratedMirror() || sig !== prevSig || prevSchema !== BROKER_REBUILD_SCHEMA_VERSION) {
         rebuildBrokerGeneratedData();
         if (!state.settings) state.settings = {};
         state.settings.brokerRebuildSig = sig;
+        state.settings.brokerRebuildSchemaVersion = BROKER_REBUILD_SCHEMA_VERSION;
         changed = true;
       }
     }
