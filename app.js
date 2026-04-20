@@ -6013,27 +6013,28 @@ function parseXTBPositionsRows(rows, meta) {
     const openPx   = parseNumberSmart(r.open_price || r["open price"] || r.openprice || r.preco_de_abertura || r.preco_abertura || r.preco_entrada);
     const mktPx    = parseNumberSmart(r.market_price || r["market price"] || r.marketprice || r["current price"] || r.preco_atual || r.preco_de_mercado);
     const purchaseValue = parseNumberSmart(r.purchase_value || r["purchase value"] || r.valor_de_compra || r.valor_compra);
+    const grossPL  = parseNumberSmart(r.gross_p_l || r.gross_pl || r.grossp_l || r.grosspl || r.profit || r.lucro || r.resultado);
 
     if (!symbol || !Number.isFinite(vol) || vol <= 0) continue;
     const ticker = xtbTickerToYahoo(symbol);
     const nativeCcy = xtbSymbolCurrency(symbol);
     const fx = brokerApproxFxToEUR(nativeCcy);
     const usePrice = Number.isFinite(mktPx) && mktPx > 0 ? mktPx : (Number.isFinite(openPx) ? openPx : 0);
-    // v19: purchase_value é o valor EUR real pago pela XTB (usa o FX do dia da compra).
-    // Para manter o market value ancorado em EUR (sem depender de FX estáticos),
-    // aplicamos a RAZÃO entre preço actual e preço de abertura nativo.
-    // market_value_EUR ≈ purchase_value_EUR × (preço_actual / preço_abertura)
-    // Isto herda o FX real da XTB e captura apenas a variação de preço.
+
+    // Prefer the EUR figures already calculated by XTB.
+    // purchase_value is the actual EUR amount invested and Gross P/L is the current unrealised P/L in EUR.
+    // This is simpler and more accurate than reconstructing with static FX or proportional price ratios.
     const hasPV = Number.isFinite(purchaseValue) && purchaseValue > 0;
+    const hasGrossPL = Number.isFinite(grossPL);
     const costBasisEUR = hasPV
-      ? purchaseValue  // valor EUR exacto já pago
+      ? purchaseValue
       : vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : usePrice) * fx;
     let marketValueEUR;
-    if (hasPV && Number.isFinite(openPx) && openPx > 0 && Number.isFinite(usePrice) && usePrice > 0) {
-      // Método proporcional — preserva o FX implícito da XTB
+    if (hasPV && hasGrossPL) {
+      marketValueEUR = Math.max(0, purchaseValue + grossPL);
+    } else if (hasPV && Number.isFinite(openPx) && openPx > 0 && Number.isFinite(usePrice) && usePrice > 0) {
       marketValueEUR = purchaseValue * (usePrice / openPx);
     } else {
-      // Fallback: usar FX estático
       marketValueEUR = vol * usePrice * fx;
     }
 
@@ -6282,10 +6283,9 @@ function rebuildBrokerGeneratedData() {
           const sameTicker = String(a.ticker || "").toUpperCase() === String(e.ticker || "").toUpperCase();
           const sameDate = String(a.date || "").slice(0,10) === String(e.date || "").slice(0,10);
           if (sameTicker && sameDate && parseNum(a.taxEUR) > 0 && parseNum(a.totalEUR) === 0) {
-            // Merge: e becomes gross=(net+wht), tax=wht
-            const net = parseNum(e.totalEUR);
+            // XTB cash ledger stores the positive DIVIDENT row as the GROSS dividend in EUR
+            // and the withholding tax as a separate negative row. Keep gross unchanged.
             const wht = parseNum(a.taxEUR);
-            e.totalEUR = net + wht;  // gross = net received + WHT
             e.taxEUR = (parseNum(e.taxEUR) || 0) + wht;
             e.notes = (e.notes || "") + (e.notes ? " · " : "") + `WHT merged: ${fmtEUR2(wht)}`;
             consumed.add(j);
@@ -6391,15 +6391,17 @@ function rebuildBrokerGeneratedData() {
   }
 
   const cutoffDiv12m = new Date(new Date().getFullYear() - 1, new Date().getMonth(), new Date().getDate()).toISOString().slice(0, 10);
+  const divGross12mBySecurity = new Map();
   const divNet12mBySecurity = new Map();
-  for (const e of (bd.events || [])) {
+  for (const e of events) {
     if (!(e && (e.type === "DIVIDEND" || e.type === "ROC" || e.type === "DIVIDEND_ADJ"))) continue;
     if (String(e.date || "") < cutoffDiv12m) continue;
     const secKey = makeBrokerSecurityKey(e);
     if (!secKey) continue;
-    const net = Math.max(0, parseNum(e.totalEUR) - parseNum(e.taxEUR));
-    if (net <= 0) continue;
-    divNet12mBySecurity.set(secKey, (divNet12mBySecurity.get(secKey) || 0) + net);
+    const gross = Math.max(0, parseNum(e.totalEUR));
+    const net = Math.max(0, gross - parseNum(e.taxEUR));
+    if (gross > 0) divGross12mBySecurity.set(secKey, (divGross12mBySecurity.get(secKey) || 0) + gross);
+    if (net > 0) divNet12mBySecurity.set(secKey, (divNet12mBySecurity.get(secKey) || 0) + net);
   }
 
   for (const p of posMap.values()) {
@@ -6420,14 +6422,21 @@ function rebuildBrokerGeneratedData() {
     noteBits.push(`Fontes=${Array.from(p.sourceNames || []).join(", ") || "import"}`);
     // ── Compute annualised dividend yield from imported dividend events
     const secKey  = makeBrokerSecurityKey(p);
-    const totalDivEUR12m = divNet12mBySecurity.get(secKey) || 0;
+    const totalDivGrossEUR12m = divGross12mBySecurity.get(secKey) || 0;
+    const totalDivNetEUR12m = divNet12mBySecurity.get(secKey) || 0;
 
-    // Annualised yield = net dividends last 12m / current value
+    // Use gross 12m dividends for cross-app passive/yield consistency.
+    // Keep the net amount visible in the notes for auditability.
     let assetYieldType = "none", assetYieldValue = 0;
-    if (totalDivEUR12m > 0 && finalValue > 0) {
+    if (totalDivGrossEUR12m > 0 && finalValue > 0) {
       assetYieldType  = "yield_eur_year";
-      assetYieldValue = +totalDivEUR12m.toFixed(4);
-      noteBits.push(`Div(12m)=${fmtEUR2(totalDivEUR12m)}/ano · Yield≈${fmtPct(totalDivEUR12m / finalValue * 100)}`);
+      assetYieldValue = +totalDivGrossEUR12m.toFixed(4);
+      const grossPct = totalDivGrossEUR12m / finalValue * 100;
+      const netPct = totalDivNetEUR12m > 0 ? (totalDivNetEUR12m / finalValue * 100) : 0;
+      noteBits.push(`Div bruto(12m)=${fmtEUR2(totalDivGrossEUR12m)}/ano · Yield bruto≈${fmtPct(grossPct)}`);
+      if (totalDivNetEUR12m > 0 && Math.abs(totalDivNetEUR12m - totalDivGrossEUR12m) > 0.005) {
+        noteBits.push(`Div líquido(12m)=${fmtEUR2(totalDivNetEUR12m)}/ano · Yield líquido≈${fmtPct(netPct)}`);
+      }
     }
 
     if (p.realizedPnL !== undefined && p.realizedPnL !== 0) {
@@ -8757,15 +8766,43 @@ function openDividendBaseModal() {
 
 function updateQuoteErrorIndicator() {
   const btn = document.getElementById('btnQuoteErrors');
-  if (!btn) return;
+  const preview = document.getElementById('quoteErrorsPreview');
   const report = (((state || {}).settings || {}).lastQuoteRefresh) || null;
-  if (!report || !Array.isArray(report.errors) || !report.errors.length) {
-    btn.style.display = 'none';
-    btn.textContent = '⚠️ Ver erros';
+  const hasErrors = !!(report && Array.isArray(report.errors) && report.errors.length);
+
+  if (btn) {
+    if (!hasErrors) {
+      btn.style.display = 'none';
+      btn.textContent = '⚠️ Ver erros';
+    } else {
+      btn.style.display = '';
+      btn.textContent = `⚠️ ${report.errors.length} erro${report.errors.length !== 1 ? 's' : ''}`;
+    }
+  }
+
+  if (!preview) return;
+  if (!hasErrors) {
+    preview.style.display = 'none';
+    preview.innerHTML = '';
     return;
   }
-  btn.style.display = '';
-  btn.textContent = `⚠️ ${report.errors.length} erro${report.errors.length !== 1 ? 's' : ''}`;
+
+  const top = report.errors.slice(0, 3).map(err => {
+    const isObj = err && typeof err === 'object';
+    const raw = isObj ? String(err.raw || '') : String(err || '');
+    const yahoo = isObj ? String(err.yahoo || raw || '') : raw;
+    const reason = isObj ? String(err.reason || 'Não encontrado no Yahoo Finance') : 'Não encontrado no Yahoo Finance';
+    const assetName = isObj ? String(err.assetName || raw || yahoo || 'Ativo') : raw;
+    return `<div style="margin-top:4px"><b>${escapeHtml(assetName)}</b> · ${escapeHtml(reason)}${yahoo && yahoo !== raw ? ` · Yahoo: ${escapeHtml(yahoo)}` : ''}</div>`;
+  }).join('');
+
+  preview.style.display = '';
+  preview.innerHTML = `<div class="note" style="margin-top:10px;border-color:#f59e0b;background:rgba(245,158,11,.08)">
+    <div><b>Falhas na última atualização de cotações:</b> ${report.errors.length}</div>
+    ${top}
+    ${report.errors.length > 3 ? `<div style="margin-top:4px">…e mais ${report.errors.length - 3}.</div>` : ''}
+    <div style="margin-top:6px">Toca em <b>⚠️ Erros</b> para ver a lista completa.</div>
+  </div>`;
 }
 
 // Populate the quote errors modal
