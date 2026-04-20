@@ -426,7 +426,17 @@ function _scheduleRcInvalidate() {
   Promise.resolve().then(() => { _rc = null; _rcScheduled = false; });
 }
 
-function invalidateRenderCache() { _rc = null; _rcScheduled = false; }
+function invalidateRenderCache() {
+  _rc = null;
+  _rcScheduled = false;
+  // Clear content hash guards so next render is fresh
+  if (renderHealthRatios) renderHealthRatios._lastHash = null;
+  if (renderPortfolioQuality) renderPortfolioQuality._lastHash = null;
+  if (renderBrokerImportStatus) renderBrokerImportStatus._lastHash = null;
+  if (renderPortfolioSourcesCard) renderPortfolioSourcesCard._lastHash = null;
+  if (renderAlerts) renderAlerts._lastHash = null;
+  if (renderDivYTD) renderDivYTD._lastHash = null;
+}
 
 function getRenderCache() {
   if (_rc) return _rc;
@@ -906,7 +916,7 @@ function renderView(view, opts = {}) {
   if (view === "analysis") renderAnalysis();
   if (view === "dividends") renderDividends();
   if (view === "settings") renderReturnSettingsCard();
-  if (view === "import") checkDuplicateWarning();
+  if (view === "import") { checkDuplicateWarning(); renderBrokerImportStatus(); }
   markViewRendered(view);
 }
 
@@ -926,10 +936,18 @@ function scheduleRenderView(view, opts = {}) {
   else pendingViewRenderFrame = requestAnimationFrame(run);
 }
 
+// v18: cache de elementos DOM para setView — evita querySelectorAll em cada navegação
+let _viewEls = null, _navEls = null;
+function _initViewCache() {
+  if (!_viewEls) _viewEls = Array.from(document.querySelectorAll(".view"));
+  if (!_navEls) _navEls = Array.from(document.querySelectorAll(".navbtn"));
+}
+
 function setView(view) {
   currentView = view;
-  document.querySelectorAll(".view").forEach(s => { s.hidden = s.dataset.view !== view; });
-  document.querySelectorAll(".navbtn").forEach(b => { b.classList.toggle("navbtn--active", b.dataset.view === view); });
+  _initViewCache();
+  for (const s of _viewEls) s.hidden = s.dataset.view !== view;
+  for (const b of _navEls) b.classList.toggle("navbtn--active", b.dataset.view === view);
   if (view === "assets") updateQuoteErrorIndicator();
   scheduleRenderView(view, { force: false, sync: false });
   try { window.scrollTo(0, 0); } catch (_) {}
@@ -1120,22 +1138,16 @@ function renderGeoChart() {
 function renderAll(opts = {}) {
   const force = !!(opts && opts.force);
   invalidateRenderCache(); // v18: garantir cálculos frescos
-  updatePassiveBar();
-  renderBrokerImportStatus();
+  // v18: updatePassiveBar e renderBrokerImportStatus removidos daqui —
+  // são chamados dentro de renderDashboard/renderView para evitar trabalho duplo
   updateQuoteErrorIndicator();
 
-  if (force) {
-    // v18: em vez de renderizar todas as views sincronamente (lento),
-    // marcar todas sujas e renderizar só a atual agora.
-    // As restantes são renderizadas on-demand ao navegar.
-    markViewsDirty(RENDERABLE_VIEWS);
-    scheduleRenderView(currentView, { force: true, sync: true });
-    return;
-  }
+  // Marcar todas as views como sujas
+  markViewsDirty(RENDERABLE_VIEWS);
 
-  // Data changed: refresh current view now, mark others dirty for lazy render
-  markViewsDirty(["dashboard", "assets", "cashflow", "dividends", "analysis", "settings", "import"]);
-  scheduleRenderView(currentView, { force: true, sync: true });
+  // v18: usar requestAnimationFrame (async) em vez de sync
+  // Permite ao browser pintar o esqueleto antes de bloquear no render de dados
+  scheduleRenderView(currentView, { force: true, sync: false });
 }
 
 /* ─── DASHBOARD ───────────────────────────────────────────── */
@@ -1455,6 +1467,11 @@ function renderSearchResults(q) {
 }
 
 function renderDivYTD() {
+  // v18: skip se dividendos não mudaram
+  const _dytdHash = `${(state.dividends||[]).length}|${(state.divSummaries||[]).length}`;
+  if (renderDivYTD._lastHash === _dytdHash) return;
+  renderDivYTD._lastHash = _dytdHash;
+
   const now = new Date();
   const currentYear = now.getFullYear();
   const yearStart = currentYear + "-01-01";
@@ -1648,15 +1665,24 @@ function renderDistChart() {
   const labels = Object.keys(by);
   const values = labels.map(k => by[k]);
   const ctx = $("distChart").getContext("2d");
-  if (distChart) distChart.destroy();
+  // v18: update em vez de destroy+recreate (muito mais rápido, sem animação de entrada)
+  if (distChart && distChart.config && labels.length > 0) {
+    distChart.data.labels = labels;
+    distChart.data.datasets[0].data = values;
+    distChart.data.datasets[0].backgroundColor = PALETTE;
+    distChart.update("none"); // "none" = sem animação
+    return;
+  }
+  if (distChart) { distChart.destroy(); distChart = null; }
   if (!labels.length) {
-    distChart = new Chart(ctx, { type: "doughnut", data: { labels: ["Sem dados"], datasets: [{ data: [1], backgroundColor: ["#e6e9f0"] }] }, options: { plugins: { legend: { display: false } }, cutout: "72%" } });
+    distChart = new Chart(ctx, { type: "doughnut", data: { labels: ["Sem dados"], datasets: [{ data: [1], backgroundColor: ["#e6e9f0"] }] }, options: { animation: false, plugins: { legend: { display: false } }, cutout: "72%" } });
     return;
   }
   distChart = new Chart(ctx, {
     type: "doughnut",
     data: { labels, datasets: [{ data: values, backgroundColor: PALETTE, borderWidth: 0 }] },
     options: {
+      animation: { duration: 400, easing: "easeOutQuart" },
       plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${c.label}: ${fmtEUR(c.raw)} (${fmtPct(c.raw / values.reduce((a,b)=>a+b,0)*100)})` } } },
       cutout: "72%"
     }
@@ -1665,7 +1691,6 @@ function renderDistChart() {
 
 function renderTrendChart() {
   const ctx = $("trendChart").getContext("2d");
-  if (trendChart) trendChart.destroy();
   const h = state.history.slice().sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
   const hint = $("historyHint");
   const snapTable = document.getElementById("snapshotTable");
@@ -1674,32 +1699,47 @@ function renderTrendChart() {
   if (!h.length) {
     if (hint) hint.style.display = "block";
     if (snapTable) snapTable.innerHTML = "";
-    trendChart = new Chart(ctx, { type: "line", data: { labels: ["—"], datasets: [{ data: [0], tension: .35, pointRadius: 0 }] }, options: { plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } } });
+    if (trendChart) { trendChart.destroy(); trendChart = null; }
     return;
   }
   if (hint) hint.style.display = "none";
-
-  // Update subtitle with count and date range
   if (trendSub) trendSub.textContent = `${h.length} snapshot${h.length!==1?"s":""} · ${h[0].dateISO.slice(0,7)} → ${h[h.length-1].dateISO.slice(0,7)}`;
 
-  trendChart = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels: h.map(x => x.dateISO.slice(0, 7)),
-      datasets: [
-        { label: "Património líquido", data: h.map(x => parseNum(x.net)), tension: .4, pointRadius: h.length <= 12 ? 4 : 2, borderColor: "#5b5ce6", backgroundColor: "rgba(91,92,230,.08)", fill: true, borderWidth: 2 },
-        { label: "Total ativos", data: h.map(x => parseNum(x.assets)), tension: .4, pointRadius: 0, borderDash: [4,4], borderColor: "#39d6d8", borderWidth: 1.5 },
-        { label: "Rend. passivo/ano", data: h.map(x => parseNum(x.passiveAnnual||0)), tension: .4, pointRadius: 0, borderColor: "#10b981", borderWidth: 1.5 }
-      ]
-    },
-    options: {
-      plugins: {
-        legend: { display: true, labels: { boxWidth: 10, font: { size: 11 } } },
-        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } }
+  const labels = h.map(x => x.dateISO.slice(0, 7));
+  const netData = h.map(x => parseNum(x.net));
+  const assetData = h.map(x => parseNum(x.assets));
+  const passData = h.map(x => parseNum(x.passiveAnnual||0));
+
+  // v18: update em vez de destroy+recreate
+  if (trendChart && trendChart.data) {
+    trendChart.data.labels = labels;
+    trendChart.data.datasets[0].data = netData;
+    trendChart.data.datasets[0].pointRadius = h.length <= 12 ? 4 : 2;
+    trendChart.data.datasets[1].data = assetData;
+    trendChart.data.datasets[2].data = passData;
+    trendChart.update("none");
+  } else {
+    if (trendChart) { trendChart.destroy(); trendChart = null; }
+    trendChart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          { label: "Património líquido", data: netData, tension: .4, pointRadius: h.length <= 12 ? 4 : 2, borderColor: "#5b5ce6", backgroundColor: "rgba(91,92,230,.08)", fill: true, borderWidth: 2 },
+          { label: "Total ativos", data: assetData, tension: .4, pointRadius: 0, borderDash: [4,4], borderColor: "#39d6d8", borderWidth: 1.5 },
+          { label: "Rend. passivo/ano", data: passData, tension: .4, pointRadius: 0, borderColor: "#10b981", borderWidth: 1.5 }
+        ]
       },
-      scales: { y: { ticks: { callback: v => v >= 1e6 ? (v/1e6).toFixed(1)+"M€" : fmtEUR(v), font:{size:10} } } }
-    }
-  });
+      options: {
+        animation: { duration: 400, easing: "easeOutQuart" },
+        plugins: {
+          legend: { display: true, labels: { boxWidth: 10, font: { size: 11 } } },
+          tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } }
+        },
+        scales: { y: { ticks: { callback: v => v >= 1e6 ? (v/1e6).toFixed(1)+"M€" : fmtEUR(v), font:{size:10} } } }
+      }
+    });
+  }
 
   // Mini table: last 6 snapshots with MoM change
   if (snapTable) {
@@ -1725,7 +1765,7 @@ function renderTrendChart() {
 }
 
 function snapshotMonth() {
-  const t = calcTotals();
+  const t = _rc ? _rc.totals : calcTotals();
   const dateISO = isoToday();
   // avoid duplicate same-day snapshot
   const existing = state.history.findIndex(h => h.dateISO === dateISO);
@@ -6474,6 +6514,11 @@ function renderPortfolioSourcesCard() {
   const totalAssets = (state.assets || []).slice();
   const brokerAssets = totalAssets.filter(a => a.generatedFromBroker);
   const manualAssets = totalAssets.filter(a => !a.generatedFromBroker);
+
+  // v18: skip se dados iguais
+  const _pscHash = `${brokerAssets.length}|${manualAssets.length}|${totalAssets.reduce((s,a)=>s+a.value,0).toFixed(0)}`;
+  if (renderPortfolioSourcesCard._lastHash === _pscHash) return;
+  renderPortfolioSourcesCard._lastHash = _pscHash;
   const brokerValue = brokerAssets.reduce((s, a) => s + parseNum(a.value), 0);
   const manualValue = manualAssets.reduce((s, a) => s + parseNum(a.value), 0);
   const total = brokerValue + manualValue;
@@ -6515,6 +6560,11 @@ function renderBrokerImportStatus() {
   const list = document.getElementById("brokerImportList");
   if (!box || !list) return;
   const bd = ensureBrokerData();
+
+  // v18: skip se nada mudou
+  const _bisHash = `${(bd.files||[]).length}|${(bd.events||[]).length}|${(bd.positions||[]).length}`;
+  if (renderBrokerImportStatus._lastHash === _bisHash) return;
+  renderBrokerImportStatus._lastHash = _bisHash;
   const files = (bd.files || []).slice().sort((a, b) => String(b.importedAt || "").localeCompare(String(a.importedAt || "")));
   const yearsSet = new Set();
   (bd.events || []).forEach(e => { const y = String(e.date || "").slice(0, 4); if (y) yearsSet.add(y); });
@@ -8692,10 +8742,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (pruneGeneratedDividendSummaries()) changed = true;
     if (changed) await saveStateAsync();
   } catch (e) { console.error("Falha na reconciliação inicial dos dividendos/corretoras", e); }
+  // v18: Chart.js global defaults — animações reduzidas para performance
+  try {
+    if (typeof Chart !== "undefined") {
+      Chart.defaults.animation = { duration: 400, easing: "easeOutQuart" };
+      Chart.defaults.font.family = "inherit";
+      Chart.defaults.responsive = true;
+      Chart.defaults.maintainAspectRatio = false;
+    }
+  } catch (_) {}
   try { wire(); } catch (e) { console.error("Falha no binding dos botões", e); }
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
-  try { autoSnapshotIfNeeded(); } catch (e) { console.error("Falha no auto snapshot", e); }
-  try { setTimeout(() => checkAndNotifyMaturities(), 2000); } catch (e) { console.error("Falha nas notificações de vencimento", e); }
+  // v18: diferir tarefas não-críticas para depois do primeiro render
+  setTimeout(() => {
+    try { autoSnapshotIfNeeded(); } catch (e) { console.error("Falha no auto snapshot", e); }
+    try { checkAndNotifyMaturities(); } catch (e) { console.error("Falha nas notificações de vencimento", e); }
+  }, 500);
   window.openDividendBaseModal = openDividendBaseModal;
   window.setDividendYieldDisplayMode = setDividendYieldDisplayMode;
   window.applyPreferredDividendYieldToProjection = applyPreferredDividendYieldToProjection;
@@ -9009,6 +9071,11 @@ function renderHealthRatios(rc) {
 
   const t = rc ? rc.totals : calcTotals();
   if (t.assetsTotal === 0) { el.innerHTML = "<div class='note'>Sem ativos registados.</div>"; return; }
+
+  // v18: skip render if key values unchanged (evita reflow desnecessário)
+  const _hrHash = `${t.assetsTotal}|${t.liabsTotal}|${t.passiveAnnual}|${(state.transactions||[]).length}`;
+  if (renderHealthRatios._lastHash === _hrHash) return;
+  renderHealthRatios._lastHash = _hrHash;
 
   const debtRatio = t.liabsTotal / t.assetsTotal * 100;
   const leverageRatio = t.assetsTotal / Math.max(1, t.net);
@@ -9573,6 +9640,11 @@ function renderPortfolioQuality(rc) {
 
   const div = rc ? rc.divScore : calcDiversificationScore();
   const t = rc ? rc.totals : calcTotals();
+
+  // v18: skip se dados iguais
+  const _pqHash = `${t.assetsTotal}|${t.passiveAnnual}|${div.score}`;
+  if (renderPortfolioQuality._lastHash === _pqHash) return;
+  renderPortfolioQuality._lastHash = _pqHash;
 
   // Yield coverage — rendimento passivo cobre despesas?
   const byMonth = new Map();
