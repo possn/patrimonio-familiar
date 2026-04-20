@@ -1,4 +1,4 @@
-/* Património Familiar — v18
+/* Património Familiar — v27
    Performance: memoização por ciclo de render (elimina cálculos redundantes)
    + Objetivo de rendimento passivo com barra de progresso
    + Alertas de vencimentos próximos (30 dias)
@@ -13,7 +13,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260420v18").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260420v27").catch(() => {});
     });
   }
 } catch (_) {}
@@ -578,6 +578,8 @@ function _scheduleRcInvalidate() {
 function invalidateRenderCache() {
   _rc = null;
   _rcScheduled = false;
+  buildDividendStatsIndex._cache = null;
+  buildDividendStatsIndex._sig = "";
   // Clear content hash guards so next render is fresh
   if (renderHealthRatios) renderHealthRatios._lastHash = null;
   if (renderPortfolioQuality) renderPortfolioQuality._lastHash = null;
@@ -611,6 +613,58 @@ const NOOP_EL = {
 };
 
 function $(id) { return document.getElementById(id) || NOOP_EL; }
+
+function prepareChartCanvas(canvas, fallbackHeight = 220) {
+  if (!canvas || canvas._missing || typeof canvas.getContext !== "function") return null;
+  const raw = parseInt(canvas.getAttribute("height") || canvas.dataset.chartHeight || fallbackHeight, 10);
+  const height = Number.isFinite(raw) && raw > 80 ? raw : fallbackHeight;
+  const wrap = canvas.closest ? canvas.closest(".chartWrap") : null;
+  if (wrap) {
+    wrap.style.position = "relative";
+    wrap.style.minHeight = `${height}px`;
+    if (!wrap.style.height || wrap.style.height === "auto") wrap.style.height = `${height}px`;
+  }
+  canvas.style.display = "block";
+  canvas.style.width = "100%";
+  canvas.style.height = `${height}px`;
+  return canvas;
+}
+
+function ensureChartCtx(id, fallbackHeight = 220) {
+  if (typeof Chart === "undefined") {
+    renderChartUnavailable(id, "Biblioteca de gráficos não carregada");
+    return null;
+  }
+  const canvas = prepareChartCanvas(document.getElementById(id), fallbackHeight);
+  if (!canvas) return null;
+  return canvas.getContext("2d");
+}
+
+function ensureAllChartCanvasesReady() {
+  document.querySelectorAll(".chartWrap canvas").forEach(c => prepareChartCanvas(c));
+}
+
+function renderChartUnavailable(canvasId, message = "Gráfico indisponível") {
+  const canvas = document.getElementById(canvasId);
+  const wrap = canvas && canvas.closest ? canvas.closest(".chartWrap") : null;
+  if (!wrap) return;
+  let note = wrap.querySelector(".chartFallback");
+  if (!note) {
+    note = document.createElement("div");
+    note.className = "chartFallback";
+    note.style.cssText = "display:flex;align-items:center;justify-content:center;height:100%;min-height:140px;font-size:12px;color:var(--muted);text-align:center;padding:12px";
+    wrap.appendChild(note);
+  }
+  note.textContent = message;
+}
+
+function clearChartUnavailable(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  const wrap = canvas && canvas.closest ? canvas.closest(".chartWrap") : null;
+  if (!wrap) return;
+  const note = wrap.querySelector(".chartFallback");
+  if (note) note.remove();
+}
 
 /* ─── SAVE / LOAD ─────────────────────────────────────────── */
 async function loadStateAsync() {
@@ -677,6 +731,10 @@ function getLegacyPassiveMeta(it) {
 }
 
 function passiveFromItem(it) {
+  if (it && isDividendAsset(it)) {
+    const stats = getDividendStatsForAsset(it);
+    if (stats.ttmNet > 0) return stats.ttmNet;
+  }
   const v = parseNum(it && it.value), yv = parseNum(it && it.yieldValue), yt = it && it.yieldType || "none";
   if (yt === "yield_pct") return v * (yv / 100);
   if (yt === "yield_eur_year") return yv;
@@ -781,7 +839,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 2;
+const BROKER_REBUILD_SCHEMA_VERSION = 5;
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -950,6 +1008,10 @@ function getAssetPassiveRatePct(asset, opts = {}) {
   const v = parseNum(asset && asset.value);
   if (v <= 0) return 0;
   const allowClassFallback = opts.allowClassFallback !== false;
+  if (asset && isDividendAsset(asset)) {
+    const stats = getDividendStatsForAsset(asset);
+    if (stats.ttmNet > 0) return stats.ttmNet / Math.max(1, v) * 100;
+  }
   const yt = asset && asset.yieldType || "none";
   const yv = parseNum(asset && asset.yieldValue);
   if (yt === "yield_pct") return yv;
@@ -1006,7 +1068,12 @@ function calcPassiveAnnualSummary() {
     }
   }
 
-  const divAnnual = Math.max(0, parseNum(divData.net));
+  let divAnnual = Math.max(0, parseNum(divData.net));
+  if (!(divAnnual > 0)) {
+    divAnnual = (state.assets || [])
+      .filter(a => isDividendAsset(a))
+      .reduce((s, a) => s + Math.max(0, passiveFromItem(a)), 0);
+  }
   if (divAnnual > 0) {
     const label = divData.source === "summary"
       ? "Dividendos (resumo anual)"
@@ -1145,8 +1212,21 @@ function setView(view) {
   try { window.scrollTo(0, 0); } catch (_) {}
 }
 
-function openModal(id) { $(id).setAttribute("aria-hidden", "false"); }
-function closeModal(id) { $(id).setAttribute("aria-hidden", "true"); }
+function openModal(id) {
+  const el = $(id);
+  if (!el) return;
+  el.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+function closeModal(id) {
+  const el = $(id);
+  if (!el) return;
+  el.setAttribute("aria-hidden", "true");
+  if (![...document.querySelectorAll(".modal")].some(m => m.getAttribute("aria-hidden") === "false")) {
+    document.body.classList.remove("modal-open");
+  }
+}
+
 
 function wireModalClosers() {
   document.body.addEventListener("click", e => {
@@ -1246,8 +1326,9 @@ function classifySector(asset) {
 }
 
 function renderSectorChart() {
-  const ctx = document.getElementById("sectorChart");
-  if (!ctx) return;
+  const ctx = prepareChartCanvas(document.getElementById("sectorChart"), 220);
+  if (!ctx || typeof Chart === "undefined") { renderChartUnavailable("sectorChart"); return; }
+  clearChartUnavailable("sectorChart");
 
   const EQUITY_CLASSES = ["Ações/ETFs","Cripto"];
   const assets = state.assets.filter(a => EQUITY_CLASSES.includes(a.class) && parseNum(a.value) > 0);
@@ -1288,8 +1369,9 @@ function renderSectorChart() {
 }
 
 function renderGeoChart() {
-  const ctx = document.getElementById("geoChart");
-  if (!ctx) return;
+  const ctx = prepareChartCanvas(document.getElementById("geoChart"), 220);
+  if (!ctx || typeof Chart === "undefined") { renderChartUnavailable("geoChart"); return; }
+  clearChartUnavailable("geoChart");
 
   const EQUITY_CLASSES = ["Ações/ETFs","Cripto"];
   const assets = state.assets.filter(a => EQUITY_CLASSES.includes(a.class) && parseNum(a.value) > 0);
@@ -1330,6 +1412,7 @@ function renderGeoChart() {
 function renderAll(opts = {}) {
   const force = !!(opts && opts.force);
   invalidateRenderCache(); // v18: garantir cálculos frescos
+  ensureAllChartCanvasesReady();
   // v18: updatePassiveBar e renderBrokerImportStatus removidos daqui —
   // são chamados dentro de renderDashboard/renderView para evitar trabalho duplo
   updateQuoteErrorIndicator();
@@ -1550,8 +1633,9 @@ function renderCatChart() {
   const entries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
   const total = entries.reduce((s, [, v]) => s + v, 0);
 
-  const ctx = $("catChart") && $("catChart").getContext("2d");
-  if (!ctx) return;
+  const ctx = ensureChartCtx("catChart", 180);
+  if (!ctx) { renderChartUnavailable("catChart"); return; }
+  clearChartUnavailable("catChart");
   if (catChart) catChart.destroy();
 
   if (!entries.length) { catChart = null; return; }
@@ -1860,7 +1944,9 @@ function renderDistChart() {
   for (const a of state.assets) { const k = a.class || "Outros"; by[k] = (by[k] || 0) + parseNum(a.value); }
   const labels = Object.keys(by);
   const values = labels.map(k => by[k]);
-  const ctx = $("distChart").getContext("2d");
+  const ctx = ensureChartCtx("distChart", 220);
+  if (!ctx) { renderChartUnavailable("distChart"); return; }
+  clearChartUnavailable("distChart");
   // v18: update em vez de destroy+recreate (muito mais rápido, sem animação de entrada)
   if (distChart && distChart.config && labels.length > 0) {
     distChart.data.labels = labels;
@@ -1886,7 +1972,9 @@ function renderDistChart() {
 }
 
 function renderTrendChart() {
-  const ctx = $("trendChart").getContext("2d");
+  const ctx = ensureChartCtx("trendChart", 240);
+  if (!ctx) { renderChartUnavailable("trendChart"); return; }
+  clearChartUnavailable("trendChart");
   const h = state.history.slice().sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
   const hint = $("historyHint");
   const snapTable = document.getElementById("snapshotTable");
@@ -2507,8 +2595,9 @@ function renderBalance() { renderCashflow(); }
 function renderCashflowChart() {
   const gran = ($("cfGranularity") && $("cfGranularity").value) || "month";
   const { keys, data } = cfGranData(gran);
-  const ctx = $("cfChart") && $("cfChart").getContext("2d");
-  if (!ctx) return;
+  const ctx = ensureChartCtx("cfChart", 200);
+  if (!ctx) { renderChartUnavailable("cfChart"); return; }
+  clearChartUnavailable("cfChart");
   if (window._cfChart) window._cfChart.destroy();
   if (!keys.length) return;
   window._cfChart = new Chart(ctx, {
@@ -3093,8 +3182,9 @@ function renderDivSummaryList() {
 }
 
 function renderDivSummaryChart() {
-  const ctx = $("divSummaryChart") && $("divSummaryChart").getContext("2d");
-  if (!ctx) return;
+  const ctx = ensureChartCtx("divSummaryChart", 220);
+  if (!ctx) { renderChartUnavailable("divSummaryChart"); return; }
+  clearChartUnavailable("divSummaryChart");
   if (divSummaryChart) divSummaryChart.destroy();
 
   // Prefer real data from imports over manual summaries
@@ -3290,8 +3380,9 @@ function renderDivProjection() {
   }
 
   // Chart — 3 cenários
-  const ctx = $("divProjChart") && $("divProjChart").getContext("2d");
-  if (!ctx) return;
+  const ctx = ensureChartCtx("divProjChart", 240);
+  if (!ctx) { renderChartUnavailable("divProjChart"); return; }
+  clearChartUnavailable("divProjChart");
   if (divProjChart) divProjChart.destroy();
 
   divProjChart = new Chart(ctx, {
@@ -3713,8 +3804,9 @@ function renderDivKPIs(divs) {
 }
 
 function renderDivChart(divs) {
-  const ctx = $("divChart") && $("divChart").getContext("2d");
-  if (!ctx) return;
+  const ctx = ensureChartCtx("divChart", 220);
+  if (!ctx) { renderChartUnavailable("divChart"); return; }
+  clearChartUnavailable("divChart");
   if (window._divChart) window._divChart.destroy();
   if (!divs.length) return;
 
@@ -4507,32 +4599,189 @@ function isDividendAsset(a) {
   return key === "acoes/etfs" || key === "fundos";
 }
 
+
 function normalizeDividendKey(x) {
   return String(x || "").toUpperCase().replace(/\s+/g, " ").trim();
+}
+
+function getAssetIdentityKeys(asset) {
+  const keys = new Set();
+  if (!asset || typeof asset !== "object") return keys;
+  const push = (prefix, value) => {
+    const v = String(value || "").trim();
+    if (!v) return;
+    keys.add(`${prefix}:${normalizeDividendKey(v)}`);
+  };
+
+  if (asset.id) push("ASSET", asset.id);
+
+  const isin = normalizeISIN(asset.isin);
+  if (isin) push("ISIN", isin);
+
+  const inferredYahoo = inferYahooTickerFromIdentity(asset);
+  if (asset.yahooTicker) push("YAHOO", asset.yahooTicker);
+  if (inferredYahoo) push("YAHOO", inferredYahoo);
+
+  const tickerBase = canonicalBrokerTickerBase(asset.ticker || asset.yahooTicker || "");
+  if (tickerBase) push("TICKER", tickerBase);
+  if (asset.ticker) push("TICKER", asset.ticker);
+
+  const fullName = normalizeSecurityNameKey(asset.name || "");
+  const headName = normalizeSecurityNameKey(String(asset.name || "").split(" — ")[0] || "");
+  if (fullName) push("NAME", fullName);
+  if (headName) push("NAME", headName);
+
+  return keys;
+}
+
+function getDividendIdentityKeys(dividend) {
+  const keys = new Set();
+  if (!dividend || typeof dividend !== "object") return keys;
+
+  const push = (prefix, value) => {
+    const v = String(value || "").trim();
+    if (!v) return;
+    keys.add(`${prefix}:${normalizeDividendKey(v)}`);
+  };
+
+  if (dividend.assetId) push("ASSET", dividend.assetId);
+
+  const notes = String(dividend.notes || "");
+  const noteIsin = notes.match(/ISIN=([A-Z0-9]+)/i);
+  const noteTicker = notes.match(/Ticker=([A-Z0-9.\-]+)/i);
+  const noteYahoo = notes.match(/Yahoo=([A-Z0-9.\-=^]+)/i);
+
+  if (noteIsin && noteIsin[1]) push("ISIN", noteIsin[1]);
+  if (noteYahoo && noteYahoo[1]) push("YAHOO", noteYahoo[1]);
+
+  const noteTickerBase = canonicalBrokerTickerBase(noteTicker ? noteTicker[1] : "");
+  if (noteTicker && noteTicker[1]) push("TICKER", noteTicker[1]);
+  if (noteTickerBase) push("TICKER", noteTickerBase);
+
+  const assetName = String(dividend.assetName || "");
+  if (assetName) {
+    const head = String(assetName.split(" — ")[0] || "").trim();
+    const nameKey = normalizeSecurityNameKey(assetName);
+    const headKey = normalizeSecurityNameKey(head);
+    if (nameKey) push("NAME", nameKey);
+    if (headKey) push("NAME", headKey);
+
+    const assetNameBase = canonicalBrokerTickerBase(assetName);
+    if (assetNameBase && /^[A-Z0-9.\-]{1,16}$/.test(assetNameBase)) push("TICKER", assetNameBase);
+  }
+
+  return keys;
 }
 
 function assetMatchesDividend(asset, dividend) {
   if (!asset || !dividend) return false;
   if (asset.id && dividend.assetId && String(asset.id) === String(dividend.assetId)) return true;
-
-  const assetKeys = new Set([
-    normalizeDividendKey(asset.ticker),
-    normalizeDividendKey(asset.isin),
-    normalizeDividendKey(asset.name),
-    normalizeDividendKey(String(asset.name || "").split(" — ")[0]),
-    normalizeDividendKey(`${asset.ticker || ""} — ${asset.name || ""}`)
-  ].filter(Boolean));
-
-  const noteIsin = String(dividend.notes || "").match(/ISIN=([A-Z0-9]+)/);
-  const divKeys = new Set([
-    normalizeDividendKey(dividend.assetId),
-    normalizeDividendKey(dividend.assetName),
-    normalizeDividendKey(String(dividend.assetName || "").split(" — ")[0]),
-    normalizeDividendKey(noteIsin ? noteIsin[1] : "")
-  ].filter(Boolean));
-
-  for (const k of assetKeys) if (divKeys.has(k)) return true;
+  const aKeys = getAssetIdentityKeys(asset);
+  const dKeys = getDividendIdentityKeys(dividend);
+  for (const k of aKeys) if (dKeys.has(k)) return true;
   return false;
+}
+
+function buildDividendStatsIndex() {
+  const divs = Array.isArray(state.dividends) ? state.dividends : [];
+  const assets = Array.isArray(state.assets) ? state.assets : [];
+  const sig = `${divs.length}|${assets.length}|${(((state||{}).settings||{}).brokerRebuildSig)||""}|${divs.length ? (divs[divs.length-1].id||divs[divs.length-1].date||"") : ""}`;
+  if (buildDividendStatsIndex._cache && buildDividendStatsIndex._sig === sig) return buildDividendStatsIndex._cache;
+
+  const cutoff = new Date(new Date().getFullYear() - 1, new Date().getMonth(), new Date().getDate()).toISOString().slice(0, 10);
+  const tokenToAssetIds = new Map();
+  const statsByAssetId = new Map();
+
+  for (const asset of assets) {
+    if (!asset || !asset.id) continue;
+    statsByAssetId.set(asset.id, { allGross: 0, allNet: 0, allTax: 0, allCount: 0, ttmGross: 0, ttmNet: 0, ttmTax: 0, ttmCount: 0 });
+    for (const key of getAssetIdentityKeys(asset)) {
+      if (!tokenToAssetIds.has(key)) tokenToAssetIds.set(key, new Set());
+      tokenToAssetIds.get(key).add(asset.id);
+    }
+  }
+
+  for (const d of divs) {
+    if (!d) continue;
+    const matched = new Set();
+    if (d.assetId && statsByAssetId.has(d.assetId)) matched.add(d.assetId);
+    for (const key of getDividendIdentityKeys(d)) {
+      const ids = tokenToAssetIds.get(key);
+      if (ids) ids.forEach(id => matched.add(id));
+    }
+    if (!matched.size) continue;
+    const gross = getDividendGross(d);
+    const net = getDividendNet(d);
+    const tax = Math.max(0, parseNum(d.taxWithheld || 0));
+    const inTTM = String(d.date || "") >= cutoff;
+    matched.forEach(id => {
+      const s = statsByAssetId.get(id);
+      if (!s) return;
+      s.allGross += gross;
+      s.allNet += net;
+      s.allTax += tax;
+      s.allCount += 1;
+      if (inTTM) {
+        s.ttmGross += gross;
+        s.ttmNet += net;
+        s.ttmTax += tax;
+        s.ttmCount += 1;
+      }
+    });
+  }
+
+  buildDividendStatsIndex._sig = sig;
+  buildDividendStatsIndex._cache = { cutoff, statsByAssetId };
+  return buildDividendStatsIndex._cache;
+}
+
+function getDividendStatsForAsset(asset) {
+  if (!asset || !asset.id) return { allGross: 0, allNet: 0, allTax: 0, allCount: 0, ttmGross: 0, ttmNet: 0, ttmTax: 0, ttmCount: 0 };
+  const idx = buildDividendStatsIndex();
+  return idx.statsByAssetId.get(asset.id) || { allGross: 0, allNet: 0, allTax: 0, allCount: 0, ttmGross: 0, ttmNet: 0, ttmTax: 0, ttmCount: 0 };
+}
+
+function syncBrokerAssetDividendYieldsFromRecords() {
+  let changed = false;
+  for (const asset of (state.assets || [])) {
+    if (!asset || !asset.generatedFromBroker || !isDividendAsset(asset) || parseNum(asset.value) <= 0) continue;
+    const stats = getDividendStatsForAsset(asset);
+    const annual = Math.max(0, parseNum(stats.ttmNet));
+    if (annual > 0) {
+      if (asset.yieldType !== "yield_eur_year" || Math.abs(parseNum(asset.yieldValue) - annual) > 0.01) {
+        asset.yieldType = "yield_eur_year";
+        asset.yieldValue = +annual.toFixed(4);
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+function getDividendBaseAssetsForRecords(divRecords, opts = {}) {
+  const records = Array.isArray(divRecords) ? divRecords.filter(Boolean) : [];
+  const assets = Array.isArray(state.assets) ? state.assets : [];
+  const brokerOnly = !!opts.brokerOnly;
+  const allowConfigured = opts.allowConfigured !== false;
+
+  const recordKeys = new Set();
+  records.forEach(d => {
+    for (const k of getDividendIdentityKeys(d)) recordKeys.add(k);
+  });
+
+  return assets.filter(a => {
+    if (!isDividendAsset(a) || parseNum(a.value) <= 0) return false;
+    if (brokerOnly && !a.generatedFromBroker) return false;
+
+    let hasRecord = false;
+    for (const k of getAssetIdentityKeys(a)) {
+      if (recordKeys.has(k)) { hasRecord = true; break; }
+    }
+
+    const yt = a.yieldType || 'none';
+    const hasConfiguredDividend = allowConfigured && (yt === 'yield_eur_year') && parseNum(a.yieldValue) > 0;
+    return hasRecord || hasConfiguredDividend;
+  });
 }
 
 function getDividendLinkedAssets(opts = {}) {
@@ -4587,23 +4836,25 @@ function calcDividendYield() {
   if (sourceDivs.length > 0) {
     const grossAll = sourceDivs.reduce((s, d) => s + getDividendGross(d), 0);
     const netAll = sourceDivs.reduce((s, d) => s + getDividendNet(d), 0);
-    const baseAssetsAll = getDividendBaseAssetsForRecords(sourceDivs, { brokerOnly, allowConfigured: true });
-    const baseAll = baseAssetsAll.reduce((s, a) => s + parseNum(a.value), 0);
-    const grossYieldPct = baseAll > 0 ? (grossAll / baseAll * 100) : 0;
-    const netYieldPct = baseAll > 0 ? (netAll / baseAll * 100) : 0;
-    return {
-      gross: grossAll,
-      net: netAll,
-      yieldPct: grossYieldPct,
-      grossYieldPct,
-      netYieldPct,
-      weightedYield: grossYieldPct,
-      divPortfolioVal: baseAll,
-      source: brokerOnly ? 'broker_ttm' : 'individual',
-      period: 'all',
-      linkedAssets: baseAssetsAll,
-      linkedDividends: sourceDivs
-    };
+    if (grossAll > 0 || netAll > 0) {
+      const baseAssetsAll = getDividendBaseAssetsForRecords(sourceDivs, { brokerOnly, allowConfigured: true });
+      const baseAll = baseAssetsAll.reduce((s, a) => s + parseNum(a.value), 0);
+      const grossYieldPct = baseAll > 0 ? (grossAll / baseAll * 100) : 0;
+      const netYieldPct = baseAll > 0 ? (netAll / baseAll * 100) : 0;
+      return {
+        gross: grossAll,
+        net: netAll,
+        yieldPct: grossYieldPct,
+        grossYieldPct,
+        netYieldPct,
+        weightedYield: grossYieldPct,
+        divPortfolioVal: baseAll,
+        source: brokerOnly ? 'broker_ttm' : 'individual',
+        period: 'all',
+        linkedAssets: baseAssetsAll,
+        linkedDividends: sourceDivs
+      };
+    }
   }
 
   if (latestSummary) {
@@ -4628,15 +4879,29 @@ function calcDividendYield() {
   }
 
   const estimatedAssets = (state.assets || []).filter(a => isDividendAsset(a) && parseNum(a.value) > 0 && ['yield_eur_year','yield_pct'].includes(a.yieldType || 'none'));
-  const estimatedGross = estimatedAssets.reduce((s, a) => {
+  let estimatedGross = 0;
+  let estimatedNet = 0;
+  for (const a of estimatedAssets) {
     const yt = a.yieldType || 'none';
-    if (yt === 'yield_eur_year') return s + parseNum(a.yieldValue);
-    if (yt === 'yield_pct') return s + parseNum(a.value) * (parseNum(a.yieldValue) / 100);
-    return s;
-  }, 0);
+    if (yt === 'yield_eur_year') {
+      const annual = parseNum(a.yieldValue);
+      if (a.generatedFromBroker) {
+        estimatedGross += annual;
+        estimatedNet += annual;
+      } else {
+        estimatedGross += annual;
+        estimatedNet += annual * 0.72;
+      }
+      continue;
+    }
+    if (yt === 'yield_pct') {
+      const gross = parseNum(a.value) * (parseNum(a.yieldValue) / 100);
+      estimatedGross += gross;
+      estimatedNet += gross * 0.72;
+    }
+  }
   const estimatedBase = estimatedAssets.reduce((s, a) => s + parseNum(a.value), 0);
   const grossYieldPct = estimatedBase > 0 ? (estimatedGross / estimatedBase * 100) : 0;
-  const estimatedNet = estimatedGross * 0.72;
   const netYieldPct = estimatedBase > 0 ? (estimatedNet / estimatedBase * 100) : 0;
   return {
     gross: estimatedGross,
@@ -4988,7 +5253,10 @@ function calcAndRenderCompound() {
     if (mode === "__portfolio__") {
       const assetsWithYield = state.assets.filter(a => parseNum(a.value) > 0);
       if (assetsWithYield.length > 0) {
-        const rows = assetsWithYield.map(a => {
+        const COMPOUND_LIMIT = 10;
+        if (window._compoundExpanded == null) window._compoundExpanded = false;
+        const shownAssets = window._compoundExpanded ? assetsWithYield : assetsWithYield.slice(0, COMPOUND_LIMIT);
+        const rows = shownAssets.map(a => {
           const v0 = parseNum(a.value);
           const r = getAssetTotalReturnPct(a, { allowClassFallback: true });
           const fq = a.compoundFreq || 1;
@@ -5004,7 +5272,8 @@ function calcAndRenderCompound() {
             </div>
           </div>`;
         }).join("");
-        tb.innerHTML += `<div style="margin-top:14px"><div class="card__title" style="font-size:16px;margin-bottom:8px">Decomposição por ativo (${years}a)</div><div class="list">${rows}</div></div>`;
+        const toggle = assetsWithYield.length > COMPOUND_LIMIT ? `<div style="text-align:center;margin-top:10px"><button class="btn btn--ghost btn--sm" onclick="window._compoundExpanded=!window._compoundExpanded;calcAndRenderCompound()" style="font-size:13px">${window._compoundExpanded ? "▲ Ver menos" : "▼ Ver mais (" + assetsWithYield.length + ")"}</button></div>` : "";
+        tb.innerHTML += `<div style="margin-top:14px"><div class="card__title" style="font-size:16px;margin-bottom:8px">Decomposição por ativo (${years}a)</div><div class="list">${rows}</div>${toggle}</div>`;
       }
     }
   }
@@ -5032,8 +5301,9 @@ function calcAndRenderCompound() {
   // Juro composto (freq>1): P*(1+r/n)^(n*t) — exponencial
   // Juro simples: P*(1+r*t) — linear, SEMPRE abaixo do composto para r>0, t>0
   // Só capital: P+C*t — linha recta sem qualquer juro
-  const ctx = $("compoundChart") && $("compoundChart").getContext("2d");
-  if (!ctx) return;
+  const ctx = ensureChartCtx("compoundChart", 240);
+  if (!ctx) { renderChartUnavailable("compoundChart"); return; }
+  clearChartUnavailable("compoundChart");
   if (compoundChart) compoundChart.destroy();
 
   // Juro simples ANUAL: sempre calculado com taxa efectiva anual sobre capital inicial
@@ -5180,8 +5450,9 @@ function renderForecastPanel() {
     }
   }
 
-  const ctx = $("forecastChart") && $("forecastChart").getContext("2d");
-  if (!ctx) return;
+  const ctx = ensureChartCtx("forecastChart", 240);
+  if (!ctx) { renderChartUnavailable("forecastChart"); return; }
+  clearChartUnavailable("forecastChart");
   if (forecastChart) forecastChart.destroy();
 
   const aggData = compoundGrowth(py.totalValue, py.totalReturnAnnual, years, 12, 0).map(d => d.value);
@@ -5207,8 +5478,9 @@ function renderComparePanel() {
   const mode = ($("compareMode") && $("compareMode").value) || "yoy";
   const h = state.history.slice().sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
 
-  const ctx = $("compareChart") && $("compareChart").getContext("2d");
-  if (!ctx) return;
+  const ctx = ensureChartCtx("compareChart", 220);
+  if (!ctx) { renderChartUnavailable("compareChart"); return; }
+  clearChartUnavailable("compareChart");
   if (compareChart) compareChart.destroy();
 
   if (h.length < 2) {
@@ -5467,8 +5739,9 @@ function renderFire() {
   }
 
   // Chart
-  const canvas = $("fireChart");
-  if (!canvas || !canvas.getContext) return;
+  const canvas = prepareChartCanvas(document.getElementById("fireChart"), 260);
+  if (!canvas || typeof Chart === "undefined") { renderChartUnavailable("fireChart"); return; }
+  clearChartUnavailable("fireChart");
   const base = scenarios[1];
   let cap = cap0, exp = exp0;
   const labels = [], capS = [], fireS = [], passS = [], cap2 = [], cap3 = [];
@@ -5990,11 +6263,86 @@ function normalizeISIN(v) {
   return /^[A-Z]{2}[A-Z0-9]{9}\d$/.test(s) ? s : "";
 }
 
-function makeBrokerSecurityKey({ isin = "", ticker = "", name = "", currency = "", priceCurrency = "", totalCurrency = "" } = {}) {
+function normalizeSecurityNameKey(v) {
+  return String(v || "")
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/\b(INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|SA|S A|SGPS|PLC|LTD|LIMITED|NV|N V|AG|SE|ETF|ETFS|FUND|FUNDO|CLASS [A-Z]|ORDINARY SHARES|SHARES)\b/g, " ")
+    .replace(/[^A-Z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function canonicalBrokerTickerBase(v) {
+  let t = String(v || "").trim().toUpperCase();
+  if (!t) return "";
+  t = t.normalize("NFD").replace(/[̀-ͯ]/g, "");
+  if (/^[A-Z0-9.-]+\.US$/.test(t)) return t.replace(/\.US$/, "");
+  if (/^[A-Z0-9.-]+\.(NYSE|NASDAQ|XNAS|XNYS|ARCA|AMEX)$/.test(t)) return t.replace(/\.(NYSE|NASDAQ|XNAS|XNYS|ARCA|AMEX)$/, "");
+  return t;
+}
+
+function inferYahooTickerFromIdentity({ isin = "", ticker = "", yahooTicker = "", name = "" } = {}) {
+  const i = normalizeISIN(isin);
+  if (i && ISIN_YAHOO_MAP[i]) return String(ISIN_YAHOO_MAP[i] || "").trim().toUpperCase();
+
+  const direct = String(yahooTicker || "").trim().toUpperCase();
+  if (direct) {
+    if (/^[A-Z0-9.-]+\.US$/.test(direct)) return direct.replace(/\.US$/, "");
+    if (/^[A-Z0-9.-]+\.CH$/.test(direct)) return direct.replace(/\.CH$/, ".SW");
+    if (/^[A-Z0-9.-]+\.PT$/.test(direct)) return direct.replace(/\.PT$/, ".LS");
+    if (/\.(LS|L|PA|AS|MC|SW|CO|ST|OL|HE|BR|MI|AX|TO|DE|F|IR)$/.test(direct) || /[=\-]/.test(direct)) return direct;
+  }
+
+  const t = String(ticker || "").trim().toUpperCase();
+  const n = normalizeSecurityNameKey(name);
+
+  if (/\bCORTICEIRA\b/.test(n) || /\bAMORIM\b/.test(n)) return "COR.LS";
+  if (/\bSONAE\b/.test(n)) return "SON.LS";
+  if (/\bREALTY\b/.test(n) && /\bINCOME\b/.test(n)) return "O";
+
+  if (/^[A-Z0-9.-]+\.US$/.test(t)) return t.replace(/\.US$/, "");
+  if (/^[A-Z0-9.-]+\.CH$/.test(t)) return t.replace(/\.CH$/, ".SW");
+  if (/^[A-Z0-9.-]+\.PT$/.test(t)) return t.replace(/\.PT$/, ".LS");
+  if (/^[A-Z0-9.-]+\.GB$/.test(t)) return t.replace(/\.GB$/, ".L");
+  if (/^[A-Z0-9.-]+\.FR$/.test(t)) return t.replace(/\.FR$/, ".PA");
+  if (/^[A-Z0-9.-]+\.NL$/.test(t)) return t.replace(/\.NL$/, ".AS");
+  if (/^[A-Z0-9.-]+\.ES$/.test(t)) return t.replace(/\.ES$/, ".MC");
+  return "";
+}
+
+function sameSecurityName(a, b) {
+  const na = normalizeSecurityNameKey(a);
+  const nb = normalizeSecurityNameKey(b);
+  if (!na || !nb) return false;
+  return na === nb || na.startsWith(nb) || nb.startsWith(na);
+}
+
+function sameBrokerSecurityIdentity(a, b) {
+  const ia = normalizeISIN(a && a.isin);
+  const ib = normalizeISIN(b && b.isin);
+  if (ia && ib) return ia === ib;
+
+  const ya = inferYahooTickerFromIdentity(a || {});
+  const yb = inferYahooTickerFromIdentity(b || {});
+  if (ya && yb && ya === yb) return true;
+
+  const ta = canonicalBrokerTickerBase((a && (a.ticker || a.yahooTicker)) || "");
+  const tb = canonicalBrokerTickerBase((b && (b.ticker || b.yahooTicker)) || "");
+  if (ta && tb && ta === tb && sameSecurityName(a && a.name, b && b.name)) return true;
+
+  if (sameSecurityName(a && a.name, b && b.name) && (!ta || !tb || ta === tb)) return true;
+  return false;
+}
+
+function makeBrokerSecurityKey({ isin = "", ticker = "", name = "", currency = "", priceCurrency = "", totalCurrency = "", yahooTicker = "" } = {}) {
   const i = normalizeISIN(isin);
   if (i) return `ISIN:${i}`;
-  const t = String(ticker || "").trim().toUpperCase();
-  const n = String(name || "").trim().toUpperCase().replace(/\s+/g, ' ');
+  const y = inferYahooTickerFromIdentity({ isin, ticker, yahooTicker, name });
+  if (y) return `YAHOO:${y}`;
+  const t = canonicalBrokerTickerBase(ticker || yahooTicker || "");
+  const n = normalizeSecurityNameKey(name || "");
   const c = String(currency || priceCurrency || totalCurrency || "").trim().toUpperCase();
   if (t && n) return `TICKER_NAME:${t}|${n}`;
   if (t && c) return `TICKER_CCY:${t}|${c}`;
@@ -6576,33 +6924,43 @@ function rebuildBrokerGeneratedData() {
   const touchPos = ({ ticker = "", isin = "", name = "", cls = "", currency = "EUR", sourceName = "" } = {}) => {
     const isinNorm = normalizeISIN(isin);
     const tickerNorm = String(ticker || "").trim().toUpperCase();
-    const nameNorm = String(name || "").trim().toUpperCase().replace(/\s+/g, ' ');
+    const nameNorm = String(name || "").trim();
     const currencyNorm = String(currency || "EUR").trim().toUpperCase();
-    let key = makeBrokerSecurityKey({ isin: isinNorm, ticker: tickerNorm, name: nameNorm, currency: currencyNorm });
+    const inferredYahoo = inferYahooTickerFromIdentity({ isin: isinNorm, ticker: tickerNorm, name: nameNorm });
+    let key = makeBrokerSecurityKey({ isin: isinNorm, ticker: tickerNorm, name: nameNorm, currency: currencyNorm, yahooTicker: inferredYahoo });
 
-    if (!isinNorm && tickerNorm) {
+    if (!posMap.has(key)) {
+      for (const [k, existing] of posMap.entries()) {
+        if (!sameBrokerSecurityIdentity(existing, { isin: isinNorm, ticker: tickerNorm, yahooTicker: inferredYahoo, name: nameNorm })) continue;
+        const existingCurrency = String(existing.currency || '').trim().toUpperCase();
+        const sameCurrency = !currencyNorm || !existingCurrency || existingCurrency === currencyNorm;
+        if (sameCurrency) { key = k; break; }
+      }
+    }
+
+    if (!posMap.has(key) && !isinNorm && tickerNorm) {
       const matches = [];
       for (const [k, existing] of posMap.entries()) {
-        const sameTicker = String(existing.ticker || "").trim().toUpperCase() === tickerNorm;
+        const sameTicker = canonicalBrokerTickerBase(existing.ticker || existing.yahooTicker) === canonicalBrokerTickerBase(tickerNorm);
         if (!sameTicker) continue;
-        const existingName = String(existing.name || "").trim().toUpperCase().replace(/\s+/g, ' ');
-        const sameName = !nameNorm || !existingName || existingName === nameNorm;
+        const sameName = !nameNorm || !existing.name || sameSecurityName(existing.name, nameNorm);
         const sameCurrency = !currencyNorm || !existing.currency || String(existing.currency || '').trim().toUpperCase() === currencyNorm;
         if (sameName || sameCurrency) matches.push(k);
       }
       if (matches.length === 1) key = matches[0];
     } else if (isinNorm && !posMap.has(key) && tickerNorm) {
       for (const [k, existing] of posMap.entries()) {
-        const sameTicker = String(existing.ticker || "").trim().toUpperCase() === tickerNorm;
         const existingIsin = normalizeISIN(existing.isin);
-        if (sameTicker && !existingIsin) { key = k; break; }
+        if (existingIsin) continue;
+        if (sameBrokerSecurityIdentity(existing, { isin: isinNorm, ticker: tickerNorm, yahooTicker: inferredYahoo, name: nameNorm })) { key = k; break; }
       }
     }
 
     const prev = posMap.get(key) || {
       ticker: String(tickerNorm || ticker || "").trim(),
+      yahooTicker: inferredYahoo || "",
       isin: isinNorm,
-      name: String(name || ticker || isin || "").trim(),
+      name: String(nameNorm || ticker || isin || "").trim(),
       class: cls || brokerPositionClassFromTicker(ticker),
       qty: 0,
       costBasis: 0,
@@ -6614,8 +6972,9 @@ function rebuildBrokerGeneratedData() {
       hasSnapshot: false
     };
     if (!prev.ticker && tickerNorm) prev.ticker = tickerNorm;
+    if (!prev.yahooTicker && inferredYahoo) prev.yahooTicker = inferredYahoo;
     if (!prev.isin && isinNorm) prev.isin = isinNorm;
-    if ((!prev.name || prev.name === prev.isin) && name) prev.name = String(name).trim();
+    if ((!prev.name || prev.name === prev.isin || prev.name === prev.ticker) && nameNorm) prev.name = String(nameNorm).trim();
     if (!prev.class && cls) prev.class = cls;
     if (currencyNorm) prev.currency = currencyNorm;
     if (sourceName) prev.sourceNames.add(sourceName);
@@ -6750,10 +7109,16 @@ function rebuildBrokerGeneratedData() {
       const gross = Math.max(0, parseNum(e.totalEUR));
       const tax = Math.max(0, parseNum(e.taxEUR));
       const net = Math.max(0, gross - tax);
+      const divNoteParts = [e.actionRaw || e.type, e.broker || "Corretora"];
+      if (e.sourceName) divNoteParts.push(e.sourceName);
+      if (e.ticker) divNoteParts.push(`Ticker=${String(e.ticker).trim().toUpperCase()}`);
+      if (e.isin) divNoteParts.push(`ISIN=${String(e.isin).trim().toUpperCase()}`);
+      const divYahoo = inferYahooTickerFromIdentity(e);
+      if (divYahoo) divNoteParts.push(`Yahoo=${divYahoo}`);
       state.dividends.push(normalizeDividendRecord({
         id: uid(), assetId: "", assetName: e.ticker || e.name || e.isin || "Dividendo",
         amount: gross, grossAmount: gross, netAmount: net, taxWithheld: tax,
-        date: e.date, notes: `${e.actionRaw || e.type} · ${e.broker || "Corretora"}${e.sourceName ? " · " + e.sourceName : ""}`,
+        date: e.date, notes: divNoteParts.join(' · '),
         generatedFromBroker: true, sourceHash: e.sourceHash, eventKey: e.key
       }));
       continue;
@@ -6800,7 +7165,7 @@ function rebuildBrokerGeneratedData() {
     if (p.isin) noteBits.push(`ISIN=${p.isin}`);
     noteBits.push(`Qty=${fmt(finalQty, 6)}`);
     // Store the correct Yahoo ticker (ISIN-resolved) for quote fetching reference
-    const correctYahoo = (p.isin && ISIN_YAHOO_MAP && ISIN_YAHOO_MAP[p.isin]) ? ISIN_YAHOO_MAP[p.isin] : (p.ticker || "");
+    const correctYahoo = inferYahooTickerFromIdentity({ isin: p.isin, ticker: p.yahooTicker || p.ticker, yahooTicker: p.yahooTicker, name: p.name }) || (p.ticker || "");
     if (correctYahoo && correctYahoo !== p.ticker) noteBits.push(`Yahoo=${correctYahoo}`);
     if (p.costBasis > 0) noteBits.push(`Custo=${fmtEUR2(p.costBasis)}`);
     if (p.hasSnapshot && p.marketValueEUR > 0) noteBits.push(`Valor snapshot=${fmtEUR2(p.marketValueEUR)}${p.snapshotDate ? ` @ ${p.snapshotDate}` : ""}`);
@@ -7324,6 +7689,7 @@ async function importBrokerFiles(files) {
   rebuildBrokerGeneratedData();
   if (!state.settings) state.settings = {};
   state.settings.brokerRebuildSig = getBrokerDataSignature();
+  syncBrokerAssetDividendYieldsFromRecords();
   autoSyncDivSummariesFromImportedData(); // auto-fill annual summaries from real data
   await saveStateAsync();
   renderAll({ force: true });
@@ -7993,7 +8359,7 @@ async function parseXLSXBankRows(file) {
       headerRow.forEach((h, j) => {
         const hl = String(h||"").toLowerCase();
         if (/d[ée]bit|sa[ií]d|out/.test(hl) && debitCol < 0) debitCol = j;
-        if (/cr[ée]dit|entrad|in/.test(hl) && creditCol < 0) creditCol = j;
+        if (/cr[ée]dit|entrad|in\b/.test(hl) && creditCol < 0) creditCol = j;
       });
     }
 
@@ -8438,7 +8804,14 @@ function wire() {
   if (btnQuoteErrors) btnQuoteErrors.addEventListener('click', () => {
     const report = (((state || {}).settings || {}).lastQuoteRefresh) || { updated:0, failed:0, errors:[] };
     showQuoteErrors(report.updated || 0, report.failed || 0, report.errors || [], report.updated || 0, report.failed || 0);
+    quoteErrorsInlineOpen = true;
+    renderQuoteErrorsInline(true);
     openModal('modalQuoteErrors');
+  });
+  const btnQuoteErrorsInlineClose = document.getElementById('btnQuoteErrorsInlineClose');
+  if (btnQuoteErrorsInlineClose) btnQuoteErrorsInlineClose.addEventListener('click', () => {
+    quoteErrorsInlineOpen = false;
+    renderQuoteErrorsInline(false);
   });
 
   // Sync compound fields from asset
@@ -8793,12 +9166,27 @@ function wire() {
 const QUOTE_CLASSES = ["Ações/ETFs", "Cripto", "Obrigações"];
 
 function extractTicker(asset) {
-  // Tenta extrair ticker do nome ou notas do ativo
-  // Exemplos: "VWCE.DE", "Apple (AAPL)", "ETF [IWDA.L]"
-  const src = `${asset.name || ""} ${asset.notes || ""}`;
-  const m = src.match(/\b([A-Z0-9]{1,6}(?:\.[A-Z]{1,4})?)\b/);
-  return m ? m[1] : null;
+  const explicit = String((asset && asset.ticker) || "").trim().toUpperCase();
+  if (/^[A-Z0-9.-]{1,16}$/.test(explicit)) return explicit;
+
+  const notes = String((asset && asset.notes) || "");
+  const tagged = notes.match(/\b(?:Ticker|Yahoo)=([A-Z0-9.\-=^]{1,24})\b/i);
+  if (tagged) return String(tagged[1] || "").trim().toUpperCase();
+
+  const name = String((asset && asset.name) || "").trim();
+
+  const bracketed = name.match(/[\[(]([A-Z0-9.-]{2,16}(?:\.[A-Z]{1,4}|-[A-Z]{3})?)[\])]/);
+  if (bracketed) return String(bracketed[1] || "").trim().toUpperCase();
+
+  const leadingWithVenue = name.match(/^([A-Z0-9.-]{1,16}\.(?:US|DE|FR|PT|LS|MC|PA|AS|L|SW|TO|IR|CO|ST|OL|HE|AX|F|UK))(?:\b|\s|—|-)/);
+  if (leadingWithVenue) return String(leadingWithVenue[1] || "").trim().toUpperCase();
+
+  const leadingPlain = name.match(/^([A-Z]{2,8}|[A-Z]-USD|[A-Z0-9]{2,10}-USD)(?:\b|\s*[—(\[])/);
+  if (leadingPlain) return String(leadingPlain[1] || "").trim().toUpperCase();
+
+  return null;
 }
+
 
 async function fetchQuote(ticker, workerUrl) {
   // Chama o Cloudflare Worker que proxifica Yahoo Finance
@@ -8835,11 +9223,9 @@ async function refreshLiveQuotes() {
     return;
   }
 
-  // Identificar ativos com ticker e classe de mercado
-  const candidates = state.assets.filter(a => {
-    const cls = (a.class || "").trim();
-    return QUOTE_CLASSES.some(c => cls === c) || extractTicker(a);
-  });
+  // Identificar apenas ativos com identidade de mercado suficiente.
+  // Isto evita falsos erros em depósitos, certificados de aforro e ativos manuais sem ticker real.
+  const candidates = state.assets.filter(assetLooksQuoteEligible);
 
   if (!candidates.length) {
     toast("Sem ativos com ticker detectado em Ações/ETFs/Cripto.", 3000);
@@ -8904,7 +9290,7 @@ async function refreshLiveQuotes() {
     const cryptoTk = cryptoToYahoo(t);
     if (cryptoTk) return cryptoTk;
     if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD");
-    const xmap = {".PT":".LS",".GB":".L",".PL":".WA",".CH":".SW",
+    const xmap = {".PT":".LS",".GB":".L",".UK":".L",".PL":".WA",".CH":".SW",
       ".DK":".CO",".SE":".ST",".NO":".OL",".FI":".HE",
       ".BE":".BR",".IT":".MI",".FR":".PA",".NL":".AS",
       ".ES":".MC",".AU":".AX",".CA":".TO"};
@@ -8930,6 +9316,41 @@ async function refreshLiveQuotes() {
     return ext ? String(ext).trim().toUpperCase() : "";
   }
 
+  function hasExplicitTickerTag(asset) {
+    return /\b(?:Ticker|Yahoo)=([A-Z0-9.\-=^]{1,24})\b/i.test(String((asset && asset.notes) || ""));
+  }
+
+  function isPlausibleMarketTicker(raw, asset) {
+    const t = String(raw || "").trim().toUpperCase();
+    if (!t) return false;
+    if (/[.=\-]/.test(t)) return true;
+    if (t.length >= 2 && /^[A-Z0-9]{2,10}$/.test(t)) return true;
+    if (t === "O") {
+      const nm2 = normalizeSecurityNameKey((asset && asset.name) || "");
+      return /\bREALTY\b/.test(nm2) || /\bINCOME\b/.test(nm2) || !!(asset && asset.generatedFromBroker);
+    }
+    return false;
+  }
+
+  function assetLooksQuoteEligible(asset) {
+    if (!asset || isManualNonMarketAsset(asset)) return false;
+    const cls = String(asset.class || "").trim();
+    const isin = String(asset.isin || "").trim().toUpperCase();
+    const storedYahoo = getStoredYahooTicker(asset);
+    const raw = getRawTickerForAsset(asset);
+    const inferredYahoo = inferYahooTickerFromIdentity({
+      isin,
+      ticker: raw || asset.ticker || "",
+      yahooTicker: storedYahoo || asset.yahooTicker || "",
+      name: asset.name || ""
+    });
+
+    if (asset.generatedFromBroker) return true;
+    if (QUOTE_CLASSES.includes(cls)) return !!(isin || storedYahoo || inferredYahoo || isPlausibleMarketTicker(raw, asset));
+    if (storedYahoo || inferredYahoo || hasExplicitTickerTag(asset)) return true;
+    return isPlausibleMarketTicker(raw, asset);
+  }
+
   function buildYahooTickerCandidates(asset) {
     if (isManualNonMarketAsset(asset)) return [];
     const out = [];
@@ -8951,38 +9372,74 @@ async function refreshLiveQuotes() {
     const raw = getRawTickerForAsset(asset);
     const isin = String(asset.isin || "").trim().toUpperCase();
     const storedYahoo = getStoredYahooTicker(asset);
-    const directMapped = storedYahoo || (isin && ISIN_YAHOO_MAP[isin]) || YAHOO_TICKER_OVERRIDES[raw] || "";
+    const inferredYahoo = inferYahooTickerFromIdentity({
+      isin,
+      ticker: raw || asset.ticker || "",
+      yahooTicker: storedYahoo || asset.yahooTicker || "",
+      name: asset.name || ""
+    });
+    const directMapped = (isin && ISIN_YAHOO_MAP[isin]) || inferredYahoo || YAHOO_TICKER_OVERRIDES[raw] || "";
 
-    // Ordem crítica: preferir ticker Yahoo já resolvido / ISIN / overrides.
-    // Isto evita colisões como COR -> COR (EUA) em vez de COR.LS.
-    if (storedYahoo) push(storedYahoo);
+    // Ordem crítica: primeiro o ticker resolvido por identidade/ISIN.
     if (isin && ISIN_YAHOO_MAP[isin]) push(ISIN_YAHOO_MAP[isin]);
+    if (inferredYahoo) push(inferredYahoo);
     if (raw && YAHOO_TICKER_OVERRIDES[raw]) push(YAHOO_TICKER_OVERRIDES[raw]);
 
+    // Só usar yahooTicker guardado se não contrariar uma resolução melhor.
+    if (storedYahoo && (!directMapped || storedYahoo === directMapped)) push(storedYahoo);
+
+    const rawBase = canonicalBrokerTickerBase(raw);
     const normRaw = toYahooTicker(raw);
+    if (!directMapped && rawBase && rawBase !== raw) push(rawBase);
     if (!directMapped && raw) push(raw);
     if (!directMapped && normRaw && normRaw !== raw) push(normRaw);
 
     // Só testar sufixos alternativos quando não há mapeamento directo.
-    if (raw && !/[.=\-]/.test(raw) && !directMapped) {
-      ALT_EXCHANGE_SUFFIXES.forEach(suf => push(raw + suf));
+    if (rawBase && !/[.=\-]/.test(rawBase) && !directMapped) {
+      ALT_EXCHANGE_SUFFIXES.forEach(suf => push(rawBase + suf));
     }
 
     return out;
   }
 
-  async function fetchQuoteWithFallback(ref) {
-    let lastErr = null;
-    for (const candidate of ref.candidates) {
-      try {
-        const q = await fetchQuote(candidate, workerUrl);
-        return { yahoo: candidate, quote: q };
-      } catch (e) {
-        lastErr = e;
+
+function normalizeResolvedYahoo(raw) {
+  return String(toYahooTicker(raw) || raw || "").trim().toUpperCase();
+}
+
+function isQuoteCandidateAcceptable(asset, candidate) {
+  if (!asset) return true;
+  const expected = normalizeResolvedYahoo(inferYahooTickerFromIdentity({
+    isin: asset.isin || "",
+    ticker: asset.ticker || "",
+    yahooTicker: asset.yahooTicker || "",
+    name: asset.name || ""
+  }));
+  const cand = normalizeResolvedYahoo(candidate);
+  if (expected && cand && cand !== expected) return false;
+
+  const isin = String(asset.isin || "").trim().toUpperCase();
+  if (isin.startsWith("PT") && cand && !cand.endsWith(".LS")) return false;
+
+  return true;
+}
+
+async function fetchQuoteWithFallback(ref) {
+  let lastErr = null;
+  for (const candidate of ref.candidates) {
+    try {
+      const q = await fetchQuote(candidate, workerUrl);
+      if (!isQuoteCandidateAcceptable(ref.asset, candidate)) {
+        lastErr = new Error(`Candidato incompatível com a identidade do activo: ${candidate}`);
+        continue;
       }
+      return { yahoo: candidate, quote: q };
+    } catch (e) {
+      lastErr = e;
     }
-    throw lastErr || new Error("Não foi possível obter uma cotação válida");
   }
+  throw lastErr || new Error("Não foi possível obter uma cotação válida");
+}
 
   const rawTickerRefs = candidates.map(asset => {
     const raw = getRawTickerForAsset(asset);
@@ -9146,12 +9603,18 @@ async function refreshLiveQuotes() {
   } else if (updated > 0) {
     // Show clickable toast — tapping opens full error list modal
     showQuoteErrors(updated, failed, errors, updated, failed);
+    quoteErrorsInlineOpen = true;
+    renderQuoteErrorsInline(true);
+    openModal("modalQuoteErrors");
     toastClickable(
       `✅ ${updated} actualizado${updated !== 1 ? "s" : ""} · ⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver`,
       () => openModal("modalQuoteErrors"), 8000
     );
   } else {
     showQuoteErrors(0, failed, errors, 0, failed);
+    quoteErrorsInlineOpen = true;
+    renderQuoteErrorsInline(true);
+    openModal("modalQuoteErrors");
     toastClickable(
       `⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver detalhes`,
       () => openModal("modalQuoteErrors"), 8000
@@ -9196,32 +9659,9 @@ function openDividendBaseModal() {
   openModal('modalDividendBase');
 }
 
-function updateQuoteErrorIndicator() {
-  const btn = document.getElementById('btnQuoteErrors');
-  if (!btn) return;
-  const report = (((state || {}).settings || {}).lastQuoteRefresh) || null;
-  if (!report || !Array.isArray(report.errors) || !report.errors.length) {
-    btn.style.display = 'none';
-    btn.textContent = '⚠️ Ver erros';
-    return;
-  }
-  btn.style.display = '';
-  btn.textContent = `⚠️ ${report.errors.length} erro${report.errors.length !== 1 ? 's' : ''}`;
-  btn.title = 'Ver detalhes dos erros de cotação';
-  showQuoteErrors(report.updated || 0, report.failed || report.errors.length || 0, report.errors || [], report.updated || 0, report.failed || report.errors.length || 0);
-}
-
-// Populate the quote errors modal
-function showQuoteErrors(updated, failed, errors, updatedCount, failedCount) {
-  const summary = document.getElementById("quoteErrorsSummary");
-  const list = document.getElementById("quoteErrorsList");
-  if (!summary || !list) return;
-  summary.textContent = `${updatedCount} actualizado${updatedCount !== 1 ? "s" : ""} com sucesso · ${failedCount} falha${failedCount !== 1 ? "s" : ""}`;
-  if (!errors || !errors.length) {
-    list.innerHTML = `<div class="note">Sem erros de cotação.</div>`;
-    return;
-  }
-  list.innerHTML = errors.map(err => {
+function formatQuoteErrorsHtml(errors) {
+  if (!errors || !errors.length) return `<div class="note">Sem erros de cotação.</div>`;
+  return errors.map(err => {
     const isObj = err && typeof err === "object";
     const raw = isObj ? String(err.raw || "") : String(err || "");
     const yahoo = isObj ? String(err.yahoo || "") : raw;
@@ -9241,6 +9681,71 @@ function showQuoteErrors(updated, failed, errors, updatedCount, failedCount) {
     </div>`;
   }).join("");
 }
+
+let quoteErrorsInlineOpen = false;
+
+function renderQuoteErrorsInline(forceOpen = quoteErrorsInlineOpen) {
+  const wrap = document.getElementById("quoteErrorsInline");
+  const summary = document.getElementById("quoteErrorsInlineSummary");
+  const list = document.getElementById("quoteErrorsInlineList");
+  if (!wrap || !summary || !list) return;
+  const report = (((state || {}).settings || {}).lastQuoteRefresh) || { updated:0, failed:0, errors:[] };
+  const errors = Array.isArray(report.errors) ? report.errors : [];
+  quoteErrorsInlineOpen = !!forceOpen && errors.length > 0;
+  if (!errors.length || !quoteErrorsInlineOpen) {
+    wrap.style.display = "none";
+    wrap.classList.remove("is-open");
+    list.innerHTML = "";
+    summary.textContent = "";
+    return;
+  }
+  wrap.style.display = "";
+  wrap.classList.add("is-open");
+  summary.textContent = `${report.updated || 0} actualizado${(report.updated || 0) !== 1 ? "s" : ""} · ${errors.length} erro${errors.length !== 1 ? "s" : ""}`;
+  list.innerHTML = errors.map(err => {
+    const isObj = err && typeof err === "object";
+    const raw = isObj ? String(err.raw || "") : String(err || "");
+    const yahoo = isObj ? String(err.yahoo || "") : raw;
+    const reason = isObj ? String(err.reason || "Não encontrado no Yahoo Finance") : "Não encontrado no Yahoo Finance";
+    const assetName = isObj ? String(err.assetName || raw || yahoo || "Ativo") : raw;
+    return `<div class="quote-errors-inline__item">
+      <div class="quote-errors-inline__item-title">${escapeHtml(assetName || raw || yahoo || "Ativo")}</div>
+      <div class="quote-errors-inline__item-meta">
+        <div><b>Local:</b> ${escapeHtml(raw || "—")}</div>
+        <div><b>Yahoo tentado:</b> ${escapeHtml(yahoo || "—")}</div>
+        <div><b>Motivo:</b> ${escapeHtml(reason || "Erro desconhecido")}</div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function updateQuoteErrorIndicator() {
+  const btn = document.getElementById('btnQuoteErrors');
+  if (!btn) return;
+  const report = (((state || {}).settings || {}).lastQuoteRefresh) || null;
+  if (!report || !Array.isArray(report.errors) || !report.errors.length) {
+    btn.style.display = 'none';
+    btn.textContent = '⚠️ Ver erros';
+    renderQuoteErrorsInline(false);
+    return;
+  }
+  btn.style.display = '';
+  btn.textContent = `⚠️ ${report.errors.length} erro${report.errors.length !== 1 ? 's' : ''}`;
+  btn.title = 'Ver detalhes dos erros de cotação';
+  showQuoteErrors(report.updated || 0, report.failed || report.errors.length || 0, report.errors || [], report.updated || 0, report.failed || report.errors.length || 0);
+  renderQuoteErrorsInline(quoteErrorsInlineOpen);
+}
+
+// Populate the quote errors modal
+// Populate the quote errors modal
+function showQuoteErrors(updated, failed, errors, updatedCount, failedCount) {
+  const summary = document.getElementById("quoteErrorsSummary");
+  const list = document.getElementById("quoteErrorsList");
+  if (!summary || !list) return;
+  summary.textContent = `${updatedCount} actualizado${updatedCount !== 1 ? "s" : ""} com sucesso · ${failedCount} falha${failedCount !== 1 ? "s" : ""}`;
+  list.innerHTML = formatQuoteErrorsHtml(errors);
+}
+
 
 // Toast that can be tapped to trigger an action
 function toastClickable(msg, onClick, duration = 5000) {
@@ -9331,6 +9836,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       Chart.defaults.maintainAspectRatio = false;
     }
   } catch (_) {}
+  try { if (syncBrokerAssetDividendYieldsFromRecords()) await saveStateAsync(); } catch (e) { console.error("Falha ao sincronizar dividendos das posições", e); }
+  try { ensureAllChartCanvasesReady(); } catch (e) { console.error("Falha ao preparar gráficos", e); }
   try { wire(); } catch (e) { console.error("Falha no binding dos botões", e); }
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
   // v18: diferir tarefas não-críticas para depois do primeiro render
@@ -10784,8 +11291,9 @@ function renderDrawdownPanel() {
 
   const result = calcDrawdown(capital, withdrawal, returnRate, inflationRate, years);
 
-  const ctx = document.getElementById("drawdownChart");
-  if (ctx && ctx.getContext) {
+  const ctx = prepareChartCanvas(document.getElementById("drawdownChart"), 220);
+  if (ctx && typeof Chart !== "undefined") {
+    clearChartUnavailable("drawdownChart");
     if (window._drawdownChart) window._drawdownChart.destroy();
     window._drawdownChart = new Chart(ctx.getContext("2d"), {
       type: "line",
@@ -11473,18 +11981,7 @@ function calcEquityPortfolioPnL() {
   const now12m = new Date();
   now12m.setFullYear(now12m.getFullYear() - 1);
   const cutoff12m = now12m.toISOString().slice(0, 10);
-  const divByTicker = {};
-  for (const d of (state.dividends || [])) {
-    // Normalize: strip any " — Full Name" suffix added to displayName
-    const rawName = String(d.assetName || d.assetId || "").trim();
-    const tk = rawName.split(" — ")[0].trim().toUpperCase();
-    if (!tk) continue;
-    if (!divByTicker[tk]) divByTicker[tk] = { total12m: 0, totalAll: 0, count: 0 };
-    const net = getDividendNet(d);
-    divByTicker[tk].totalAll += net;
-    divByTicker[tk].count++;
-    if (String(d.date || "") >= cutoff12m) divByTicker[tk].total12m += net;
-  }
+  buildDividendStatsIndex();
 
   let totalCost      = 0;
   let totalCurrent   = 0;
@@ -11499,10 +11996,8 @@ function calcEquityPortfolioPnL() {
     // Realized P&L from sells (stored on asset by rebuildBrokerGeneratedData)
     const realizedPnL  = parseNum(asset.realizedPnL || 0);
     // Dividend income for this asset
-    // Extract bare ticker from asset (strip " — Full Name" if present)
-    const rawTk = String(asset.ticker || asset.name || "").trim();
-    const tk = rawTk.split(" — ")[0].trim().toUpperCase();
-    const divData = divByTicker[tk] || { total12m: 0, totalAll: 0, count: 0 };
+    const stats = getDividendStatsForAsset(asset);
+    const divData = { total12m: stats.ttmNet || 0, totalAll: stats.allNet || 0, count: stats.allCount || 0 };
     // True yield = net dividends last 12m / cost basis
     const trueYieldPct = pos.costBasis > 0 && divData.total12m > 0
       ? (divData.total12m / pos.costBasis) * 100 : 0;
@@ -12133,8 +12628,9 @@ function renderPriceHistoryPanel() {
       Cotações em EUR · Actualiza com ⟳ Cotações (uma entrada por dia por ticker)
     </div>`;
 
-  const ctx2 = document.getElementById("priceHistoryChart");
-  if (!ctx2) return;
+  const ctx2 = prepareChartCanvas(document.getElementById("priceHistoryChart"), 220);
+  if (!ctx2 || typeof Chart === "undefined") { renderChartUnavailable("priceHistoryChart"); return; }
+  clearChartUnavailable("priceHistoryChart");
   const ctx = ctx2.getContext("2d");
 
   // Destroy previous chart if any

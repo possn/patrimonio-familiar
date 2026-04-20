@@ -429,8 +429,21 @@ select.input   { cursor: pointer; }
 
 /* ─── CHART WRAPPER ─── */
 .chartWrap {
+  position: relative;
   border-radius: var(--r-sm); border: 1px solid var(--line);
   padding: 10px; background: var(--card); overflow: hidden;
+  min-height: 220px;
+}
+.chartWrap canvas {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+.chartFallback {
+  position: absolute;
+  inset: 10px;
+  border-radius: calc(var(--r-sm) - 2px);
+  background: rgba(15, 23, 42, 0.02);
 }
 
 /* ─── PASSIVE BAR ─── */
@@ -515,24 +528,25 @@ select.input   { cursor: pointer; }
 }
 
 /* ─── MODAL ─── */
-.modal { position: fixed; inset: 0; z-index: 80; display: none; }
+.modal { position: fixed; inset: 0; z-index: 1200; display: none; }
 .modal[aria-hidden="false"] { display: block; }
 .modal__bg {
-  position: absolute; inset: 0;
+  position: absolute; inset: 0; z-index: 1200;
   background: rgba(10,14,30,.55);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
 }
 .modal__box, .modal__panel {
-  position: absolute; left: 50%; transform: translateX(-50%);
-  bottom: 8px;
+  position: fixed; left: 50%; transform: translateX(-50%);
+  top: max(14px, calc(env(safe-area-inset-top) + 6px));
+  bottom: max(14px, calc(env(safe-area-inset-bottom) + 14px));
   width: min(680px, calc(100% - 16px));
   background: var(--card); border: 1px solid var(--line);
   border-radius: var(--r-lg);
-  box-shadow: 0 20px 80px rgba(0,0,0,.28);
+  box-shadow: 0 20px 80px rgba(0,0,0,.35);
   padding: 18px;
-  max-height: calc(100vh - 60px); overflow-y: auto;
-  /* Smooth slide-up feel via the modal open */
+  overflow-y: auto;
+  z-index: 1201;
 }
 .modal__head {
   display: flex; align-items: center; justify-content: space-between;
@@ -993,3 +1007,13 @@ select.input   { cursor: pointer; }
 .health-tip-inline {
   /* already styled inline; this is for overrides */
 }
+
+
+.quote-errors-inline{display:none;margin-top:10px;border:1px solid rgba(251,191,36,.35);background:rgba(251,191,36,.06)}
+.quote-errors-inline.is-open{display:block}
+.quote-errors-inline__head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.quote-errors-inline__summary{color:var(--muted);font-size:13px;font-weight:700}
+.quote-errors-inline__list{display:flex;flex-direction:column;gap:10px}
+.quote-errors-inline__item{padding:12px 14px;border-radius:16px;border:1px solid var(--line);background:rgba(15,23,42,.24)}
+.quote-errors-inline__item-title{font-weight:800;margin-bottom:4px}
+.quote-errors-inline__item-meta{font-size:13px;line-height:1.5;color:var(--muted)}
