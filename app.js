@@ -13,7 +13,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260421v31").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260421v32").catch(() => {});
     });
   }
 } catch (_) {}
@@ -1639,13 +1639,75 @@ function deleteTxEntry() {
 
 /* ─── 4. CATEGORIAS DE DESPESA ───────────────────────────── */
 let catChart = null;
+
+function preparePlainCanvas(id, fallbackHeight = 220) {
+  const canvas = prepareChartCanvas(document.getElementById(id), fallbackHeight);
+  if (!canvas || typeof canvas.getContext !== "function") return null;
+  const wrap = canvas.closest ? canvas.closest(".chartWrap") : null;
+  const width = Math.max(280, Math.round((wrap && wrap.clientWidth) || canvas.clientWidth || 320));
+  const rawH = parseInt(canvas.getAttribute("height") || canvas.dataset.chartHeight || fallbackHeight, 10);
+  const height = Number.isFinite(rawH) && rawH > 80 ? rawH : fallbackHeight;
+  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  canvas.style.width = width + "px";
+  canvas.style.height = height + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  return { canvas, ctx, width, height };
+}
+
+function drawPlainDonutChart(id, entries, total) {
+  const prep = preparePlainCanvas(id, 180);
+  if (!prep) return false;
+  const { ctx, width, height } = prep;
+  const cx = width / 2;
+  const cy = height / 2;
+  const radius = Math.min(width, height) * 0.34;
+  const inner = radius * 0.58;
+
+  if (!entries.length || total <= 0) {
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "600 14px system-ui, -apple-system, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Sem dados", cx, cy + 5);
+    return true;
+  }
+
+  let start = -Math.PI / 2;
+  entries.forEach(([, value], idx) => {
+    const slice = (value / total) * Math.PI * 2;
+    const end = start + slice;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, radius, start, end);
+    ctx.closePath();
+    ctx.fillStyle = PALETTE[idx % PALETTE.length];
+    ctx.fill();
+    start = end;
+  });
+
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.beginPath();
+  ctx.arc(cx, cy, inner, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.fillStyle = "#0f172a";
+  ctx.font = "700 16px system-ui, -apple-system, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("Saídas", cx, cy - 8);
+  ctx.font = "700 15px system-ui, -apple-system, sans-serif";
+  ctx.fillText(fmtEUR(total), cx, cy + 14);
+  return true;
+}
+
 function renderCatChart() {
   const y = $("cfYear").value;
-  const m = String($("cfMonth").value).padStart(2, "0");
-  const key = `${y}-${m}`;
   const gran = ($("cfGranularity") && $("cfGranularity").value) || "month";
 
-  // Aggregate by category for selected period
   let txs;
   const notInternal = t => !isInterAccountTransfer(t);
   const m2 = String($("cfMonth").value).padStart(2, "0");
@@ -1655,7 +1717,6 @@ function renderCatChart() {
   } else if (gran === "all") {
     txs = expandRecurring(state.transactions).filter(t => t.type === "out" && notInternal(t));
   } else {
-    // month (default)
     txs = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === monthKey2 && t.type === "out" && notInternal(t));
   }
 
@@ -1667,32 +1728,15 @@ function renderCatChart() {
   const entries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
   const total = entries.reduce((s, [, v]) => s + v, 0);
 
-  const ctx = ensureChartCtx("catChart", 180);
-  if (!ctx) { renderChartUnavailable("catChart"); return; }
   clearChartUnavailable("catChart");
-  if (catChart) catChart.destroy();
-
-  if (!entries.length) { catChart = null; return; }
-
-  catChart = new Chart(ctx, {
-    type: "doughnut",
-    data: {
-      labels: entries.map(([k]) => k),
-      datasets: [{ data: entries.map(([, v]) => v), backgroundColor: PALETTE, borderWidth: 0 }]
-    },
-    options: {
-      cutout: "65%",
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: { label: c => `${c.label}: ${fmtEUR(c.raw)} (${fmtPct(c.raw / total * 100)})` } }
-      }
-    }
-  });
+  if (catChart && typeof catChart.destroy === "function") { try { catChart.destroy(); } catch (_) {} }
+  catChart = null;
+  drawPlainDonutChart("catChart", entries, total);
 
   const catList = $("catList");
-  catList.innerHTML = entries.map(([k, v]) => `
+  catList.innerHTML = entries.map(([k, v], idx) => `
     <div class="item" style="cursor:default">
-      <div class="item__l"><div class="item__t">${escapeHtml(k)}</div><div class="item__s">${fmtPct(v / total * 100)} das saídas</div></div>
+      <div class="item__l"><div class="item__t"><span style="display:inline-block;width:10px;height:10px;border-radius:999px;background:${PALETTE[idx % PALETTE.length]};margin-right:8px;vertical-align:middle"></span>${escapeHtml(k)}</div><div class="item__s">${fmtPct(v / total * 100)} das saídas</div></div>
       <div class="item__v">${fmtEUR(v)}</div>
     </div>`).join("");
 
@@ -1701,6 +1745,7 @@ function renderCatChart() {
 }
 
 /* ─── 5. TAXA DE POUPANÇA ────────────────────────────────── */
+
 function renderSavingsRate(totalIn, totalOut) {
   const wrap = $("savingsRateWrap");
   const pctEl = $("savingsRatePct");
@@ -2626,28 +2671,85 @@ function renderCashflow() {
 
 function renderBalance() { renderCashflow(); }
 
+function drawPlainBarChart(id, keys, data) {
+  const prep = preparePlainCanvas(id, 200);
+  if (!prep) return false;
+  const { ctx, width, height } = prep;
+  const left = 46, right = 12, top = 20, bottom = 34;
+  const plotW = Math.max(40, width - left - right);
+  const plotH = Math.max(40, height - top - bottom);
+  const maxVal = Math.max(1, ...data.map(d => Math.max(parseNum(d.in), parseNum(d.out))));
+  const steps = 4;
+  const niceMax = Math.max(1, Math.ceil(maxVal / 100) * 100);
+
+  ctx.fillStyle = "#0f172a";
+  ctx.font = "600 12px system-ui, -apple-system, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillRect(left, 6, 12, 12);
+  ctx.fillStyle = "#0f172a";
+  ctx.fillText("Entradas", left + 18, 16);
+  ctx.fillStyle = "#ef4444";
+  ctx.fillRect(left + 92, 6, 12, 12);
+  ctx.fillStyle = "#0f172a";
+  ctx.fillText("Saídas", left + 110, 16);
+
+  for (let i = 0; i <= steps; i++) {
+    const y = top + (plotH / steps) * i;
+    ctx.strokeStyle = "#e2e8f0";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(width - right, y);
+    ctx.stroke();
+    const val = niceMax * (1 - i / steps);
+    ctx.fillStyle = "#64748b";
+    ctx.font = "500 10px system-ui, -apple-system, sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(fmtEUR(val), left - 6, y + 3);
+  }
+
+  const groups = Math.max(1, keys.length);
+  const groupW = plotW / groups;
+  const barW = Math.max(6, Math.min(18, groupW * 0.28));
+  const tickStep = Math.max(1, Math.ceil(groups / 8));
+  keys.forEach((label, idx) => {
+    const center = left + groupW * idx + groupW / 2;
+    const inVal = parseNum(data[idx].in);
+    const outVal = parseNum(data[idx].out);
+    const inH = (inVal / niceMax) * plotH;
+    const outH = (outVal / niceMax) * plotH;
+
+    ctx.fillStyle = "#10b981";
+    if (typeof ctx.roundRect === 'function') {
+      ctx.beginPath();
+      ctx.roundRect(center - barW - 2, top + plotH - inH, barW, inH, 4);
+      ctx.fill();
+    } else ctx.fillRect(center - barW - 2, top + plotH - inH, barW, inH);
+
+    ctx.fillStyle = "#ef4444";
+    if (typeof ctx.roundRect === 'function') {
+      ctx.beginPath();
+      ctx.roundRect(center + 2, top + plotH - outH, barW, outH, 4);
+      ctx.fill();
+    } else ctx.fillRect(center + 2, top + plotH - outH, barW, outH);
+
+    if (idx % tickStep === 0 || idx === groups - 1) {
+      ctx.fillStyle = "#64748b";
+      ctx.font = "500 10px system-ui, -apple-system, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(String(label), center, height - 10);
+    }
+  });
+  return true;
+}
+
 function renderCashflowChart() {
   const gran = ($("cfGranularity") && $("cfGranularity").value) || "month";
   const { keys, data } = cfGranData(gran);
-  const ctx = ensureChartCtx("cfChart", 200);
-  if (!ctx) { renderChartUnavailable("cfChart"); return; }
   clearChartUnavailable("cfChart");
-  if (window._cfChart) window._cfChart.destroy();
-  if (!keys.length) return;
-  window._cfChart = new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels: keys,
-      datasets: [
-        { label: "Entradas", data: data.map(d => d.in), backgroundColor: "#10b981" },
-        { label: "Saídas", data: data.map(d => d.out), backgroundColor: "#ef4444" }
-      ]
-    },
-    options: {
-      plugins: { legend: { labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } } },
-      scales: { x: { stacked: false }, y: { ticks: { callback: v => fmtEUR(v) } } }
-    }
-  });
+  if (window._cfChart && typeof window._cfChart.destroy === "function") { try { window._cfChart.destroy(); } catch (_) {} }
+  window._cfChart = null;
+  drawPlainBarChart("cfChart", keys, data);
 }
 
 function renderTxList() {
