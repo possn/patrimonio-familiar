@@ -1,4 +1,4 @@
-/* Património Familiar — v28
+/* Património Familiar — v31
    Performance: memoização por ciclo de render (elimina cálculos redundantes)
    + Objetivo de rendimento passivo com barra de progresso
    + Alertas de vencimentos próximos (30 dias)
@@ -13,7 +13,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260420v28").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260421v31").catch(() => {});
     });
   }
 } catch (_) {}
@@ -6326,7 +6326,6 @@ const KNOWN_BROKER_YAHOO_OVERRIDES = {
   "NL00150001Q9|STLA": "STLA",
   "AT0000A3EPA4|AMS-OSRAM": "AMS2.VI",
   "|MPW.US": "MPW",
-  "|MPW": "MPW",
   "|CRSP": "CRSP",
   "|NZYMB.DK": "NSIS-B.CO",
   "|STM.FR": "STMPA.PA",
@@ -9669,6 +9668,14 @@ function strictVenueSuffixForAsset(asset) {
 function isQuoteCandidateAcceptable(asset, candidate) {
   if (!asset) return true;
   const cand = normalizeResolvedYahoo(candidate);
+  const known = normalizeResolvedYahoo(getKnownBrokerYahooOverride({
+    isin: asset.isin || "",
+    ticker: asset.ticker || "",
+    yahooTicker: asset.yahooTicker || "",
+    name: asset.name || "",
+    currency: asset.priceCurrency || asset.currency || "",
+    priceCurrency: asset.priceCurrency || asset.currency || ""
+  }));
   const expected = normalizeResolvedYahoo(inferYahooTickerFromIdentity({
     isin: asset.isin || "",
     ticker: asset.ticker || "",
@@ -9678,21 +9685,31 @@ function isQuoteCandidateAcceptable(asset, candidate) {
   }));
   const rawBase = tickerBaseOnly(asset.ticker || asset.name || "");
   const candBase = tickerBaseOnly(cand);
-  const expectedBase = tickerBaseOnly(expected);
+  const expectedBase = tickerBaseOnly(expected || known);
 
-  const strictSuffix = strictVenueSuffixForAsset(asset);
-  if (strictSuffix && cand && !cand.endsWith(strictSuffix)) return false;
-
-  const assetCcy = String(asset.priceCurrency || asset.currency || "").trim().toUpperCase();
-  const nm = normalizeSecurityNameKey(asset.name || "");
-  const isAccFund = /\bACC\b/.test(nm) || /\bETF\b/.test(nm) || /\bFUND\b/.test(nm) || /\bISHARES\b/.test(nm) || /\bXTRACKERS\b/.test(nm) || /\bWISDOMTREE\b/.test(nm) || /\bVANECK\b/.test(nm) || /\bGLOBAL X\b/.test(nm) || /\bKRANESHARES\b/.test(nm);
-  if (expected && !/[.=]/.test(expected) && assetCcy === "USD" && cand.includes(".") && !isAccFund) return false;
-
-  if (expected && cand === expected) return true;
+  if (cand && known && cand === known) return true;
+  if (cand && expected && cand === expected) return true;
   if (candBase && expectedBase && candBase === expectedBase) return true;
   if (candBase && rawBase && candBase === rawBase) return true;
 
-  return !expected;
+  const strictSuffix = strictVenueSuffixForAsset(asset);
+  if (strictSuffix && cand && !cand.endsWith(strictSuffix)) {
+    const raw = String(asset.ticker || "").trim().toUpperCase();
+    const assetCcy = String(asset.priceCurrency || asset.currency || "").trim().toUpperCase();
+    const nm = normalizeSecurityNameKey(asset.name || "");
+    const isUsdDirect = assetCcy === "USD" && candBase && rawBase && candBase === rawBase;
+    const isKnownDirect = !!(known && tickerBaseOnly(known) === candBase);
+    const isExpectedDirect = !!(expected && tickerBaseOnly(expected) === candBase);
+    const looksDirectUsdEquity = isUsdDirect || isKnownDirect || isExpectedDirect || /REALTY/.test(nm);
+    if (!looksDirectUsdEquity) return false;
+  }
+
+  const assetCcy = String(asset.priceCurrency || asset.currency || "").trim().toUpperCase();
+  const nm = normalizeSecurityNameKey(asset.name || "");
+  const isAccFund = /ACC/.test(nm) || /ETF/.test(nm) || /FUND/.test(nm) || /ISHARES/.test(nm) || /XTRACKERS/.test(nm) || /WISDOMTREE/.test(nm) || /VANECK/.test(nm) || /GLOBAL X/.test(nm) || /KRANESHARES/.test(nm);
+  if ((expected || known) && !/[.=]/.test(expected || known) && assetCcy === "USD" && cand.includes(".") && !isAccFund) return false;
+
+  return !(expected || known);
 }
 
 

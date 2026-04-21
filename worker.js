@@ -1,6 +1,6 @@
 /**
  * Cloudflare Worker — Proxy de Cotações (Yahoo Finance)
- * Versão 3.0 — aliases canónicos + fallbacks mais tolerantes
+ * Versão 3.1 — rollback conservador + aliases mínimos + fallback HTML
  */
 
 const CACHE_TTL = 300; // 5 minutos
@@ -13,11 +13,8 @@ const TICKER_ALIASES = {
   "UNA.DE": "UNA.AS",
   "UNA.PA": "UNA.AS",
   "UNA.AS": "UNA.AS",
-  "UNA.MC": "UNA.AS",
-  "UNA.MI": "UNA.AS",
-  "UNA.TO": "UNA.AS",
-  "CRSP.SW": "CRSP",
   "CRSP": "CRSP",
+  "CRSP.SW": "CRSP"
 };
 
 function corsHeaders(origin) {
@@ -31,31 +28,33 @@ function corsHeaders(origin) {
   };
 }
 
-function normalizeInputTicker(raw) {
-  const t = String(raw || "").trim().toUpperCase();
-  return TICKER_ALIASES[t] || t;
-}
-
 function normCcy(price, ccy) {
   if (ccy === "GBp" || ccy === "GBX") return { price: price / 100, ccy: "GBP" };
   return { price, ccy: ccy || "USD" };
 }
 
-function firstFinite(...vals) {
-  for (const v of vals) {
-    if (Number.isFinite(v) && v > 0) return v;
-  }
+function normalizeInputTicker(raw) {
+  const t = String(raw || "").trim().toUpperCase();
+  return TICKER_ALIASES[t] || t;
+}
+
+function uniqueNonEmpty(arr) {
+  return [...new Set((arr || []).map(v => String(v || '').trim().toUpperCase()).filter(Boolean))];
+}
+
+async function fetchJsonMaybe(url, init) {
+  const resp = await fetch(url, init);
+  if (!resp.ok) return null;
+  try { return await resp.json(); } catch (_) { return null; }
+}
+
+function positiveNumber(...vals) {
+  for (const v of vals) if (Number.isFinite(v) && v > 0) return v;
   return null;
 }
 
-async function fetchJSON(url, opts = {}) {
-  const resp = await fetch(url, opts);
-  if (!resp.ok) throw new Error(`Yahoo Finance: HTTP ${resp.status} para ${url.split('/').pop().split('?')[0] || url}`);
-  return resp.json();
-}
-
 async function fetchYahooQuoteCore(ticker, ctx) {
-  const cacheKey = `quote3:${ticker.toUpperCase()}`;
+  const cacheKey = `quote31:${ticker.toUpperCase()}`;
   const cache = caches.default;
   const cacheUrl = `https://cache.internal/${cacheKey}`;
 
@@ -72,21 +71,19 @@ async function fetchYahooQuoteCore(ticker, ctx) {
     "Accept-Language": "en-US,en;q=0.9"
   };
 
-  // 1) v7 quote API
-  try {
-    const d = await fetchJSON(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(ticker)}`, { headers });
-    const q = d?.quoteResponse?.result?.[0];
-    if (q) {
-      const rawPrice = firstFinite(
-        q.regularMarketPrice,
-        q.postMarketPrice,
-        q.preMarketPrice,
-        q.regularMarketPreviousClose,
-        q.regularMarketOpen,
-        q.bid,
-        q.ask
+  const quoteUrls = [
+    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(ticker)}`,
+    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(ticker)}`
+  ];
+  for (const url of quoteUrls) {
+    try {
+      const d = await fetchJsonMaybe(url, { headers });
+      const q = d?.quoteResponse?.result?.[0];
+      const rawPrice = positiveNumber(
+        q?.regularMarketPrice, q?.postMarketPrice, q?.preMarketPrice,
+        q?.regularMarketPreviousClose, q?.regularMarketOpen, q?.bid, q?.ask
       );
-      if (rawPrice) {
+      if (q && rawPrice) {
         const { price, ccy } = normCcy(rawPrice, q.currency);
         const result = {
           ticker: ticker.toUpperCase(),
@@ -106,102 +103,105 @@ async function fetchYahooQuoteCore(ticker, ctx) {
         })));
         return result;
       }
-    }
-  } catch (_) {}
+    } catch (_) {}
+  }
 
-  // 2) v8 chart API
-  try {
-    const json = await fetchJSON(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=5d`, {
-      headers,
-      cf: { cacheTtl: CACHE_TTL, cacheEverything: false },
-    });
-    const result0 = json?.chart?.result?.[0];
-    const meta = result0?.meta;
-    const closes = result0?.indicators?.quote?.[0]?.close || [];
-    const lastClose = [...closes].reverse().find(v => Number.isFinite(v) && v > 0);
-    const rawPrice = firstFinite(meta?.regularMarketPrice, meta?.previousClose, lastClose);
-    if (meta && rawPrice) {
-      const { price, ccy } = normCcy(rawPrice, meta.currency);
-      const result = {
-        ticker: ticker.toUpperCase(),
-        price,
-        currency: ccy,
-        name: meta.shortName || meta.symbol || ticker,
-        change_pct: (Number.isFinite(meta.regularMarketPrice) && Number.isFinite(meta.previousClose) && meta.previousClose > 0)
-          ? ((meta.regularMarketPrice - meta.previousClose) / meta.previousClose) * 100 : 0,
-        sector: "",
-        industry: "",
-        country: "",
-        exchange: meta.exchangeName || "",
-        quote_type: meta.instrumentType || "",
-        updated: new Date().toISOString(),
-      };
-      ctx.waitUntil(cache.put(cacheUrl, new Response(JSON.stringify(result), {
-        headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` }
-      })));
-      return result;
-    }
-  } catch (_) {}
+  const chartUrls = [
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=5d`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=5d`
+  ];
+  for (const url of chartUrls) {
+    try {
+      const json = await fetchJsonMaybe(url, { headers, cf: { cacheTtl: CACHE_TTL, cacheEverything: false } });
+      const result0 = json?.chart?.result?.[0];
+      const meta = result0?.meta;
+      const closes = result0?.indicators?.quote?.[0]?.close || [];
+      const lastClose = [...closes].reverse().find(v => Number.isFinite(v) && v > 0);
+      const rawPrice = positiveNumber(meta?.regularMarketPrice, meta?.previousClose, lastClose);
+      if (meta && rawPrice) {
+        const { price, ccy } = normCcy(rawPrice, meta.currency);
+        const result = {
+          ticker: ticker.toUpperCase(),
+          price,
+          currency: ccy,
+          name: meta.shortName || meta.symbol || ticker,
+          change_pct: (Number.isFinite(meta.regularMarketPrice) && Number.isFinite(meta.previousClose) && meta.previousClose > 0)
+            ? ((meta.regularMarketPrice - meta.previousClose) / meta.previousClose) * 100 : 0,
+          sector: "",
+          industry: "",
+          country: "",
+          exchange: meta.exchangeName || "",
+          quote_type: meta.instrumentType || "",
+          updated: new Date().toISOString(),
+        };
+        ctx.waitUntil(cache.put(cacheUrl, new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` }
+        })));
+        return result;
+      }
+    } catch (_) {}
+  }
 
-  // 3) quoteSummary price module
-  try {
-    const qsJson = await fetchJSON(`https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=price`, { headers });
-    const priceNode = qsJson?.quoteSummary?.result?.[0]?.price;
-    const rawPrice = firstFinite(
-      priceNode?.regularMarketPrice?.raw,
-      priceNode?.regularMarketPreviousClose?.raw,
-      priceNode?.postMarketPrice?.raw,
-      priceNode?.preMarketPrice?.raw
-    );
-    if (rawPrice) {
-      const { price, ccy } = normCcy(rawPrice, priceNode?.currency);
-      const result = {
-        ticker: ticker.toUpperCase(),
-        price,
-        currency: ccy,
-        name: priceNode?.shortName || priceNode?.longName || ticker,
-        change_pct: Number.isFinite(priceNode?.regularMarketChangePercent?.raw) ? priceNode.regularMarketChangePercent.raw : 0,
-        sector: "",
-        industry: "",
-        country: "",
-        exchange: priceNode?.exchangeName || priceNode?.exchange || "",
-        quote_type: priceNode?.quoteType || "",
-        updated: new Date().toISOString(),
-      };
-      ctx.waitUntil(cache.put(cacheUrl, new Response(JSON.stringify(result), {
-        headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` }
-      })));
-      return result;
-    }
-  } catch (_) {}
+  const qsUrls = [
+    `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=price`,
+    `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=price`
+  ];
+  for (const url of qsUrls) {
+    try {
+      const qsJson = await fetchJsonMaybe(url, { headers });
+      const priceNode = qsJson?.quoteSummary?.result?.[0]?.price;
+      const rawPrice = positiveNumber(
+        priceNode?.regularMarketPrice?.raw,
+        priceNode?.regularMarketPreviousClose?.raw,
+        priceNode?.postMarketPrice?.raw,
+        priceNode?.preMarketPrice?.raw
+      );
+      if (rawPrice) {
+        const { price, ccy } = normCcy(rawPrice, priceNode?.currency);
+        const result = {
+          ticker: ticker.toUpperCase(),
+          price,
+          currency: ccy,
+          name: priceNode?.shortName || priceNode?.longName || ticker,
+          change_pct: Number.isFinite(priceNode?.regularMarketChangePercent?.raw) ? priceNode.regularMarketChangePercent.raw : 0,
+          sector: "", industry: "", country: "",
+          exchange: priceNode?.exchangeName || priceNode?.exchange || "",
+          quote_type: priceNode?.quoteType || "",
+          updated: new Date().toISOString(),
+        };
+        ctx.waitUntil(cache.put(cacheUrl, new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` }
+        })));
+        return result;
+      }
+    } catch (_) {}
+  }
 
-  // 4) spark API
+  // Último recurso: página HTML do Yahoo (útil quando as APIs devolvem 404 inconsistentes)
   try {
-    const spark = await fetchJSON(`https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(ticker)}&range=1d&interval=1d`, { headers });
-    const node = spark?.spark?.result?.[0]?.response?.[0];
-    const meta = node?.meta || {};
-    const closes = node?.indicators?.quote?.[0]?.close || [];
-    const lastClose = [...closes].reverse().find(v => Number.isFinite(v) && v > 0);
-    const rawPrice = firstFinite(meta.regularMarketPrice, meta.previousClose, lastClose);
-    if (rawPrice) {
-      const { price, ccy } = normCcy(rawPrice, meta.currency);
-      const result = {
-        ticker: ticker.toUpperCase(),
-        price,
-        currency: ccy,
-        name: meta.shortName || meta.symbol || ticker,
-        change_pct: 0,
-        sector: "",
-        industry: "",
-        country: "",
-        exchange: meta.exchangeName || "",
-        quote_type: meta.instrumentType || "",
-        updated: new Date().toISOString(),
-      };
-      ctx.waitUntil(cache.put(cacheUrl, new Response(JSON.stringify(result), {
-        headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` }
-      })));
-      return result;
+    const resp = await fetch(`https://finance.yahoo.com/quote/${encodeURIComponent(ticker)}`, { headers });
+    if (resp.ok) {
+      const html = await resp.text();
+      const rawPriceMatch = html.match(/"regularMarketPrice":\{"raw":([0-9]+(?:\.[0-9]+)?)/);
+      const prevCloseMatch = html.match(/"regularMarketPreviousClose":\{"raw":([0-9]+(?:\.[0-9]+)?)/);
+      const ccyMatch = html.match(/"currency":"([A-Z]{3,4})"/);
+      const nameMatch = html.match(/"shortName":"([^"]+)"/) || html.match(/<title>([^<]+?) \(/i);
+      const rawPrice = positiveNumber(rawPriceMatch ? Number(rawPriceMatch[1]) : null, prevCloseMatch ? Number(prevCloseMatch[1]) : null);
+      if (rawPrice) {
+        const { price, ccy } = normCcy(rawPrice, ccyMatch ? ccyMatch[1] : "USD");
+        const result = {
+          ticker: ticker.toUpperCase(),
+          price,
+          currency: ccy,
+          name: nameMatch ? String(nameMatch[1]).replace(/\u002F/g, '/').trim() : ticker,
+          change_pct: 0, sector: "", industry: "", country: "", exchange: "", quote_type: "",
+          updated: new Date().toISOString(),
+        };
+        ctx.waitUntil(cache.put(cacheUrl, new Response(JSON.stringify(result), {
+          headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` }
+        })));
+        return result;
+      }
     }
   } catch (_) {}
 
@@ -209,8 +209,9 @@ async function fetchYahooQuoteCore(ticker, ctx) {
 }
 
 async function fetchYahooQuote(ticker, ctx) {
-  const canonical = normalizeInputTicker(ticker);
-  const candidates = [...new Set([canonical, String(ticker || "").trim().toUpperCase()].filter(Boolean))];
+  const raw = String(ticker || '').trim().toUpperCase();
+  const canonical = normalizeInputTicker(raw);
+  const candidates = uniqueNonEmpty([canonical, raw]);
   let lastErr = null;
   for (const tk of candidates) {
     try {
@@ -219,7 +220,7 @@ async function fetchYahooQuote(ticker, ctx) {
       lastErr = e;
     }
   }
-  throw lastErr || new Error(`Sem dados para ${canonical || ticker}`);
+  throw lastErr || new Error(`Sem dados para ${canonical || raw}`);
 }
 
 export default {
@@ -261,7 +262,7 @@ export default {
 
       if (url.pathname === "/" || url.pathname === "") {
         return new Response(JSON.stringify({
-          service: "Património Familiar — Quote Proxy v3",
+          service: "Património Familiar — Quote Proxy v3.1",
           endpoints: ["/quote?ticker=VWCE.DE", "/quotes?tickers=VWCE.DE,IWDA.L"]
         }), { headers: { ...cors, "Content-Type": "application/json" } });
       }
