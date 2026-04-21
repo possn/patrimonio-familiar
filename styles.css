@@ -62,8 +62,8 @@ button, .btn, .navbtn, .fab, .item, .analysis-tab, [role="button"] {
   --r-xl:  32px;
 
   /* Topbar/nav */
-  --topbar-bg:  rgba(240,242,248,.88);
-  --nav-bg:     rgba(255,255,255,.96);
+  --topbar-bg:  rgba(240,242,248,.985);
+  --nav-bg:     rgba(255,255,255,.985);
 
   /* Hero gradient */
   --hero-grad: linear-gradient(160deg, #eef0fa 0%, #f0f2f8 100%);
@@ -92,8 +92,8 @@ button, .btn, .navbtn, .fab, .item, .analysis-tab, [role="button"] {
     --kpi-net:  #130f25;
     --shadow:    0 2px 12px rgba(0,0,0,.3), 0 8px 32px rgba(0,0,0,.2);
     --shadow-md: 0 4px 20px rgba(0,0,0,.35), 0 12px 40px rgba(0,0,0,.22);
-    --topbar-bg: rgba(13,15,24,.88);
-    --nav-bg:    rgba(22,25,41,.96);
+    --topbar-bg: rgba(13,15,24,.97);
+    --nav-bg:    rgba(22,25,41,.98);
     --hero-grad: linear-gradient(160deg, #111428 0%, #0d0f18 100%);
     --vio:       #7c7fef;
     --vio2:      #a5a8f8;
@@ -129,6 +129,18 @@ body {
   -webkit-backdrop-filter: blur(20px) saturate(180%);
   will-change: transform;
   border-bottom: 1px solid var(--line);
+  isolation: isolate;
+  overflow: hidden;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  contain: paint;
+}
+.topbar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--topbar-bg);
+  z-index: -1;
 }
 .brand { display: flex; gap: 11px; align-items: center; }
 .brand__icon {
@@ -838,10 +850,24 @@ select.input   { cursor: pointer; }
   z-index: 40;
   margin: 0 -12px 0;
   padding: 0 12px;
-  background: var(--bg);
+  background: var(--topbar-bg);
   border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
   /* Garantir que o fundo cobre o conteúdo que passa por baixo */
   isolation: isolate;
+  overflow: hidden;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  contain: paint;
+  box-shadow: 0 8px 18px rgba(15,23,42,.04);
+}
+.analysis-tabs-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--topbar-bg);
+  z-index: -1;
 }
 
 /* Padding extra para o conteúdo de análise não ficar sob as tabs */

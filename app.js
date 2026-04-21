@@ -4718,6 +4718,39 @@ function renderAnalysis() {
   if (tab === "ai") renderAIHistory();
 }
 
+let _analysisRenderRaf = 0;
+function scheduleRenderAnalysis() {
+  if (_analysisRenderRaf) cancelAnimationFrame(_analysisRenderRaf);
+  _analysisRenderRaf = requestAnimationFrame(() => {
+    _analysisRenderRaf = 0;
+    renderAnalysis();
+  });
+}
+
+function calcChartBounds(seriesList, opts = {}) {
+  const padPct = Number.isFinite(parseNum(opts.padPct)) ? Math.max(0.02, parseNum(opts.padPct)) : 0.08;
+  const flat = [];
+  (seriesList || []).forEach(series => {
+    (series || []).forEach(v => {
+      const n = parseNum(v);
+      if (Number.isFinite(n)) flat.push(n);
+    });
+  });
+  if (!flat.length) return { min: 0, max: 1 };
+  let min = Math.min(...flat);
+  let max = Math.max(...flat);
+  if (min === max) {
+    const delta = Math.max(1, Math.abs(min || 1) * 0.1);
+    return { min: min - delta, max: max + delta };
+  }
+  const span = max - min;
+  const pad = Math.max(1, span * padPct);
+  min -= pad;
+  max += pad;
+  if (min > 0) min = Math.max(0, min);
+  return { min, max };
+}
+
 /* ── Compound Interest Panel ── */
 
 // Calcula o yield médio ponderado real da carteira
@@ -5460,6 +5493,7 @@ function calcAndRenderCompound() {
   const maxSimple = Math.max(...simpleLine);
   const maxCompound = Math.max(...data.map(d => d.value));
 
+  const compoundBounds = calcChartBounds([data.map(d => d.value), simpleLine, contribLine], { padPct: 0.1 });
   compoundChart = new Chart(ctx, {
     type: "line",
     data: {
@@ -5487,6 +5521,7 @@ function calcAndRenderCompound() {
       ]
     },
     options: {
+      animation: false,
       plugins: {
         legend: { display: true, labels: { boxWidth: 12, font: { weight: "bold" } } },
         tooltip: {
@@ -5505,7 +5540,7 @@ function calcAndRenderCompound() {
         }
       },
       scales: {
-        y: { ticks: { callback: v => fmtEUR(v) } },
+        y: { min: compoundBounds.min, max: compoundBounds.max, ticks: { callback: v => fmtEUR(v) } },
         x: { ticks: { maxTicksLimit: 10 } }
       }
     }
@@ -5593,6 +5628,7 @@ function renderForecastPanel() {
 
   const aggData = compoundGrowth(py.totalValue, py.totalReturnAnnual, years, 12, 0).map(d => d.value);
   const flatLine = Array(years + 1).fill(t.assetsTotal);
+  const forecastBounds = calcChartBounds([aggData, flatLine], { padPct: 0.1 });
   forecastChart = new Chart(ctx, {
     type: "line",
     data: {
@@ -5603,8 +5639,9 @@ function renderForecastPanel() {
       ]
     },
     options: {
+      animation: false,
       plugins: { legend: { labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtEUR(c.raw)}` } } },
-      scales: { y: { ticks: { callback: v => fmtEUR(v) } } }
+      scales: { y: { min: forecastBounds.min, max: forecastBounds.max, ticks: { callback: v => fmtEUR(v) } } }
     }
   });
 }
@@ -9099,15 +9136,17 @@ function wire() {
   document.querySelectorAll(".analysis-tab").forEach(btn => {
     btn.addEventListener("click", () => {
       const tab = btn.dataset.tab;
-      // Actualizar hidden select (compatibilidade)
       const sel = document.getElementById("analysisTab");
+      const current = (sel && sel.value) || (document.querySelector(".analysis-tab.analysis-tab--active")?.dataset?.tab) || "";
+      if (tab === current) return;
+      // Actualizar hidden select (compatibilidade)
       if (sel) sel.value = tab;
       // Actualizar estado visual dos botões
       document.querySelectorAll(".analysis-tab").forEach(b => b.classList.remove("analysis-tab--active"));
       btn.classList.add("analysis-tab--active");
-      // Scroll para o botão activo
-      btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
-      renderAnalysis();
+      // Scroll mínimo, sem animação pesada
+      try { btn.scrollIntoView({ behavior: "auto", block: "nearest", inline: "center" }); } catch (_) {}
+      scheduleRenderAnalysis();
     });
   });
   // Manter compatibilidade com select hidden
@@ -9117,7 +9156,7 @@ function wire() {
     document.querySelectorAll(".analysis-tab").forEach(b => {
       b.classList.toggle("analysis-tab--active", b.dataset.tab === tab);
     });
-    renderAnalysis();
+    scheduleRenderAnalysis();
   });
 
   // Forecast years
@@ -10221,7 +10260,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // v18: Chart.js global defaults — animações reduzidas para performance
   try {
     if (typeof Chart !== "undefined") {
-      Chart.defaults.animation = { duration: 400, easing: "easeOutQuart" };
+      Chart.defaults.animation = { duration: 0 };
       Chart.defaults.font.family = "inherit";
       Chart.defaults.responsive = true;
       Chart.defaults.maintainAspectRatio = false;
@@ -12744,6 +12783,36 @@ function detectFIREPhase() {
   return "acumulacao";
 }
 
+function getAllocationClassExpectedReturnPct(className) {
+  const rs = getReturnSettings();
+  const passive = rs.classPassivePct || {};
+  const appreciation = rs.classAppreciationPct || {};
+  const totalFor = key => parseNum(passive[key] || 0) + parseNum(appreciation[key] || 0);
+  if (className === "Ações/ETFs") return totalFor("acoes/etfs");
+  if (className === "Imobiliário") return totalFor("imobiliario");
+  if (className === "PPR") return totalFor("ppr");
+  if (className === "Depósitos a prazo") return totalFor("depositos");
+  if (className === "Metais Preciosos") return (totalFor("ouro") + totalFor("prata")) / 2;
+  if (className === "Obrigações/Fundos") return (totalFor("obrigacoes") * 0.7) + (totalFor("fundos") * 0.3);
+  return 0;
+}
+
+function calcAllocationTargetPerformance(alloc) {
+  const rows = Array.isArray(alloc) ? alloc : [];
+  const totalPct = rows.reduce((s, r) => s + parseNum(r.pct), 0) || 100;
+  const annualPct = rows.reduce((s, r) => s + (parseNum(r.pct) / totalPct) * getAllocationClassExpectedReturnPct(r.class), 0);
+  return annualPct;
+}
+
+function getPortfolioComparableAnnualReturn() {
+  const twr = calcTWR();
+  if (twr && Number.isFinite(parseNum(twr.annualised))) {
+    return { label: `TWR real ${fmt(twr.years, 1)}a`, value: parseNum(twr.annualised), source: "twr" };
+  }
+  const py = calcPortfolioYield();
+  return { label: "motor actual da carteira", value: parseNum(py.totalReturnAnnual || 0), source: "engine" };
+}
+
 function renderAllocationPanel() {
   const el = document.getElementById("allocationContent");
   const gapCard = document.getElementById("allocationGapCard");
@@ -12855,6 +12924,22 @@ function renderAllocationPanel() {
       html += "</div>"; // end card
     });
     html += "</div>"; // end allocation bars
+
+    // Alocação alvo vs performance actual
+    const allocTargetAnnual = calcAllocationTargetPerformance(alloc);
+    const currentComparable = getPortfolioComparableAnnualReturn();
+    const allocDelta = currentComparable.value - allocTargetAnnual;
+    const allocDeltaCol = Math.abs(allocDelta) < 0.25 ? "#64748b" : allocDelta >= 0 ? "#059669" : "#dc2626";
+    html += "<div style='background:var(--card2);border-radius:var(--r-sm);padding:12px 14px;border:1px solid var(--line);margin-bottom:14px'>";
+    html += "<div style='display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap;margin-bottom:8px'>";
+    html += "<div><div style='font-weight:800;font-size:13px'>🎯 Performance da alocação alvo</div><div style='font-size:11px;color:var(--muted)'>Ajusta-se automaticamente à fase FIRE escolhida e compara com a carteira actual.</div></div>";
+    html += "<div style='font-size:11px;color:var(--muted);text-align:right'>Fonte actual: <b>" + escapeHtml(currentComparable.label) + "</b></div>";
+    html += "</div>";
+    html += "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:6px'>";
+    html += "<div style='background:var(--card);border-radius:8px;padding:8px;text-align:center'><div style='font-size:9px;color:var(--muted);font-weight:700'>Alocação alvo</div><div style='font-size:15px;font-weight:900;color:#6366f1'>" + fmtPct(allocTargetAnnual) + "</div></div>";
+    html += "<div style='background:var(--card);border-radius:8px;padding:8px;text-align:center'><div style='font-size:9px;color:var(--muted);font-weight:700'>Carteira actual</div><div style='font-size:15px;font-weight:900;color:var(--text)'>" + fmtPct(currentComparable.value) + "</div></div>";
+    html += "<div style='background:var(--card);border-radius:8px;padding:8px;text-align:center'><div style='font-size:9px;color:var(--muted);font-weight:700'>Diferença</div><div style='font-size:15px;font-weight:900;color:" + allocDeltaCol + "'>" + (allocDelta >= 0 ? "+" : "") + fmtPct(allocDelta) + "</div></div>";
+    html += "</div></div>";
 
     // Real performance block
     if (m.hasData) {
