@@ -13,7 +13,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260421v32").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260421v35").catch(() => {});
     });
   }
 } catch (_) {}
@@ -8294,41 +8294,91 @@ function showBankResult(type, html) {
   el.innerHTML = html;
 }
 
+let __pfPdfJsPromise = null;
+async function ensurePdfJsLoaded(timeoutMs = 7000) {
+  if (typeof pdfjsLib !== "undefined" && pdfjsLib && typeof pdfjsLib.getDocument === "function") {
+    return pdfjsLib;
+  }
+  if (!__pfPdfJsPromise) {
+    __pfPdfJsPromise = new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[data-pf-pdfjs="1"], script[src*="pdf.min.js"]');
+      if (existing) {
+        const check = () => {
+          if (typeof pdfjsLib !== "undefined" && pdfjsLib && typeof pdfjsLib.getDocument === "function") {
+            resolve(pdfjsLib);
+          } else {
+            setTimeout(check, 100);
+          }
+        };
+        check();
+        return;
+      }
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js";
+      s.async = true;
+      s.dataset.pfPdfjs = "1";
+      s.onload = () => {
+        if (typeof pdfjsLib !== "undefined" && pdfjsLib && typeof pdfjsLib.getDocument === "function") {
+          try {
+            if (pdfjsLib.GlobalWorkerOptions) {
+              pdfjsLib.GlobalWorkerOptions.workerSrc =
+                "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+            }
+          } catch (_) {}
+          resolve(pdfjsLib);
+        } else {
+          reject(new Error("pdf.js carregado sem API válida"));
+        }
+      };
+      s.onerror = () => reject(new Error("Falha a carregar pdf.js"));
+      document.head.appendChild(s);
+    });
+  }
+  return Promise.race([
+    __pfPdfJsPromise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout a carregar pdf.js")), timeoutMs))
+  ]);
+}
+
 async function extractTextFromPDF(file) {
-  // Tenta pdf.js primeiro (melhor qualidade, preserva estrutura de colunas)
-  if (typeof pdfjsLib !== "undefined") {
-    try {
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+  // No Safari/iPhone o pdf.js pode ainda não ter acabado de carregar quando o utilizador
+  // toca em Importar. Esperamos explicitamente pela biblioteca antes de cair no fallback.
+  try {
+    const lib = await ensurePdfJsLoaded(7000);
+    if (lib && typeof lib.getDocument === "function") {
       const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const pdf = await lib.getDocument({
+        data: arrayBuffer,
+        disableWorker: true,
+        useWorkerFetch: false,
+        isEvalSupported: false
+      }).promise;
       let fullText = "";
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
-        const content = await page.getTextContent();
-        // Agrupar por Y (tolerância 2px), ordenar por X → preserva colunas
+        const content = await page.getTextContent({ normalizeWhitespace: false });
         const byY = new Map();
-        for (const item of content.items) {
-          if (!item.str || !item.str.trim()) continue;
-          const y = Math.round(item.transform[5] / 2) * 2;
-          const x = item.transform[4];
+        for (const item of (content.items || [])) {
+          if (!item || !item.str || !item.str.trim()) continue;
+          const y = Math.round(((item.transform && item.transform[5]) || 0) / 2) * 2;
+          const x = (item.transform && item.transform[4]) || 0;
           if (!byY.has(y)) byY.set(y, []);
           byY.get(y).push({ x, str: item.str });
         }
         const sortedYs = [...byY.keys()].sort((a, b) => b - a);
         for (const y of sortedYs) {
           const items = byY.get(y).sort((a, b) => a.x - b.x);
-          fullText += items.map(i => i.str).join("\t") + "\n";
+          fullText += items.map(it => it.str).join("\t") + "\n";
+
         }
       }
       if (fullText.trim()) return fullText;
-    } catch(e) {
-      console.warn("pdf.js falhou:", e.message);
     }
+  } catch (e) {
+    console.warn("pdf.js falhou:", e && e.message ? e.message : e);
   }
 
-  // Fallback: descompressão nativa do browser (iOS 16.4+ / Chrome / Firefox)
-  console.log("pdf.js não disponível, a usar fallback nativo...");
+  console.log("Fallback PDF nativo...");
   return extractPDFRaw(file);
 }
 
