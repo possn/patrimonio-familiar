@@ -1,4 +1,4 @@
-/* Património Familiar — v27
+/* Património Familiar — v28
    Performance: memoização por ciclo de render (elimina cálculos redundantes)
    + Objetivo de rendimento passivo com barra de progresso
    + Alertas de vencimentos próximos (30 dias)
@@ -13,8 +13,15 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260420v27").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260420v28").catch(() => {});
     });
+  }
+} catch (_) {}
+
+try {
+  if (typeof window !== "undefined" && window.Chart) {
+    Chart.defaults.responsive = true;
+    Chart.defaults.maintainAspectRatio = false;
   }
 } catch (_) {}
 
@@ -1045,55 +1052,75 @@ function calcPassiveAnnualSummary() {
   const divData = calcDividendYield();
   const breakdownReal = {};
   const breakdownProjected = {};
-  let realNonDiv = 0;
-  let projectedNonDiv = 0;
+  let realAnnual = 0;
+  let projectedAnnual = 0;
+
+  const cutoff = new Date(new Date().getFullYear() - 1, new Date().getMonth(), new Date().getDate()).toISOString().slice(0, 10);
+  const matchedDividendIds = new Set();
 
   for (const a of (state.assets || [])) {
-    if (isDividendAsset(a)) continue;
-    const val = parseNum(a && a.value);
+    if (!a) continue;
+    const val = parseNum(a.value);
     if (val <= 0) continue;
     const cls = a.class || "Outros";
+    const isDiv = isDividendAsset(a);
 
-    const real = Math.max(0, passiveFromItem(a));
-    if (real > 0) {
-      realNonDiv += real;
-      breakdownReal[cls] = (breakdownReal[cls] || 0) + real;
+    let real = 0;
+    if (isDiv) {
+      const stats = getDividendStatsForAsset(a);
+      if (stats.ttmNet > 0) {
+        real = Math.max(0, parseNum(stats.ttmNet));
+        (state.dividends || []).forEach(d => {
+          if (String(d.date || "") >= cutoff && assetMatchesDividend(a, d)) matchedDividendIds.add(d.id || `${d.date}|${d.assetName}|${d.amount}`);
+        });
+      } else {
+        real = Math.max(0, passiveFromItem(a));
+      }
+    } else {
+      real = Math.max(0, passiveFromItem(a));
     }
 
-    const ratePct = Math.max(0, getAssetPassiveRatePct(a, { allowClassFallback: true }));
-    const projected = val * (ratePct / 100);
+    let projected = 0;
+    if (isDiv && real > 0) {
+      projected = real;
+    } else {
+      const ratePct = Math.max(0, getAssetPassiveRatePct(a, { allowClassFallback: true }));
+      projected = val * (ratePct / 100);
+    }
+
+    if (real > 0) {
+      realAnnual += real;
+      breakdownReal[cls] = (breakdownReal[cls] || 0) + real;
+    }
     if (projected > 0) {
-      projectedNonDiv += projected;
+      projectedAnnual += projected;
       breakdownProjected[cls] = (breakdownProjected[cls] || 0) + projected;
     }
   }
 
-  let divAnnual = Math.max(0, parseNum(divData.net));
-  if (!(divAnnual > 0)) {
-    divAnnual = (state.assets || [])
-      .filter(a => isDividendAsset(a))
-      .reduce((s, a) => s + Math.max(0, passiveFromItem(a)), 0);
+  let unmatchedDividendNet = 0;
+  for (const d of (state.dividends || [])) {
+    if (String(d.date || "") < cutoff) continue;
+    const key = d.id || `${d.date}|${d.assetName}|${d.amount}`;
+    if (matchedDividendIds.has(key)) continue;
+    unmatchedDividendNet += Math.max(0, getDividendNet(d));
   }
-  if (divAnnual > 0) {
-    const label = divData.source === "summary"
-      ? "Dividendos (resumo anual)"
-      : divData.period === "ttm"
-        ? "Dividendos (últ.12m)"
-        : "Dividendos (estimados)";
-    breakdownReal[label] = (breakdownReal[label] || 0) + divAnnual;
-    breakdownProjected[label] = (breakdownProjected[label] || 0) + divAnnual;
+  if (unmatchedDividendNet > 0) {
+    realAnnual += unmatchedDividendNet;
+    projectedAnnual += unmatchedDividendNet;
+    breakdownReal["Dividendos (não reconciliados)"] = (breakdownReal["Dividendos (não reconciliados)"] || 0) + unmatchedDividendNet;
+    breakdownProjected["Dividendos (não reconciliados)"] = (breakdownProjected["Dividendos (não reconciliados)"] || 0) + unmatchedDividendNet;
   }
 
-  const realAnnual = realNonDiv + divAnnual;
-  const projectedAnnual = projectedNonDiv + divAnnual;
   return {
     divData,
     realAnnual,
-    projectedAnnual,
+    projectedAnnual: Math.max(projectedAnnual, realAnnual),
     breakdownReal,
     breakdownProjected
   };
 }
+
 
 function calcTotals() {
   const assetsTotal = state.assets.reduce((a, x) => a + parseNum(x.value), 0);
@@ -1409,6 +1436,13 @@ function renderGeoChart() {
   if (lbl) lbl.textContent = `${assets.length} activos · ${labels.length} regiões`;
 }
 
+function getDisplayedPassiveAnnual(totals) {
+  const t = totals || (_rc ? _rc.totals : calcTotals());
+  const real = parseNum(t && (t.passiveAnnualReal != null ? t.passiveAnnualReal : t.passiveAnnual));
+  const projected = parseNum(t && (t.passiveAnnualProjected != null ? t.passiveAnnualProjected : t.passiveAnnual));
+  return real > 0 ? real : projected;
+}
+
 function renderAll(opts = {}) {
   const force = !!(opts && opts.force);
   invalidateRenderCache(); // v18: garantir cálculos frescos
@@ -1430,7 +1464,7 @@ function updatePassiveBar() {
   const t = _rc ? _rc.totals : calcTotals();
   const barA = document.getElementById("barPassiveAnnual");
   const barM = document.getElementById("barPassiveMonthly");
-  const passiveAnnualDisplay = parseNum(t.passiveAnnualProjected != null ? t.passiveAnnualProjected : t.passiveAnnual);
+  const passiveAnnualDisplay = getDisplayedPassiveAnnual(t);
   if (barA) barA.textContent = fmtEUR(passiveAnnualDisplay);
   if (barM) barM.textContent = fmtEUR(passiveAnnualDisplay / 12);
 }
@@ -1439,7 +1473,7 @@ function updatePassiveBar() {
 function renderGoal() {
   const goal = parseNum(state.settings.goalMonthly || 0);
   const t = _rc ? _rc.totals : calcTotals();
-  const passiveAnnualDisplay = parseNum(t.passiveAnnualProjected != null ? t.passiveAnnualProjected : t.passiveAnnual);
+  const passiveAnnualDisplay = getDisplayedPassiveAnnual(t);
   const monthly = passiveAnnualDisplay / 12;
   const subtitle = $("goalSubtitle");
   const wrap = $("goalProgressWrap");
@@ -1824,7 +1858,7 @@ function renderDashboard() {
   }
 
   // ── KPIs secundários ──────────────────────────────────────
-  const passiveAnnualDisplay = parseNum(t.passiveAnnualProjected != null ? t.passiveAnnualProjected : t.passiveAnnual);
+  const passiveAnnualDisplay = getDisplayedPassiveAnnual(t);
   $("kpiPassiveAnnual").textContent = fmtEUR(passiveAnnualDisplay);
   $("kpiPassiveMonthly").textContent = fmtEUR(passiveAnnualDisplay / 12);
 
@@ -1858,7 +1892,7 @@ function renderDashboard() {
       const last6 = [...byMonth.keys()].sort().slice(-6);
       const avgOut = last6.length ? last6.reduce((s,k)=>s+(byMonth.get(k).out||0),0)/last6.length : 0;
       const exp12 = avgOut * 12;
-      const passiveAnnualDisplay = parseNum(t.passiveAnnualProjected != null ? t.passiveAnnualProjected : t.passiveAnnual);
+      const passiveAnnualDisplay = getDisplayedPassiveAnnual(t);
       const pct = exp12 > 0 ? Math.min(999, passiveAnnualDisplay / exp12 * 100) : 0;
       autEl.textContent = pct > 0 ? fmtPct(pct) : "—";
       autEl.style.color = pct >= 100 ? "#059669" : pct >= 50 ? "#f59e0b" : "#8b5cf6";
@@ -6283,24 +6317,80 @@ function canonicalBrokerTickerBase(v) {
   return t;
 }
 
-function inferYahooTickerFromIdentity({ isin = "", ticker = "", yahooTicker = "", name = "" } = {}) {
-  const i = normalizeISIN(isin);
-  if (i && ISIN_YAHOO_MAP[i]) return String(ISIN_YAHOO_MAP[i] || "").trim().toUpperCase();
+function inferPreferredVenueTicker(rawTicker = "", venue = "") {
+  const t = String(rawTicker || "").trim().toUpperCase();
+  const v = String(venue || "").trim().toUpperCase();
+  if (!t || !v || /[=\-]/.test(t) || t.includes(".")) return "";
+  return `${t}.${v}`;
+}
 
+function venueFromIsinAndCurrency(isin = "", currency = "", name = "", rawTicker = "") {
+  const prefix = String(isin || "").trim().toUpperCase().slice(0, 2);
+  const ccy = String(currency || "").trim().toUpperCase();
+  const nm = normalizeSecurityNameKey(name || "");
+  const raw = String(rawTicker || "").trim().toUpperCase();
+  const isAccFund = /\bACC\b/.test(nm) || /\bISHARES\b/.test(nm) || /\bXTRACKERS\b/.test(nm) ||
+    /\bWISDOMTREE\b/.test(nm) || /\bVANECK\b/.test(nm) || /\bKRANESHARES\b/.test(nm) ||
+    /\bGLOBAL X\b/.test(nm) || /\bETF\b/.test(nm) || /\bFUND\b/.test(nm);
+
+  if (prefix === "PT") return "LS";
+  if (prefix === "ES") return "MC";
+  if (prefix === "FR") return "PA";
+  if (prefix === "IT") return "MI";
+  if (prefix === "DE") return "DE";
+  if (prefix === "AT") return "VI";
+  if (prefix === "CH") return "SW";
+  if (prefix === "DK") return "CO";
+  if (prefix === "SE") return "ST";
+  if (prefix === "NO") return "OL";
+  if (prefix === "FI") return "HE";
+  if (prefix === "BE") return "BR";
+  if (prefix === "GB") return "L";
+  if (prefix === "AU") return "AX";
+  if (prefix === "CA") return "TO";
+
+  if (/\bAIRBUS\b/.test(nm)) return "PA";
+  if (/\bARCELORMITTAL\b/.test(nm)) return "AS";
+
+  if (prefix === "NL") {
+    if (ccy === "USD" && raw && /^[A-Z0-9.-]{1,10}$/.test(raw) && !isAccFund) return "";
+    return "AS";
+  }
+  if (prefix === "LU") {
+    if (ccy === "USD" && raw && /^[A-Z0-9.-]{1,10}$/.test(raw) && !isAccFund) return "";
+    if (/\bARCELORMITTAL\b/.test(nm) || raw === "MT") return "AS";
+    return "LU";
+  }
+  if (prefix === "IE") {
+    if (isAccFund) {
+      if (ccy === "GBP" || ccy === "GBX" || ccy === "USD") return "L";
+      if (ccy === "EUR" || !ccy) return "DE";
+    }
+    if (ccy === "USD" && raw && /^[A-Z0-9.-]{1,10}$/.test(raw)) return "";
+    if (ccy === "GBP" || ccy === "GBX") return "L";
+  }
+  return "";
+}
+
+function inferYahooTickerFromIdentity({ isin = "", ticker = "", yahooTicker = "", name = "", currency = "", priceCurrency = "" } = {}) {
+  const i = normalizeISIN(isin);
   const direct = String(yahooTicker || "").trim().toUpperCase();
+  const t = String(ticker || "").trim().toUpperCase();
+  const n = normalizeSecurityNameKey(name);
+  const ccy = String(priceCurrency || currency || "").trim().toUpperCase();
+
   if (direct) {
     if (/^[A-Z0-9.-]+\.US$/.test(direct)) return direct.replace(/\.US$/, "");
     if (/^[A-Z0-9.-]+\.CH$/.test(direct)) return direct.replace(/\.CH$/, ".SW");
     if (/^[A-Z0-9.-]+\.PT$/.test(direct)) return direct.replace(/\.PT$/, ".LS");
-    if (/\.(LS|L|PA|AS|MC|SW|CO|ST|OL|HE|BR|MI|AX|TO|DE|F|IR)$/.test(direct) || /[=\-]/.test(direct)) return direct;
+    if (/\.(LS|L|PA|AS|MC|SW|CO|ST|OL|HE|BR|MI|AX|TO|DE|F|VI|IR)$/.test(direct) || /[=\-]/.test(direct)) return direct;
   }
-
-  const t = String(ticker || "").trim().toUpperCase();
-  const n = normalizeSecurityNameKey(name);
 
   if (/\bCORTICEIRA\b/.test(n) || /\bAMORIM\b/.test(n)) return "COR.LS";
   if (/\bSONAE\b/.test(n)) return "SON.LS";
   if (/\bREALTY\b/.test(n) && /\bINCOME\b/.test(n)) return "O";
+  if (/\bAIRBUS\b/.test(n)) return "AIR.PA";
+  if (/\bARCELORMITTAL\b/.test(n)) return "MT.AS";
 
   if (/^[A-Z0-9.-]+\.US$/.test(t)) return t.replace(/\.US$/, "");
   if (/^[A-Z0-9.-]+\.CH$/.test(t)) return t.replace(/\.CH$/, ".SW");
@@ -6309,6 +6399,19 @@ function inferYahooTickerFromIdentity({ isin = "", ticker = "", yahooTicker = ""
   if (/^[A-Z0-9.-]+\.FR$/.test(t)) return t.replace(/\.FR$/, ".PA");
   if (/^[A-Z0-9.-]+\.NL$/.test(t)) return t.replace(/\.NL$/, ".AS");
   if (/^[A-Z0-9.-]+\.ES$/.test(t)) return t.replace(/\.ES$/, ".MC");
+  if (/^[A-Z0-9.-]+\.DK$/.test(t)) return t.replace(/\.DK$/, ".CO");
+  if (/\.(LS|L|PA|AS|MC|SW|CO|ST|OL|HE|BR|MI|AX|TO|DE|F|VI|IR)$/.test(t) || /[=\-]/.test(t)) return t;
+
+  const rawPlain = canonicalBrokerTickerBase(t);
+  const isAccFund = /\bACC\b/.test(n) || /\bETF\b/.test(n) || /\bFUND\b/.test(n) || /\bISHARES\b/.test(n) || /\bXTRACKERS\b/.test(n) || /\bWISDOMTREE\b/.test(n) || /\bVANECK\b/.test(n) || /\bGLOBAL X\b/.test(n) || /\bKRANESHARES\b/.test(n);
+  if (rawPlain && /^[A-Z0-9.-]{1,10}$/.test(rawPlain) && ccy === "USD" && !isAccFund) return rawPlain;
+  if (rawPlain && /^[A-Z0-9.-]{1,10}$/.test(rawPlain)) {
+    const venue = venueFromIsinAndCurrency(i, ccy, n, rawPlain);
+    if (venue) return inferPreferredVenueTicker(rawPlain, venue);
+  }
+
+  if (i && ISIN_YAHOO_MAP[i]) return String(ISIN_YAHOO_MAP[i] || "").trim().toUpperCase();
+
   return "";
 }
 
@@ -9189,7 +9292,6 @@ function extractTicker(asset) {
 
 
 async function fetchQuote(ticker, workerUrl) {
-  // Chama o Cloudflare Worker que proxifica Yahoo Finance
   const url = `${workerUrl.replace(/\/$/, "")}/quote?ticker=${encodeURIComponent(ticker)}`;
   let resp;
   try {
@@ -9197,11 +9299,18 @@ async function fetchQuote(ticker, workerUrl) {
   } catch (e) {
     throw new Error(`Worker inacessível: ${e.message || "timeout"}`);
   }
-  if (!resp.ok) throw new Error(`Worker HTTP ${resp.status}`);
-  const data = await resp.json();
-  if (data.error) throw new Error(data.error);
-  return data; // { ticker, price, currency, name, change_pct }
+
+  let data = null;
+  try { data = await resp.clone().json(); } catch (_) {}
+
+  if (!resp.ok) {
+    const detail = data && data.error ? `: ${data.error}` : "";
+    throw new Error(`Worker HTTP ${resp.status}${detail}`);
+  }
+  if (data && data.error) throw new Error(data.error);
+  return data;
 }
+
 
 async function refreshLiveQuotes() {
   const btn = $("btnRefreshQuotes");
@@ -9310,11 +9419,18 @@ async function refreshLiveQuotes() {
   function getRawTickerForAsset(asset) {
     const tk = String(asset.ticker || "").trim();
     if (tk && /^[A-Z0-9.\-]{1,16}$/i.test(tk)) return tk.toUpperCase();
+
+    const cls = String(asset.class || "").trim();
+    const isMarketClass = QUOTE_CLASSES.includes(cls);
     const nm = String(asset.name || "").trim();
-    if (nm && /^[A-Z0-9.\-]{1,16}$/i.test(nm)) return nm.toUpperCase();
+    if ((asset && asset.generatedFromBroker) || isMarketClass) {
+      if (nm && /^[A-Z0-9.\-]{1,16}$/i.test(nm)) return nm.toUpperCase();
+    }
+
     const ext = extractTicker(asset);
     return ext ? String(ext).trim().toUpperCase() : "";
   }
+
 
   function hasExplicitTickerTag(asset) {
     return /\b(?:Ticker|Yahoo)=([A-Z0-9.\-=^]{1,24})\b/i.test(String((asset && asset.notes) || ""));
@@ -9324,13 +9440,20 @@ async function refreshLiveQuotes() {
     const t = String(raw || "").trim().toUpperCase();
     if (!t) return false;
     if (/[.=\-]/.test(t)) return true;
+
+    const cls = String((asset && asset.class) || "").trim();
+    const isMarketClass = QUOTE_CLASSES.includes(cls);
+    const isBroker = !!(asset && asset.generatedFromBroker);
+    if (!isMarketClass && !isBroker) return false;
+
     if (t.length >= 2 && /^[A-Z0-9]{2,10}$/.test(t)) return true;
     if (t === "O") {
       const nm2 = normalizeSecurityNameKey((asset && asset.name) || "");
-      return /\bREALTY\b/.test(nm2) || /\bINCOME\b/.test(nm2) || !!(asset && asset.generatedFromBroker);
+      return /\bREALTY\b/.test(nm2) || /\bINCOME\b/.test(nm2) || isBroker;
     }
     return false;
   }
+
 
   function assetLooksQuoteEligible(asset) {
     if (!asset || isManualNonMarketAsset(asset)) return false;
@@ -9338,17 +9461,46 @@ async function refreshLiveQuotes() {
     const isin = String(asset.isin || "").trim().toUpperCase();
     const storedYahoo = getStoredYahooTicker(asset);
     const raw = getRawTickerForAsset(asset);
+    if (/^[A-Z]{2}[A-Z0-9]{9}\d$/.test(String(raw || "").trim().toUpperCase())) return false;
     const inferredYahoo = inferYahooTickerFromIdentity({
       isin,
       ticker: raw || asset.ticker || "",
       yahooTicker: storedYahoo || asset.yahooTicker || "",
-      name: asset.name || ""
+      name: asset.name || "",
+      currency: asset.priceCurrency || asset.currency || ""
     });
 
-    if (asset.generatedFromBroker) return true;
-    if (QUOTE_CLASSES.includes(cls)) return !!(isin || storedYahoo || inferredYahoo || isPlausibleMarketTicker(raw, asset));
-    if (storedYahoo || inferredYahoo || hasExplicitTickerTag(asset)) return true;
-    return isPlausibleMarketTicker(raw, asset);
+    const isMarketClass = QUOTE_CLASSES.includes(cls);
+
+    if (asset.generatedFromBroker) return !!(raw || storedYahoo || inferredYahoo || isin);
+    if (!isMarketClass) return !!(storedYahoo || hasExplicitTickerTag(asset));
+    return !!(isin || storedYahoo || inferredYahoo || isPlausibleMarketTicker(raw, asset));
+  }
+
+
+  function getAltExchangeSuffixes(asset) {
+    const ccy = String(asset.priceCurrency || asset.currency || "").trim().toUpperCase();
+    const isin = String(asset.isin || "").trim().toUpperCase();
+    const prefix = isin.slice(0, 2);
+    if (ccy === "GBP" || ccy === "GBX") return [".L", ".DE", ".PA", ".AS", ".TO"];
+    if (ccy === "USD") return [".L", ".DE", ".AS", ".PA", ".TO"];
+    if (ccy === "CHF") return [".SW", ".DE", ".L"];
+    if (ccy === "EUR") {
+      if (prefix === "PT") return [".LS"];
+      if (prefix === "ES") return [".MC"];
+      if (prefix === "FR") return [".PA"];
+      if (prefix === "IT") return [".MI"];
+      if (prefix === "DE") return [".DE", ".F"];
+      if (prefix === "AT") return [".VI"];
+      if (prefix === "CH") return [".SW"];
+      if (prefix === "DK") return [".CO"];
+      if (prefix === "SE") return [".ST"];
+      if (prefix === "NO") return [".OL"];
+      if (prefix === "FI") return [".HE"];
+      if (prefix === "BE") return [".BR"];
+      return [".DE", ".PA", ".AS", ".MC", ".MI", ".L", ".TO"];
+    }
+    return [".DE", ".L", ".PA", ".AS", ".TO"];
   }
 
   function buildYahooTickerCandidates(asset) {
@@ -9376,27 +9528,25 @@ async function refreshLiveQuotes() {
       isin,
       ticker: raw || asset.ticker || "",
       yahooTicker: storedYahoo || asset.yahooTicker || "",
-      name: asset.name || ""
+      name: asset.name || "",
+      currency: asset.priceCurrency || asset.currency || ""
     });
     const directMapped = (isin && ISIN_YAHOO_MAP[isin]) || inferredYahoo || YAHOO_TICKER_OVERRIDES[raw] || "";
 
-    // Ordem crítica: primeiro o ticker resolvido por identidade/ISIN.
-    if (isin && ISIN_YAHOO_MAP[isin]) push(ISIN_YAHOO_MAP[isin]);
     if (inferredYahoo) push(inferredYahoo);
+    if (isin && ISIN_YAHOO_MAP[isin]) push(ISIN_YAHOO_MAP[isin]);
     if (raw && YAHOO_TICKER_OVERRIDES[raw]) push(YAHOO_TICKER_OVERRIDES[raw]);
-
-    // Só usar yahooTicker guardado se não contrariar uma resolução melhor.
-    if (storedYahoo && (!directMapped || storedYahoo === directMapped)) push(storedYahoo);
+    if (storedYahoo) push(storedYahoo);
 
     const rawBase = canonicalBrokerTickerBase(raw);
     const normRaw = toYahooTicker(raw);
-    if (!directMapped && rawBase && rawBase !== raw) push(rawBase);
+    if (rawBase && rawBase !== raw) push(rawBase);
+    if (normRaw && normRaw !== raw) push(normRaw);
     if (!directMapped && raw) push(raw);
-    if (!directMapped && normRaw && normRaw !== raw) push(normRaw);
 
-    // Só testar sufixos alternativos quando não há mapeamento directo.
-    if (rawBase && !/[.=\-]/.test(rawBase) && !directMapped) {
-      ALT_EXCHANGE_SUFFIXES.forEach(suf => push(rawBase + suf));
+    if (rawBase && !/[.=\-]/.test(rawBase)) {
+      const alts = getAltExchangeSuffixes(asset);
+      alts.forEach(suf => push(rawBase + suf));
     }
 
     return out;
@@ -9407,22 +9557,58 @@ function normalizeResolvedYahoo(raw) {
   return String(toYahooTicker(raw) || raw || "").trim().toUpperCase();
 }
 
+function tickerBaseOnly(raw) {
+  return String(normalizeResolvedYahoo(raw)).split(/[.=]/)[0].trim().toUpperCase();
+}
+
+function strictVenueSuffixForAsset(asset) {
+  const isin = String(asset && asset.isin || "").trim().toUpperCase();
+  const prefix = isin.slice(0, 2);
+  if (prefix === "PT") return ".LS";
+  if (prefix === "ES") return ".MC";
+  if (prefix === "FR") return ".PA";
+  if (prefix === "IT") return ".MI";
+  if (prefix === "DE") return ".DE";
+  if (prefix === "AT") return ".VI";
+  if (prefix === "CH") return ".SW";
+  if (prefix === "DK") return ".CO";
+  if (prefix === "SE") return ".ST";
+  if (prefix === "NO") return ".OL";
+  if (prefix === "FI") return ".HE";
+  if (prefix === "BE") return ".BR";
+  if (prefix === "GB") return ".L";
+  return "";
+}
+
 function isQuoteCandidateAcceptable(asset, candidate) {
   if (!asset) return true;
+  const cand = normalizeResolvedYahoo(candidate);
   const expected = normalizeResolvedYahoo(inferYahooTickerFromIdentity({
     isin: asset.isin || "",
     ticker: asset.ticker || "",
     yahooTicker: asset.yahooTicker || "",
-    name: asset.name || ""
+    name: asset.name || "",
+    currency: asset.priceCurrency || asset.currency || ""
   }));
-  const cand = normalizeResolvedYahoo(candidate);
-  if (expected && cand && cand !== expected) return false;
+  const rawBase = tickerBaseOnly(asset.ticker || asset.name || "");
+  const candBase = tickerBaseOnly(cand);
+  const expectedBase = tickerBaseOnly(expected);
 
-  const isin = String(asset.isin || "").trim().toUpperCase();
-  if (isin.startsWith("PT") && cand && !cand.endsWith(".LS")) return false;
+  const strictSuffix = strictVenueSuffixForAsset(asset);
+  if (strictSuffix && cand && !cand.endsWith(strictSuffix)) return false;
 
-  return true;
+  const assetCcy = String(asset.priceCurrency || asset.currency || "").trim().toUpperCase();
+  const nm = normalizeSecurityNameKey(asset.name || "");
+  const isAccFund = /\bACC\b/.test(nm) || /\bETF\b/.test(nm) || /\bFUND\b/.test(nm) || /\bISHARES\b/.test(nm) || /\bXTRACKERS\b/.test(nm) || /\bWISDOMTREE\b/.test(nm) || /\bVANECK\b/.test(nm) || /\bGLOBAL X\b/.test(nm) || /\bKRANESHARES\b/.test(nm);
+  if (expected && !/[.=]/.test(expected) && assetCcy === "USD" && cand.includes(".") && !isAccFund) return false;
+
+  if (expected && cand === expected) return true;
+  if (candBase && expectedBase && candBase === expectedBase) return true;
+  if (candBase && rawBase && candBase === rawBase) return true;
+
+  return !expected;
 }
+
 
 async function fetchQuoteWithFallback(ref) {
   let lastErr = null;

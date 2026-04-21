@@ -1,5 +1,5 @@
-/* Património Familiar — Service Worker v27 */
-const CACHE_NAME = "pf-cache-v27";
+/* Património Familiar — Service Worker v28 */
+const CACHE_NAME = "pf-cache-v28";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest"];
 
 self.addEventListener("install", event => {
