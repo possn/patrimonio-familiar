@@ -8697,7 +8697,7 @@ async function parseSantanderPDFFromFile(file) {
     jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
   };
   const noiseRe = /^(Titular|Pedro$|Conta$|PT\d{2} |Saldo disponível$|Movimentos da sua conta|Data da operação$|Operação$|Valor$|Saldo$|Documento com data:|Página \d+ de \d+|Para pesquisas genéricas)/i;
-  const moneyRe = /^\d{1,3}(?:\.\d{3})*,\d{2}$/;
+  const moneyRe = /^[\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2}(?:\s*€)?$/;
 
   function parsePTDateExactLocal(s) {
     const m = String(s || "").trim().match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
@@ -8792,14 +8792,25 @@ function parseSantanderStructured(text) {
     return /^(titular\b|conta\s+pt|saldo disponível|movimentos da sua conta|data da operação\b|documento com data:|página\s+\d+\s+de\s+\d+|para pesquisas genéricas)/i.test(line);
   }
 
+  function normaliseSantanderLine(line) {
+    return String(line || "")
+      .replace(/ /g, " ")
+      .replace(/([\d,])\s+€/g, "$1€")
+      .replace(/[\u2212−]\s+(?=\d)/g, "−")
+      .replace(/-\s+(?=\d)/g, "-")
+      .replace(/D\s*\.?\s*valor\s*:/gi, "D. valor:")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   function extractMoneyTokens(line) {
-    return [...String(line || "").matchAll(/[\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2}€/g)];
+    return [...String(line || "").matchAll(/[\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2}(?:\s*€)?/g)];
   }
 
   const lines = String(text || "")
     .replace(/\t+/g, "\n")
     .split(/\r?\n/)
-    .map(l => String(l || "").replace(/\s+/g, " ").trim())
+    .map(normaliseSantanderLine)
     .filter(Boolean);
 
   let i = 0;
