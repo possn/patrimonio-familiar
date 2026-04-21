@@ -8123,73 +8123,95 @@ async function importBankFile(file) {
   if (!file) throw new Error("Sem ficheiro.");
   const name = file.name.toLowerCase();
   let text = "";
-
-  // Tenta parsers em cascata — do mais específico para o mais genérico
   let parsed = [];
+  let bankFmt = "generic";
+  let bankLabel = name.endsWith(".pdf") ? "Santander PDF" : "Genérico";
+
+  function tryParser(label, fn) {
+    if (parsed.length) return;
+    try {
+      const res = fn();
+      if (Array.isArray(res) && res.length) {
+        parsed = res;
+        setBankImportDebug(`${label} reconheceu <b>${parsed.length}</b> movimentos.`, "ok");
+      }
+    } catch (err) {
+      console.error(`Bank parser failed [${label}]`, err);
+      setBankImportDebug(`${label} falhou: ${escapeHtml(err && err.message ? err.message : String(err))}`, "warn");
+    }
+  }
+
   setBankImportDebug(`A analisar <b>${escapeHtml(file.name)}</b>…`, "info");
 
   if (name.endsWith(".pdf")) {
     text = await extractTextFromPDF(file);
     setBankImportDebug(`PDF lido. Texto extraído: <b>${(text || "").length}</b> caracteres.`, text ? "info" : "warn");
+
+    bankFmt = detectBankFormat(text || "");
+    const bankNames0 = { cgd:"CGD", millennium:"Millennium BCP", novobanco:"Novo Banco", montepio:"Montepio", bpi:"BPI", santander:"Santander", generic:"Genérico" };
+    bankLabel = (bankFmt === "generic" && name.endsWith(".pdf")) ? "Santander PDF" : (bankNames0[bankFmt] || (name.endsWith(".pdf") ? "Santander PDF" : "Genérico"));
+
+    if (!parsed.length && (/movimentos da sua conta/i.test(text) || /saldo dispon[ií]vel/i.test(text) || bankFmt === "santander")) {
+      tryParser("Parser Santander por texto", () => parseSantanderStructured(text || ""));
+    }
     if (!parsed.length) {
-      parsed = await parseSantanderPDFFromFile(file);
-      if (parsed.length) setBankImportDebug(`Parser PDF dedicado reconheceu <b>${parsed.length}</b> movimentos.`, "ok");
+      try {
+        const rawParsed = await parseSantanderPDFFromFile(file);
+        if (Array.isArray(rawParsed) && rawParsed.length) {
+          parsed = rawParsed;
+          setBankImportDebug(`Parser PDF dedicado reconheceu <b>${parsed.length}</b> movimentos.`, "ok");
+        }
+      } catch (err) {
+        console.error("Dedicated Santander PDF parser failed", err);
+      }
     }
   } else if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-    parsed = await parseXLSXBankRows(file);
-    if (!parsed.length) { text = await extractTextFromXLSX(file); }
+    try {
+      parsed = await parseXLSXBankRows(file);
+      if (parsed.length) setBankImportDebug(`Parser Excel reconheceu <b>${parsed.length}</b> movimentos.`, "ok");
+    } catch (err) {
+      console.error("Bank XLSX parser failed", err);
+    }
+    if (!parsed.length) text = await extractTextFromXLSX(file);
+    bankFmt = detectBankFormat(text || "");
   } else {
     text = await fileToText(file);
+    bankFmt = detectBankFormat(text || "");
   }
 
-  // v15: detectar banco automaticamente pelo conteúdo
-  const bankFmt = detectBankFormat(text || "");
-  const bankNames = { cgd:"CGD", millennium:"Millennium BCP", novobanco:"Novo Banco",
-    montepio:"Montepio", bpi:"BPI", santander:"Santander", generic:"Genérico" };
-  const bankLabel = (bankFmt === "generic" && name.endsWith(".pdf")) ? "Santander PDF" : (bankNames[bankFmt] || (name.endsWith(".pdf") ? "Santander PDF" : "Genérico"));
+  const bankNames = { cgd:"CGD", millennium:"Millennium BCP", novobanco:"Novo Banco", montepio:"Montepio", bpi:"BPI", santander:"Santander", generic:"Genérico" };
+  bankLabel = (bankFmt === "generic" && name.endsWith(".pdf")) ? "Santander PDF" : (bankNames[bankFmt] || (name.endsWith(".pdf") ? "Santander PDF" : "Genérico"));
   setBankImportDebug(`Banco detectado: <b>${bankLabel}</b>${parsed.length ? ` · movimentos reconhecidos: <b>${parsed.length}</b>` : ""}`, parsed.length ? "ok" : "info");
 
-  // Parsers específicos por banco detectado
-  if (!parsed.length && bankFmt === "millennium")  parsed = parseMillenniumCSV(text);
-  if (!parsed.length && bankFmt === "cgd")         parsed = parseCGDCSV(text);
-  if (!parsed.length && bankFmt === "novobanco")   parsed = parseNovoBancoCSV(text);
-  if (!parsed.length && (bankFmt === "montepio" || bankFmt === "bpi")) parsed = parseMontepioBPI(text);
-  // Parsers universais em cascata
-  if (!parsed.length) parsed = parseSantanderTabular(text || "");
-  if (!parsed.length) parsed = parseSantanderPDF(text || "");
-  if (!parsed.length) parsed = parseMillenniumCSV(text || "");
-  if (!parsed.length) parsed = parseCGDCSV(text || "");
-  if (!parsed.length) parsed = parseNovoBancoCSV(text || "");
-  if (!parsed.length) parsed = parseMontepioBPI(text || "");
-  if (!parsed.length) parsed = parseBankCsvLikeText(text || "");
-  if (!parsed.length) parsed = parseBankCsvGeneric(text || "");
+  if (!parsed.length && bankFmt === "millennium") tryParser("Parser Millennium", () => parseMillenniumCSV(text || ""));
+  if (!parsed.length && bankFmt === "cgd") tryParser("Parser CGD", () => parseCGDCSV(text || ""));
+  if (!parsed.length && bankFmt === "novobanco") tryParser("Parser Novo Banco", () => parseNovoBancoCSV(text || ""));
+  if (!parsed.length && (bankFmt === "montepio" || bankFmt === "bpi")) tryParser("Parser Montepio/BPI", () => parseMontepioBPI(text || ""));
 
-  if (parsed.length) setBankImportDebug(`Banco detectado: <b>${bankLabel}</b> · movimentos reconhecidos: <b>${parsed.length}</b>`, "ok");
+  if (!parsed.length) tryParser("Parser Santander tabular", () => parseSantanderTabular(text || ""));
+  if (!parsed.length) tryParser("Parser Santander PDF", () => parseSantanderPDF(text || ""));
+  if (!parsed.length) tryParser("Parser Millennium", () => parseMillenniumCSV(text || ""));
+  if (!parsed.length) tryParser("Parser CGD", () => parseCGDCSV(text || ""));
+  if (!parsed.length) tryParser("Parser Novo Banco", () => parseNovoBancoCSV(text || ""));
+  if (!parsed.length) tryParser("Parser Montepio/BPI", () => parseMontepioBPI(text || ""));
+  if (!parsed.length) tryParser("Parser CSV-like", () => parseBankCsvLikeText(text || ""));
+  if (!parsed.length) tryParser("Parser genérico", () => parseBankCsvGeneric(text || ""));
 
-  if (!parsed.length && !text.trim()) {
+  if (!parsed.length && !String(text || "").trim()) {
     showBankResult("error", "Não foi possível extrair texto do ficheiro.");
     return { added: 0, dup: 0, read: 0 };
   }
-
   if (!parsed.length) {
-    const firstLines = (text||"").split("\n").slice(0, 3).join(" | ").slice(0, 300);
-    showBankResult("warn", `0 movimentos reconhecidos.<br><small>Banco detectado: <b>${typeof bankLabel !== "undefined" ? bankLabel : "Genérico"}</b><br>Primeiras linhas: ${escapeHtml(firstLines)}</small>`);
+    const firstLines = (text || "").split("\n").slice(0, 4).join(" | ").slice(0, 400);
+    showBankResult("warn", `0 movimentos reconhecidos.<br><small>Banco detectado: <b>${bankLabel}</b><br>Primeiras linhas: ${escapeHtml(firstLines)}</small>`);
     return { added: 0, dup: 0, read: 0 };
   }
 
-  // Deduplica
-  // Deduplicação: chave = data|tipo|montante|descrição_original
-  // A descrição original fica em notes; category pode ter mudado com auto-categorização
-  // Dedup key: date + type + amount + description + optional running balance.
-  // The running balance makes repeated legitimate same-day operations survive.
   function dedupKey(date, type, amount, desc, balance = null) {
     const shortDesc = normStr(desc || "").slice(0, 40);
-    const bal = Number.isFinite(parseNum(balance)) && parseNum(balance) > 0
-      ? Math.round(parseNum(balance) * 100)
-      : "na";
+    const bal = Number.isFinite(parseNum(balance)) && parseNum(balance) > 0 ? Math.round(parseNum(balance) * 100) : "na";
     return `${String(date||"").slice(0,10)}|${type}|${Math.round(Math.abs(amount)*100)}|${shortDesc}|${bal}`;
   }
-
   function legacyDedupKey(date, type, amount, desc) {
     const shortDesc = normStr(desc || "").slice(0, 30);
     return `${String(date||"").slice(0,10)}|${type}|${Math.round(Math.abs(amount)*100)}|${shortDesc}`;
@@ -8197,96 +8219,93 @@ async function importBankFile(file) {
 
   const existingExact = new Set();
   const existingLegacy = new Set();
-  for (const tx of state.transactions) {
+  for (const tx of (state.transactions || [])) {
     const origDesc = tx.notes || tx.category || "";
     existingExact.add(dedupKey(tx.date, tx.type, parseNum(tx.amount), origDesc, tx.bankBalance));
     existingLegacy.add(legacyDedupKey(tx.date, tx.type, parseNum(tx.amount), origDesc));
   }
-  const importExact = new Set();
 
-  let added = 0, dup = 0;
-  let totalIn = 0, totalOut = 0;
+  const importExact = new Set();
   const newTx = [];
+  let added = 0, dup = 0, totalIn = 0, totalOut = 0;
 
   for (const r of parsed) {
-    const dir = r.amount >= 0 ? "in" : "out";
-    const amount = Math.abs(r.amount);
+    const signed = parseNum(r.amount);
+    const dir = signed >= 0 ? "in" : "out";
+    const amount = Math.abs(signed);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
     const exactKey = dedupKey(r.date, dir, amount, r.desc, r.balance);
     const legacyKey = legacyDedupKey(r.date, dir, amount, r.desc);
     if (existingExact.has(exactKey) || existingLegacy.has(legacyKey) || importExact.has(exactKey)) { dup++; continue; }
     importExact.add(exactKey);
-    const category = autoCategorise(r.desc, dir);
+
     const tx = {
       id: uid(),
       type: dir,
-      category,
+      category: autoCategorise(r.desc, dir),
       amount,
-      date: r.date,
+      date: normalizeDate(r.date) || r.date,
       recurring: "none",
       notes: r.desc || "",
-      bankValueDate: r.valueDate || r.date,
+      bankValueDate: normalizeDate(r.valueDate || r.date) || r.valueDate || r.date,
       bankBalance: Number.isFinite(parseNum(r.balance)) ? parseNum(r.balance) : null
     };
+    if (!Array.isArray(state.transactions)) state.transactions = [];
     state.transactions.push(tx);
     newTx.push(tx);
-    if (dir === "in") totalIn += amount;
-    else totalOut += amount;
+    if (dir === "in") totalIn += amount; else totalOut += amount;
     added++;
   }
 
-  saveState();
-  renderCashflow();
-  setBankImportDebug(`Importação concluída: <b>${added}</b> novos · <b>${dup}</b> duplicados · <b>${parsed.length}</b> lidos.`, added ? "ok" : "warn");
+  let saveErr = null, renderErr = null;
+  try { saveState(); } catch (err) { saveErr = err; console.error("saveState failed after bank import", err); }
 
-  // Resumo detalhado
-  if (added > 0) {
-    // Group by category
-    const byCat = {};
-    for (const tx of newTx) {
-      if (!byCat[tx.category]) byCat[tx.category] = { in: 0, out: 0, n: 0 };
-      byCat[tx.category][tx.type] += tx.amount;
-      byCat[tx.category].n++;
+  try {
+    if (newTx.length) {
+      const latest = newTx.slice().sort((a,b) => String(b.date).localeCompare(String(a.date)))[0];
+      if (latest && $("cfYear") && $("cfMonth")) {
+        $("cfYear").value = String(latest.date || "").slice(0, 4);
+        $("cfMonth").value = String(parseInt(String(latest.date || "").slice(5, 7), 10) || 1);
+      }
     }
-    const catRows = Object.entries(byCat)
-      .sort((a,b) => (b[1].out + b[1].in) - (a[1].out + a[1].in))
-      .slice(0, 8)
-      .map(([cat, v]) => {
-        const net = v.in - v.out;
-        const color = net >= 0 ? "#059669" : "#dc2626";
-        return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(0,0,0,.06)">
-          <span>${escapeHtml(cat)} <span style="color:#94a3b8;font-size:11px">(${v.n})</span></span>
-          <span style="color:${color};font-weight:900">${net >= 0 ? "+" : ""}${fmtEUR2(net)}</span>
-        </div>`;
-      }).join("");
+    renderAll({ force: true });
+    renderCashflow();
+  } catch (err) {
+    renderErr = err;
+    console.error("render after bank import failed", err);
+  }
 
-    showBankResult("ok", `
-      <div style="margin-bottom:10px">
-        ✅ <b>${added}</b> movimento${added!==1?"s":""} importado${added!==1?"s":""}
-        ${dup > 0 ? ` · <span style="color:#92400e">${dup} duplicado${dup!==1?"s":""} ignorado${dup!==1?"s":""}</span>` : ""}
-      </div>
+  setBankImportDebug(`Importação concluída: <b>${added}</b> novos · <b>${dup}</b> duplicados · <b>${parsed.length}</b> lidos.${saveErr ? ` <br><small>⚠️ Guardar: ${escapeHtml(saveErr.message || String(saveErr))}</small>` : ""}${renderErr ? ` <br><small>⚠️ Render: ${escapeHtml(renderErr.message || String(renderErr))}</small>` : ""}`, added ? "ok" : "warn");
+
+  const byCat = {};
+  for (const tx of newTx) {
+    if (!byCat[tx.category]) byCat[tx.category] = { in: 0, out: 0, n: 0 };
+    byCat[tx.category][tx.type] += tx.amount;
+    byCat[tx.category].n++;
+  }
+  const catRows = Object.entries(byCat)
+    .sort((a,b) => (b[1].out + b[1].in) - (a[1].out + a[1].in))
+    .slice(0, 8)
+    .map(([cat, v]) => {
+      const net = v.in - v.out;
+      const color = net >= 0 ? "#059669" : "#dc2626";
+      return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(0,0,0,.06)"><span>${escapeHtml(cat)} <span style="color:#94a3b8;font-size:11px">(${v.n})</span></span><span style="color:${color};font-weight:900">${net >= 0 ? "+" : ""}${fmtEUR2(net)}</span></div>`;
+    }).join("");
+
+  if (added > 0 || dup > 0) {
+    showBankResult(added > 0 ? "ok" : "info", `
+      <div style="margin-bottom:10px">${added > 0 ? `✅ <b>${added}</b> movimento${added!==1?"s":""} importado${added!==1?"s":""}` : `ℹ️ 0 novos`}${dup > 0 ? ` · <span style="color:#92400e">${dup} duplicado${dup!==1?"s":""} ignorado${dup!==1?"s":""}</span>` : ""}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
-        <div style="background:#f0fdf4;border-radius:10px;padding:8px;text-align:center">
-          <div style="font-size:11px;color:#667085">Entradas</div>
-          <div style="font-weight:900;color:#059669">${fmtEUR2(totalIn)}</div>
-        </div>
-        <div style="background:#fef2f2;border-radius:10px;padding:8px;text-align:center">
-          <div style="font-size:11px;color:#667085">Saídas</div>
-          <div style="font-weight:900;color:#dc2626">${fmtEUR2(totalOut)}</div>
-        </div>
-        <div style="background:#f5f3ff;border-radius:10px;padding:8px;text-align:center">
-          <div style="font-size:11px;color:#667085">Saldo</div>
-          <div style="font-weight:900;color:${totalIn-totalOut>=0?"#059669":"#dc2626"}">${fmtEUR2(totalIn-totalOut)}</div>
-        </div>
+        <div style="background:#f0fdf4;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Entradas</div><div style="font-weight:900;color:#059669">${fmtEUR2(totalIn)}</div></div>
+        <div style="background:#fef2f2;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Saídas</div><div style="font-weight:900;color:#dc2626">${fmtEUR2(totalOut)}</div></div>
+        <div style="background:#f5f3ff;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Saldo</div><div style="font-weight:900;color:${totalIn-totalOut>=0?"#059669":"#dc2626"}">${fmtEUR2(totalIn-totalOut)}</div></div>
       </div>
-      <div style="font-size:12px;font-weight:700;color:#667085;margin-bottom:4px">Por categoria:</div>
-      ${catRows}
+      ${catRows ? `<div style="font-size:12px;font-weight:700;color:#667085;margin-bottom:4px">Por categoria:</div>${catRows}` : `<div style="font-size:12px;color:#64748b">Todos os movimentos já existiam.</div>`}
     `);
-  } else {
-    showBankResult("info", `ℹ️ 0 novos · ${dup} já existiam · ${parsed.length} lidos`);
   }
 
   toast(`${added} movimentos importados · Entradas ${fmtEUR2(totalIn)} · Saídas ${fmtEUR2(totalOut)}`);
-  return { added, dup, read: parsed.length };
+  return { added, dup, read: parsed.length, saveErr, renderErr };
 }
 
 function showBankResult(type, html) {
@@ -9620,7 +9639,11 @@ function wire() {
         const f = bankCsvSelectedFile || (input.files && input.files[0]) || null;
         if (!f) { toast("Escolhe primeiro o ficheiro CSV do banco."); return; }
         await importBankMovementsCsv(f);
-      } catch (err) { toast("Falhou a importação do CSV."); console.error(err); }
+      } catch (err) {
+        showBankResult("error", `Erro na importação: ${escapeHtml(err && err.message ? err.message : String(err))}`);
+        toast("Falhou a importação do ficheiro do banco.");
+        console.error(err);
+      }
     });
   })();
 
