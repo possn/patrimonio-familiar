@@ -8171,18 +8171,29 @@ async function importBankFile(file) {
   // Deduplica
   // Deduplicação: chave = data|tipo|montante|descrição_original
   // A descrição original fica em notes; category pode ter mudado com auto-categorização
-  // Dedup key: date + type + amount + first 30 normalised chars of description
-  // Using truncated desc (not full) makes dedup robust across PDF/XLS/CSV variations
-  // while still distinguishing legitimate same-day same-amount transactions (e.g. 2x PPR)
-  function dedupKey(date, type, amount, desc) {
+  // Dedup key: date + type + amount + description + optional running balance.
+  // The running balance makes repeated legitimate same-day operations survive.
+  function dedupKey(date, type, amount, desc, balance = null) {
+    const shortDesc = normStr(desc || "").slice(0, 40);
+    const bal = Number.isFinite(parseNum(balance)) && parseNum(balance) > 0
+      ? Math.round(parseNum(balance) * 100)
+      : "na";
+    return `${String(date||"").slice(0,10)}|${type}|${Math.round(Math.abs(amount)*100)}|${shortDesc}|${bal}`;
+  }
+
+  function legacyDedupKey(date, type, amount, desc) {
     const shortDesc = normStr(desc || "").slice(0, 30);
     return `${String(date||"").slice(0,10)}|${type}|${Math.round(Math.abs(amount)*100)}|${shortDesc}`;
   }
 
-  const existing = new Set(state.transactions.map(tx => {
+  const existingExact = new Set();
+  const existingLegacy = new Set();
+  for (const tx of state.transactions) {
     const origDesc = tx.notes || tx.category || "";
-    return dedupKey(tx.date, tx.type, parseNum(tx.amount), origDesc);
-  }));
+    existingExact.add(dedupKey(tx.date, tx.type, parseNum(tx.amount), origDesc, tx.bankBalance));
+    existingLegacy.add(legacyDedupKey(tx.date, tx.type, parseNum(tx.amount), origDesc));
+  }
+  const importExact = new Set();
 
   let added = 0, dup = 0;
   let totalIn = 0, totalOut = 0;
@@ -8191,12 +8202,22 @@ async function importBankFile(file) {
   for (const r of parsed) {
     const dir = r.amount >= 0 ? "in" : "out";
     const amount = Math.abs(r.amount);
-    const key = dedupKey(r.date, dir, amount, r.desc);
-    if (existing.has(key)) { dup++; continue; }
-    existing.add(key);
+    const exactKey = dedupKey(r.date, dir, amount, r.desc, r.balance);
+    const legacyKey = legacyDedupKey(r.date, dir, amount, r.desc);
+    if (existingExact.has(exactKey) || existingLegacy.has(legacyKey) || importExact.has(exactKey)) { dup++; continue; }
+    importExact.add(exactKey);
     const category = autoCategorise(r.desc, dir);
-    // Guardar descrição original em notes para deduplicação futura
-    const tx = { id: uid(), type: dir, category, amount, date: r.date, recurring: "none", notes: r.desc || "" };
+    const tx = {
+      id: uid(),
+      type: dir,
+      category,
+      amount,
+      date: r.date,
+      recurring: "none",
+      notes: r.desc || "",
+      bankValueDate: r.valueDate || r.date,
+      bankBalance: Number.isFinite(parseNum(r.balance)) ? parseNum(r.balance) : null
+    };
     state.transactions.push(tx);
     newTx.push(tx);
     if (dir === "in") totalIn += amount;
@@ -8438,134 +8459,150 @@ async function extractPDFRaw(file) {
   }
 }
 
-// Parser Santander Portugal — estado de máquina sobre sequência de tokens
-// Encoding do PDF: "!" = €, '"' (char34) = sinal negativo
-// Sequência: data → "D. valor:..." → descrição → ['"'] → valor → "!" → saldo → "!"
-function parseSantanderPDF(text) {
+function parseSantanderStructured(text) {
   const out = [];
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-
   const monthMap = {
     jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
     jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
   };
 
-  function parsePTDate(s) {
-    const m = String(s||"").match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
+  function parsePTDateExact(s) {
+    const m = String(s || "").trim().match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
     if (!m) return null;
-    const mon = monthMap[m[2].toLowerCase().slice(0,3)];
+    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
     if (!mon) return null;
-    return `${m[3]}-${String(mon).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`;
+    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
   }
+
+  function parseValueDate(s) {
+    const m = String(s || "").match(/D[\.\s]?\s*valor\s*:\s*(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})/i);
+    if (!m) return null;
+    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
+    if (!mon) return null;
+    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+  }
+
+  function isNoiseLine(line) {
+    return /^(titular\b|conta\s+pt|saldo disponível|movimentos da sua conta|data da operação\b|documento com data:|página\s+\d+\s+de\s+\d+|para pesquisas genéricas)/i.test(line);
+  }
+
+  function extractMoneyTokens(line) {
+    return [...String(line || "").matchAll(/[\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2}€/g)];
+  }
+
+  const lines = String(text || "")
+    .replace(/\t+/g, "\n")
+    .split(/\r?\n/)
+    .map(l => String(l || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
 
   let i = 0;
+  let currentDate = null;
+  let currentValueDate = null;
+
   while (i < lines.length) {
-    const iso = parsePTDate(lines[i]);
-    if (!iso) { i++; continue; }
+    const line = lines[i];
+    if (isNoiseLine(line)) { i++; continue; }
 
-    // Avança sobre linhas "D. valor: ..."
-    let j = i + 1;
-    while (j < lines.length && /^D[\.\s]?\s*valor/i.test(lines[j])) j++;
-    if (j >= lines.length) { i++; continue; }
-
-    const txLine = lines[j];
-
-    // Ignorar cabeçalhos
-    if (parsePTDate(txLine) ||
-        /titular|conta pt|saldo disponível|movimentos da|página|pesquisas|data da opera/i.test(txLine)) {
-      i = j; continue;
+    const maybeDate = parsePTDateExact(line);
+    if (maybeDate) {
+      currentDate = maybeDate;
+      i++;
+      continue;
     }
 
-    // Encontrar valores monetários — o sinal pode estar separado do valor
-    // Ex: "Descrição\t−\t20,00€\t3.009,88€" ou "Descrição\t−20,00€\t3.024,88€"
-    // Normalizar: juntar sinal solto ao valor
-    const normLine = txLine.replace(/[\u2212\-]\s*(\d)/g, "-$1");
+    const maybeValueDate = parseValueDate(line);
+    if (maybeValueDate) {
+      currentValueDate = maybeValueDate;
+      i++;
+      continue;
+    }
 
-    const moneyRe = /([\-]?\d{1,3}(?:\.\d{3})*,\d{2})€/g;
-    const moneyMatches = [...normLine.matchAll(moneyRe)];
+    if (!currentDate) { i++; continue; }
 
-    if (moneyMatches.length >= 1) {
-      const rawAmt = moneyMatches[0][1].replace(/\./g,"").replace(/,/g,".");
-      const amount = Number(rawAmt);
-      if (Number.isFinite(amount)) {
-        // Descrição: tudo antes do primeiro valor, sem sinais soltos no fim
-        const amtIdx = normLine.indexOf(moneyMatches[0][0]);
-        const desc = normLine.slice(0, amtIdx)
-          .replace(/\t/g," ").replace(/[\u2212\-]\s*$/,"").replace(/\s+/g," ").trim() || "Movimento";
-        if (!/^D[\.\s]?\s*valor/i.test(desc)) {
-          out.push({ date: iso, desc, amount });
-        }
+    let descParts = [];
+    let localValueDate = currentValueDate || currentDate;
+    let pendingNegative = false;
+    let parsed = false;
+
+    while (i < lines.length) {
+      const inner = lines[i];
+      if (isNoiseLine(inner)) { i++; continue; }
+
+      const nextDate = parsePTDateExact(inner);
+      if (nextDate) break;
+
+      const nextValueDate = parseValueDate(inner);
+      if (nextValueDate) {
+        localValueDate = nextValueDate;
+        i++;
+        continue;
       }
+
+      if (/^[\u2212−-]$/.test(inner)) {
+        pendingNegative = true;
+        i++;
+        continue;
+      }
+
+      const moneyTokens = extractMoneyTokens(inner);
+      if (moneyTokens.length) {
+        const prefix = inner.slice(0, moneyTokens[0].index).trim();
+        if (prefix) descParts.push(prefix);
+
+        let amount = parseEuroNum(moneyTokens[0][0]);
+        if (pendingNegative && Number.isFinite(amount) && amount > 0) amount = -amount;
+        let balance = moneyTokens.length > 1 ? parseEuroNum(moneyTokens[1][0]) : null;
+
+        if (balance === null) {
+          let k = i + 1;
+          while (k < lines.length && !lines[k].trim()) k++;
+          if (k < lines.length) {
+            const maybeBalLine = lines[k];
+            if (!isNoiseLine(maybeBalLine) && !parsePTDateExact(maybeBalLine) && !parseValueDate(maybeBalLine)) {
+              const balTokens = extractMoneyTokens(maybeBalLine);
+              if (balTokens.length === 1 && maybeBalLine.replace(balTokens[0][0], "").trim() === "") {
+                balance = parseEuroNum(balTokens[0][0]);
+                i = k;
+              }
+            }
+          }
+        }
+
+        const desc = descParts.join(" ").replace(/\s+/g, " ").trim();
+        if (desc && Number.isFinite(amount)) {
+          out.push({
+            date: currentDate,
+            valueDate: localValueDate || currentDate,
+            desc,
+            amount,
+            balance
+          });
+          parsed = true;
+        }
+        i++;
+        break;
+      }
+
+      descParts.push(inner);
+      i++;
     }
-    i = j + 1;
+
+    if (!parsed) {
+      if (i < lines.length && parsePTDateExact(lines[i])) continue;
+      i++;
+    }
   }
+
   return out;
 }
 
+function parseSantanderPDF(text) {
+  return parseSantanderStructured(text);
+}
 
-// Santander variant: text comes out as consecutive items on same line with tabs
-// e.g. "13 abr 2026\tD. valor: 13 abr 2026\tTrf.imed. De Filipe...\t15,00€\t3.024,88€"
 function parseSantanderTabular(text) {
-  const out = [];
-  const lines = text.split(/\r?\n/).filter(l => l.trim());
-
-  const monthMap = {
-    jan:1, fev:2, feb:2, mar:3, abr:4, apr:4, mai:5, may:5,
-    jun:6, jul:7, ago:8, aug:8, set:9, sep:9, out:10, oct:10, nov:11, dez:12, dec:12
-  };
-
-  function parsePTDate2(s) {
-    const m = String(s||"").trim().match(/(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})/);
-    if (!m) return null;
-    const mon = monthMap[m[2].toLowerCase().slice(0,3)];
-    if (!mon) return null;
-    return `${m[3]}-${String(mon).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`;
-  }
-
-  for (const line of lines) {
-    // Skip header/footer lines
-    if (/titular|conta|saldo|movimentos|página|pesquisas|defeito|documento/i.test(line) &&
-        !/\d{1,3}(?:\.\d{3})*,\d{2}€/.test(line)) continue;
-    if (/^D[\.\s]?\s*valor/i.test(line)) continue;
-    if (/data da opera|opera.+valor.+saldo/i.test(line)) continue;
-
-    const cols = line.split(/\t/).map(c => c.trim()).filter(Boolean);
-    if (cols.length < 2) continue;
-
-    // Find date in first columns
-    let iso = null, descStart = 0;
-    for (let i = 0; i < Math.min(3, cols.length); i++) {
-      iso = parsePTDate2(cols[i]);
-      if (iso) { descStart = i + 1; break; }
-    }
-    if (!iso) continue;
-
-    // Find money values — sign may be a separate tab-column before the number
-    // e.g. ["Descrição", "−", "20,00€", "3.009,88€"]
-    const moneyRe = /^[\u2212\-]?\d{1,3}(?:\.\d{3})*,\d{2}€?$/;
-    const moneyIdxs = cols.map((c, i) => moneyRe.test(c.replace(/\s/g,"")) ? i : -1).filter(i => i >= 0);
-
-    // Also detect a lone sign column immediately before a money column
-    const signIdxs = cols.map((c, i) => /^[\u2212\-]$/.test(c.trim()) ? i : -1).filter(i => i >= 0);
-
-    if (!moneyIdxs.length) continue;
-    const amtIdx = moneyIdxs[0];
-
-    // Check if there's a lone sign column just before the amount
-    const signBefore = signIdxs.find(si => si === amtIdx - 1);
-    const rawAmt = cols[amtIdx].replace(/\u2212/g,"-").replace(/€/g,"").replace(/\./g,"").replace(/,/g,".");
-    let amount = Number(rawAmt);
-    if (!Number.isFinite(amount)) continue;
-    if (signBefore !== undefined) amount = -Math.abs(amount);
-
-    // Description: cols between date end and sign/amount
-    const descEnd = signBefore !== undefined ? signBefore : amtIdx;
-    const desc = cols.slice(descStart, descEnd).join(" ").trim() || "Movimento";
-    if (/^D[\.\s]?\s*valor/i.test(desc)) continue;
-
-    out.push({ date: iso, desc, amount });
-  }
-  return out;
+  return parseSantanderStructured(text);
 }
 
 async function extractTextFromXLSX(file) {
