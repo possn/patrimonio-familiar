@@ -374,7 +374,7 @@ const DEFAULT_STATE = {
    448 ISINs covering all exchanges in the T212/XTB universe.
 ──────────────────────────────────────────────────────────────────────────── */
 const ISIN_YAHOO_MAP = {
-  "AN8068571086":"SLB","AT0000743059":"OMV.VI","AT0000A3EPA4":"AMS.VI",
+  "AN8068571086":"SLB","AT0000743059":"OMV.VI","AT0000A3EPA4":"AMS2.VI",
   "AU000000MOB7":"MOB.AX","AU0000185993":"IREN.AX",
   "BMG1466R1732":"BORR","BMG3398L1182":"FIHL","BMG396372051":"GOGL","BMG9001E1286":"LILAK",
   "CA0636711016":"BMO","CA0641491075":"BNS","CA11271J1075":"BN","CA1363851017":"CNQ",
@@ -404,16 +404,16 @@ const ISIN_YAHOO_MAP = {
   "GB00B63H8491":"RR.L","GB00BGDT3G23":"RMV.L","GB00BJFFLV09":"CRDA.L",
   "GB00BL6K5J42":"EDV.L","GB00BMXWN182":"JMGI.L","GB00BN7SWP63":"GSK.L",
   "GB00BVZK7T90":"UNA.L",
-  "IE0002PG6CA6":"VVMX.IR","IE00045C7B38":"HTOO.IR","IE00063FT9K6":"CEBS.IR",
+  "IE0002PG6CA6":"VVMX.IR","IE00045C7B38":"HTOO","IE00063FT9K6":"CEBS.IR",
   "IE000OJ5TQP4":"NATP.IR","IE000W8WMSL2":"QWTM.IR","IE00B3WJKG14":"QDVE.IR",
   "IE00B53SZB19":"SXRV.IR","IE00BFXR7892":"KWEB.IR","IE00BGV5VN51":"XAIX.IR",
   "IE00BKVD2N49":"STX.IR","IE00BLCHJ534":"PAVE.IR","IE00BLH3CV30":"UFOP.IR",
-  "IE00BLS09M33":"PNR.IR","IE00BQT3WG13":"CNYA.DE","IE00BTN1Y115":"MDT.IR",
-  "IE00BY7QL619":"JCI.IR",
-  "IT0003128367":"ENL.MI",
+  "IE00BLS09M33":"PNR","IE00BQT3WG13":"CNYA.DE","IE00BTN1Y115":"MDT",
+  "IE00BY7QL619":"JCI",
+  "IT0003128367":"ENEL.MI",
   "LU1598757687":"MT.LU",
-  "NL0000235190":"AIR.AS","NL0009434992":"LYB.AS","NL0009805522":"NBIS.AS",
-  "NL0010583399":"CRBN.AS","NL0013267909":"AKZA.AS","NL00150001Q9":"STLA.AS",
+  "NL0000235190":"AIR.AS","NL0009434992":"LYB","NL0009805522":"NBIS",
+  "NL0010583399":"CRBN.AS","NL0013267909":"AKZA.AS","NL00150001Q9":"STLA",
   "NL0015002MS2":"MICC.AS","NL0015073TS8":"CSG.AS",
   "PTBCP0AM0015":"BCP.LS","PTCOR0AE0006":"COR.LS","PTEDP0AM0009":"EDP.LS",
   "PTFRV0AE0004":"RAM.LS","PTGAL0AM0009":"GALP.LS","PTJMT0AE0001":"JMT.LS",
@@ -846,7 +846,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 5;
+const BROKER_REBUILD_SCHEMA_VERSION = 6;
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -6308,6 +6308,61 @@ function normalizeSecurityNameKey(v) {
     .trim();
 }
 
+
+const KNOWN_BROKER_YAHOO_OVERRIDES = {
+  "AT0000A3EPA4|AMS": "AMS2.VI",
+  "AU0000185993|IREN": "IREN",
+  "BRVALEACNOR0|XVALO": "XVALO.MC",
+  "CH0334081137|CRSP": "CRSP",
+  "GB0007188757|RIO1": "RIO.L",
+  "GB00BVZK7T90|UNA": "UNA.AS",
+  "IE00045C7B38|HTOO": "HTOO",
+  "IE00BLS09M33|PNR": "PNR",
+  "IE00BTN1Y115|MDT": "MDT",
+  "IE00BY7QL619|JCI": "JCI",
+  "IT0003128367|ENL": "ENEL.MI",
+  "NL0009434992|LYB": "LYB",
+  "NL0009805522|NBIS": "NBIS",
+  "NL00150001Q9|STLA": "STLA",
+  "AT0000A3EPA4|AMS-OSRAM": "AMS2.VI",
+  "|MPW.US": "MPW",
+  "|NZYMB.DK": "NSIS-B.CO",
+  "|STM.FR": "STMPA.PA",
+  "|RIO1": "RIO.L",
+  "|UNA": "UNA.AS",
+  "|ENL": "ENEL.MI",
+  "|XVALO": "XVALO.MC"
+};
+
+function getKnownBrokerYahooOverride({ isin = "", ticker = "", name = "", currency = "", priceCurrency = "" } = {}) {
+  const i = String(isin || "").trim().toUpperCase();
+  const t = String(ticker || "").trim().toUpperCase();
+  const n = normalizeSecurityNameKey(name || "");
+  const ccy = String(priceCurrency || currency || "").trim().toUpperCase();
+  const pair = `${i}|${t}`;
+  if (KNOWN_BROKER_YAHOO_OVERRIDES[pair]) return KNOWN_BROKER_YAHOO_OVERRIDES[pair];
+  if (KNOWN_BROKER_YAHOO_OVERRIDES[`|${t}`]) return KNOWN_BROKER_YAHOO_OVERRIDES[`|${t}`];
+
+  if (t === "STM.FR" || /\bSTMICROELECTRONICS\b/.test(n)) return "STMPA.PA";
+  if (t === "NZYMB.DK" || /\bNOVOZYMES\b/.test(n)) return "NSIS-B.CO";
+  if ((t === "AMS" || /\bAMS[ -]OSRAM\b/.test(n)) && (ccy === "CHF" || i === "AT0000A3EPA4")) return "AMS2.VI";
+  if ((t === "XVALO" || /\bVALE\b/.test(n)) && i === "BRVALEACNOR0") return "XVALO.MC";
+  if ((t === "UNA" || /\bUNILEVER\b/.test(n)) && i === "GB00BVZK7T90") return "UNA.AS";
+  if ((t === "RIO1" || /\bRIO TINTO\b/.test(n)) && i === "GB0007188757") return "RIO.L";
+  if ((t === "NBIS" || /\bNEBIUS\b/.test(n)) && i === "NL0009805522") return "NBIS";
+  if ((t === "STLA" || /\bSTELLANTIS\b/.test(n)) && i === "NL00150001Q9") return "STLA";
+  if ((t === "PNR" || /\bPENTAIR\b/.test(n)) && i === "IE00BLS09M33") return "PNR";
+  if ((t === "LYB" || /\bLYONDELLBASELL\b/.test(n)) && i === "NL0009434992") return "LYB";
+  if ((t === "JCI" || /\bJOHNSON CONTROLS\b/.test(n)) && i === "IE00BY7QL619") return "JCI";
+  if ((t === "MDT" || /\bMEDTRONIC\b/.test(n)) && i === "IE00BTN1Y115") return "MDT";
+  if ((t === "CRSP" || /\bCRISPR THERAPEUTICS\b/.test(n)) && i === "CH0334081137") return "CRSP";
+  if ((t === "IREN" || n === "IREN") && i === "AU0000185993") return "IREN";
+  if ((t === "ENL" || /\bENEL\b/.test(n)) && i === "IT0003128367") return "ENEL.MI";
+  if ((t === "HTOO" || /\bFUSION FUEL GREEN\b/.test(n)) && i === "IE00045C7B38") return "HTOO";
+  if (t === "MPW.US" || (t === "MPW" && ccy === "USD")) return "MPW";
+  return "";
+}
+
 function canonicalBrokerTickerBase(v) {
   let t = String(v || "").trim().toUpperCase();
   if (!t) return "";
@@ -6378,6 +6433,9 @@ function inferYahooTickerFromIdentity({ isin = "", ticker = "", yahooTicker = ""
   const t = String(ticker || "").trim().toUpperCase();
   const n = normalizeSecurityNameKey(name);
   const ccy = String(priceCurrency || currency || "").trim().toUpperCase();
+
+  const knownOverride = getKnownBrokerYahooOverride({ isin: i, ticker: t, yahooTicker: direct, name, currency, priceCurrency });
+  if (knownOverride) return String(knownOverride).trim().toUpperCase();
 
   if (direct) {
     if (/^[A-Z0-9.-]+\.US$/.test(direct)) return direct.replace(/\.US$/, "");
@@ -6722,6 +6780,15 @@ function xtbTickerToYahoo(symbol) {
     // Novo Nordisk B — Copenhagen uses hyphen in Yahoo
     "NOVOB.DK":"NOVO-B.CO",
     "NOVOB":"NOVO-B.CO",
+    // STMicroelectronics Paris listing
+    "STM.FR":"STMPA.PA",
+    // Medical Properties Trust NYSE
+    "MPW.US":"MPW",
+    "MPW":"MPW",
+    // Novonesis / legacy Novozymes B code used by XTB
+    "NZYMB.DK":"NSIS-B.CO",
+    // AMS-OSRAM Vienna listing
+    "AMS":"AMS2.VI",
     // iShares NASDAQ US Biotech UCITS — listed in London, not Xetra
     "BTEC.DE":"BTEC.L"
   };
@@ -7071,6 +7138,7 @@ function rebuildBrokerGeneratedData() {
       snapshotQty: 0,
       snapshotDate: "",
       currency: currencyNorm || "EUR",
+      priceCurrency: currencyNorm || "EUR",
       sourceNames: new Set(),
       hasSnapshot: false
     };
@@ -7079,7 +7147,7 @@ function rebuildBrokerGeneratedData() {
     if (!prev.isin && isinNorm) prev.isin = isinNorm;
     if ((!prev.name || prev.name === prev.isin || prev.name === prev.ticker) && nameNorm) prev.name = String(nameNorm).trim();
     if (!prev.class && cls) prev.class = cls;
-    if (currencyNorm) prev.currency = currencyNorm;
+    if (currencyNorm) { prev.currency = currencyNorm; prev.priceCurrency = currencyNorm; }
     if (sourceName) prev.sourceNames.add(sourceName);
     posMap.set(key, prev);
     return prev;
@@ -7151,13 +7219,13 @@ function rebuildBrokerGeneratedData() {
     const e = events[i];
     const cls = brokerPositionClassFromTicker(e.ticker);
     if (e.type === "BUY") {
-      const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
+      const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.localCurrency || e.totalCurrency || "EUR" });
       pos.qty += parseNum(e.qty);
       pos.costBasis += Math.max(0, parseNum(e.totalEUR) + parseNum(e.feeEUR));
       continue;
     }
     if (e.type === "SELL") {
-      const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
+      const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.localCurrency || e.totalCurrency || "EUR" });
       const sellQty = Math.abs(parseNum(e.qty));
       const avg = pos.qty > 0 ? pos.costBasis / pos.qty : 0;
       pos.qty = Math.max(0, pos.qty - sellQty);
@@ -7182,14 +7250,14 @@ function rebuildBrokerGeneratedData() {
       if (sameGroup) {
         const openEvt = e.type === "SPLIT_OPEN" ? e : next;
         const closeEvt = e.type === "SPLIT_CLOSE" ? e : next;
-        const pos = touchPos({ ticker: e.ticker || next.ticker, isin: e.isin || next.isin, name: e.name || next.name, cls, sourceName: e.sourceName || next.sourceName, currency: e.totalCurrency || next.totalCurrency || "EUR" });
+        const pos = touchPos({ ticker: e.ticker || next.ticker, isin: e.isin || next.isin, name: e.name || next.name, cls, sourceName: e.sourceName || next.sourceName, currency: e.localCurrency || next.localCurrency || e.totalCurrency || next.totalCurrency || "EUR" });
         pos.qty = Math.max(0, pos.qty - parseNum(closeEvt.qty)) + parseNum(openEvt.qty);
         i++;
       }
       continue;
     }
     if (e.type === "STOCK_DISTRIBUTION") {
-      const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.totalCurrency || "EUR" });
+      const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.localCurrency || e.totalCurrency || "EUR" });
       pos.qty += Math.max(0, parseNum(e.qty));
       continue;
     }
@@ -7268,7 +7336,7 @@ function rebuildBrokerGeneratedData() {
     if (p.isin) noteBits.push(`ISIN=${p.isin}`);
     noteBits.push(`Qty=${fmt(finalQty, 6)}`);
     // Store the correct Yahoo ticker (ISIN-resolved) for quote fetching reference
-    const correctYahoo = inferYahooTickerFromIdentity({ isin: p.isin, ticker: p.yahooTicker || p.ticker, yahooTicker: p.yahooTicker, name: p.name }) || (p.ticker || "");
+    const correctYahoo = inferYahooTickerFromIdentity({ isin: p.isin, ticker: p.yahooTicker || p.ticker, yahooTicker: p.yahooTicker, name: p.name, currency: p.priceCurrency || p.currency || "", priceCurrency: p.priceCurrency || p.currency || "" }) || (p.ticker || "");
     if (correctYahoo && correctYahoo !== p.ticker) noteBits.push(`Yahoo=${correctYahoo}`);
     if (p.costBasis > 0) noteBits.push(`Custo=${fmtEUR2(p.costBasis)}`);
     if (p.hasSnapshot && p.marketValueEUR > 0) noteBits.push(`Valor snapshot=${fmtEUR2(p.marketValueEUR)}${p.snapshotDate ? ` @ ${p.snapshotDate}` : ""}`);
@@ -7293,7 +7361,7 @@ function rebuildBrokerGeneratedData() {
       yieldType: assetYieldType, yieldValue: assetYieldValue, compoundFreq: 12,
       notes: `Gerado por importação de corretora. ${noteBits.join(" · ")}`,
       qty: finalQty, costBasis: p.costBasis, pmOriginal: finalQty > 0 && p.costBasis > 0 ? p.costBasis / finalQty : 0, pmCcy: "EUR",
-      ticker: p.ticker || "", yahooTicker: correctYahoo || "", isin: p.isin || "", brokerMarketSnapshot: !!p.hasSnapshot, brokerSnapshotDate: p.snapshotDate || "",
+      ticker: p.ticker || "", yahooTicker: correctYahoo || "", isin: p.isin || "", priceCurrency: p.priceCurrency || p.currency || "", brokerMarketSnapshot: !!p.hasSnapshot, brokerSnapshotDate: p.snapshotDate || "",
       realizedPnL: p.realizedPnL || 0, sellTrades: p.sellTrades || [],
       generatedFromBroker: true
     });
@@ -9371,6 +9439,11 @@ async function refreshLiveQuotes() {
     "GDXJ": "G2XJ.DE",
     "NOVOB": "NOVO-B.CO",
     "NOVOB.DK": "NOVO-B.CO",
+    "STM.FR": "STMPA.PA",
+    "MPW.US": "MPW",
+    "MPW": "MPW",
+    "NZYMB.DK": "NSIS-B.CO",
+    "AMS": "AMS2.VI",
     "BTEC.DE": "BTEC.L"
   };
 
@@ -9524,15 +9597,22 @@ async function refreshLiveQuotes() {
     const raw = getRawTickerForAsset(asset);
     const isin = String(asset.isin || "").trim().toUpperCase();
     const storedYahoo = getStoredYahooTicker(asset);
+    const ccy = String(asset.priceCurrency || asset.currency || "").trim().toUpperCase();
+    const knownOverride = getKnownBrokerYahooOverride({
+      isin, ticker: raw || asset.ticker || "", name: asset.name || "", currency: ccy, priceCurrency: ccy
+    });
     const inferredYahoo = inferYahooTickerFromIdentity({
       isin,
       ticker: raw || asset.ticker || "",
       yahooTicker: storedYahoo || asset.yahooTicker || "",
       name: asset.name || "",
-      currency: asset.priceCurrency || asset.currency || ""
+      currency: ccy,
+      priceCurrency: ccy
     });
-    const directMapped = (isin && ISIN_YAHOO_MAP[isin]) || inferredYahoo || YAHOO_TICKER_OVERRIDES[raw] || "";
+    const directMapped = knownOverride || (isin && ISIN_YAHOO_MAP[isin]) || inferredYahoo || YAHOO_TICKER_OVERRIDES[raw] || "";
 
+    if (knownOverride) push(knownOverride);
+    if (asset.generatedFromBroker && raw && ccy === "USD" && /^[A-Z0-9.-]{1,10}$/.test(canonicalBrokerTickerBase(raw))) push(canonicalBrokerTickerBase(raw));
     if (inferredYahoo) push(inferredYahoo);
     if (isin && ISIN_YAHOO_MAP[isin]) push(ISIN_YAHOO_MAP[isin]);
     if (raw && YAHOO_TICKER_OVERRIDES[raw]) push(YAHOO_TICKER_OVERRIDES[raw]);
