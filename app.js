@@ -8126,9 +8126,15 @@ async function importBankFile(file) {
 
   // Tenta parsers em cascata — do mais específico para o mais genérico
   let parsed = [];
+  setBankImportDebug(`A analisar <b>${escapeHtml(file.name)}</b>…`, "info");
 
   if (name.endsWith(".pdf")) {
     text = await extractTextFromPDF(file);
+    setBankImportDebug(`PDF lido. Texto extraído: <b>${(text || "").length}</b> caracteres.`, text ? "info" : "warn");
+    if (!parsed.length) {
+      parsed = await parseSantanderPDFFromFile(file);
+      if (parsed.length) setBankImportDebug(`Parser PDF dedicado reconheceu <b>${parsed.length}</b> movimentos.`, "ok");
+    }
   } else if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
     parsed = await parseXLSXBankRows(file);
     if (!parsed.length) { text = await extractTextFromXLSX(file); }
@@ -8140,7 +8146,8 @@ async function importBankFile(file) {
   const bankFmt = detectBankFormat(text || "");
   const bankNames = { cgd:"CGD", millennium:"Millennium BCP", novobanco:"Novo Banco",
     montepio:"Montepio", bpi:"BPI", santander:"Santander", generic:"Genérico" };
-  const bankLabel = bankNames[bankFmt] || "Genérico";
+  const bankLabel = bankNames[bankFmt] || (name.endsWith(".pdf") ? "Santander PDF" : "Genérico");
+  setBankImportDebug(`Banco detectado: <b>${bankLabel}</b>${parsed.length ? ` · movimentos reconhecidos: <b>${parsed.length}</b>` : ""}`, parsed.length ? "ok" : "info");
 
   // Parsers específicos por banco detectado
   if (!parsed.length && bankFmt === "millennium")  parsed = parseMillenniumCSV(text);
@@ -8156,6 +8163,8 @@ async function importBankFile(file) {
   if (!parsed.length) parsed = parseMontepioBPI(text || "");
   if (!parsed.length) parsed = parseBankCsvLikeText(text || "");
   if (!parsed.length) parsed = parseBankCsvGeneric(text || "");
+
+  if (parsed.length) setBankImportDebug(`Banco detectado: <b>${bankLabel}</b> · movimentos reconhecidos: <b>${parsed.length}</b>`, "ok");
 
   if (!parsed.length && !text.trim()) {
     showBankResult("error", "Não foi possível extrair texto do ficheiro.");
@@ -8227,6 +8236,7 @@ async function importBankFile(file) {
 
   saveState();
   renderCashflow();
+  setBankImportDebug(`Importação concluída: <b>${added}</b> novos · <b>${dup}</b> duplicados · <b>${parsed.length}</b> lidos.`, added ? "ok" : "warn");
 
   // Resumo detalhado
   if (added > 0) {
@@ -8280,7 +8290,7 @@ async function importBankFile(file) {
 }
 
 function showBankResult(type, html) {
-  const el = document.getElementById("bankImportResult");
+  const el = document.getElementById("bankImportResult") || document.getElementById("bankImportDebug");
   if (!el) return;
   el.style.display = "";
   const colors = { ok: "#f0fdf4", warn: "#fffbeb", error: "#fef2f2", info: "#f5f3ff" };
@@ -8292,6 +8302,21 @@ function showBankResult(type, html) {
   el.style.fontWeight = "700";
   el.style.fontSize = "14px";
   el.innerHTML = html;
+}
+
+function setBankImportDebug(message, kind = "info") {
+  const el = document.getElementById("bankImportDebug");
+  if (!el) return;
+  const colors = { info: "#f8fafc", ok: "#f0fdf4", warn: "#fffbeb", error: "#fef2f2" };
+  const borders = { info: "#cbd5e1", ok: "#86efac", warn: "#fcd34d", error: "#fca5a5" };
+  el.style.display = "";
+  el.style.background = colors[kind] || colors.info;
+  el.style.border = `1px solid ${borders[kind] || borders.info}`;
+  el.style.borderRadius = "12px";
+  el.style.padding = "10px 12px";
+  el.style.fontSize = "12px";
+  el.style.color = "#475569";
+  el.innerHTML = message;
 }
 
 let __pfPdfJsPromise = null;
@@ -8507,6 +8532,218 @@ async function extractPDFRaw(file) {
     console.error("extractPDFRaw error:", e);
     return "";
   }
+}
+
+async function extractTokenStreamFromSimplePdf(file) {
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const rawStr = new TextDecoder("latin1").decode(bytes);
+
+    async function decompressPdfStream(data) {
+      for (const fmt of ["deflate", "deflate-raw"]) {
+        try {
+          const ds = new DecompressionStream(fmt);
+          const writer = ds.writable.getWriter();
+          const reader = ds.readable.getReader();
+          await writer.write(data);
+          await writer.close();
+          const chunks = [];
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+          }
+          const total = chunks.reduce((a, c) => a + c.length, 0);
+          const out = new Uint8Array(total);
+          let offset = 0;
+          for (const c of chunks) { out.set(c, offset); offset += c.length; }
+          return new TextDecoder("latin1").decode(out);
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    function parsePdfLiteralString(s) {
+      let out = "";
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch !== "\\") { out += ch; continue; }
+        i++;
+        if (i >= s.length) break;
+        const e = s[i];
+        if (e === "n") out += "\n";
+        else if (e === "r") out += "\r";
+        else if (e === "t") out += "\t";
+        else if (e === "b") out += "\b";
+        else if (e === "f") out += "\f";
+        else if (/[0-7]/.test(e)) {
+          let oct = e;
+          for (let j = 0; j < 2 && i + 1 < s.length && /[0-7]/.test(s[i + 1]); j++) oct += s[++i];
+          out += String.fromCharCode(parseInt(oct, 8));
+        } else out += e;
+      }
+      return out;
+    }
+
+    function mapTextByFont(text, fontName) {
+      const maps = { TT3: { 33: "€" }, TT7: { 33: "−", 34: "€" } };
+      const map = maps[fontName];
+      if (!map) return text;
+      let out = "";
+      for (const ch of text) out += map[ch.charCodeAt(0)] || ch;
+      return out;
+    }
+
+    function fixPdfWeirdChars(s) {
+      return String(s || "")
+        .replace(/[]/g, "ç")
+        .replace(/[]/g, "ã")
+        .replace(/[]/g, "í")
+        .replace(/[]/g, "é")
+        .replace(/[]/g, "ú")
+        .replace(/[]/g, "ö")
+        .replace(/[]/g, "É")
+        .replace(/[]/g, "á")
+        .replace(/[]/g, "ó")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    const tokens = [];
+    const pageContentRe = /\/Contents\s+(\d+)\s+0\s+R/g;
+    let m;
+    while ((m = pageContentRe.exec(rawStr)) !== null) {
+      const objNum = Number(m[1]);
+      const objRe = new RegExp(`${objNum}\s+0\s+obj\s*<<(.*?)>>\s*stream\r?\n`, "s");
+      const objMatch = objRe.exec(rawStr);
+      if (!objMatch) continue;
+      const start = objMatch.index + objMatch[0].length;
+      const end = rawStr.indexOf("endstream", start);
+      if (end < 0) continue;
+      const dec = await decompressPdfStream(bytes.slice(start, end));
+      if (!dec) continue;
+      const blocks = dec.match(/BT[\s\S]*?ET/g) || [];
+      for (const bt of blocks) {
+        let currentFont = "";
+        const pieces = [];
+        const re = /\/(TT\d+)\s+\d+(?:\.\d+)?\s+Tf|\[(.*?)\]\s*TJ|(<[0-9A-Fa-f]+>|\((?:[^\)]|\.)*\))\s*Tj/gs;
+        let mm;
+        while ((mm = re.exec(bt)) !== null) {
+          if (mm[1]) { currentFont = mm[1]; continue; }
+          if (mm[2] !== undefined) {
+            let blockTxt = "";
+            for (const sm of mm[2].matchAll(/\((?:[^\)]|\.)*\)|<[0-9A-Fa-f]+>/g)) {
+              const tok = sm[0];
+              let txt = "";
+              if (tok[0] === "(") txt = parsePdfLiteralString(tok.slice(1, -1));
+              else {
+                const hex = tok.slice(1, -1);
+                for (let i = 0; i < hex.length; i += 2) txt += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+              }
+              blockTxt += mapTextByFont(txt, currentFont);
+            }
+            const clean = fixPdfWeirdChars(blockTxt);
+            if (clean) pieces.push(clean);
+            continue;
+          }
+          if (mm[3]) {
+            const tok = mm[3];
+            let txt = "";
+            if (tok[0] === "(") txt = parsePdfLiteralString(tok.slice(1, -1));
+            else {
+              const hex = tok.slice(1, -1);
+              for (let i = 0; i < hex.length; i += 2) txt += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+            }
+            const clean = fixPdfWeirdChars(mapTextByFont(txt, currentFont));
+            if (clean) pieces.push(clean);
+          }
+        }
+        const line = fixPdfWeirdChars(pieces.join(" "));
+        if (line) tokens.push(line);
+      }
+    }
+    return tokens;
+  } catch (e) {
+    console.warn("extractTokenStreamFromSimplePdf error:", e && e.message ? e.message : e);
+    return [];
+  }
+}
+
+async function parseSantanderPDFFromFile(file) {
+  const tokens = await extractTokenStreamFromSimplePdf(file);
+  if (!tokens.length) return [];
+
+  const monthMap = {
+    jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
+    jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
+  };
+  const noiseRe = /^(Titular|Pedro$|Conta$|PT\d{2} |Saldo disponível$|Movimentos da sua conta|Data da operação$|Operação$|Valor$|Saldo$|Documento com data:|Página \d+ de \d+|Para pesquisas genéricas)/i;
+  const moneyRe = /^\d{1,3}(?:\.\d{3})*,\d{2}$/;
+
+  function parsePTDateExactLocal(s) {
+    const m = String(s || "").trim().match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
+    if (!m) return null;
+    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
+    if (!mon) return null;
+    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+  }
+
+  const out = [];
+  let i = 0;
+  let currentDate = null;
+  let currentValueDate = null;
+
+  while (i < tokens.length) {
+    let t = tokens[i];
+    if (noiseRe.test(t) || t === "€") { i++; continue; }
+
+    const maybeDate = parsePTDateExactLocal(t);
+    if (maybeDate) { currentDate = maybeDate; i++; continue; }
+
+    const m = t.match(/^D\. valor:\s*(\d{1,2}\s+[A-Za-zÀ-ÿ]+\s+\d{4})$/i);
+    if (m) {
+      currentValueDate = parsePTDateExactLocal(m[1]) || currentDate;
+      i++;
+      continue;
+    }
+
+    if (!currentDate) { i++; continue; }
+
+    const descParts = [];
+    while (i < tokens.length) {
+      t = tokens[i];
+      if (noiseRe.test(t) || t === "€") { i++; continue; }
+      if (parsePTDateExactLocal(t) || /^D\. valor:/i.test(t) || t === "−" || t === "-" || moneyRe.test(t)) break;
+      descParts.push(t);
+      i++;
+    }
+
+    let sign = 1;
+    if (tokens[i] === "−" || tokens[i] === "-") { sign = -1; i++; }
+
+    let amount = null;
+    let balance = null;
+    if (moneyRe.test(tokens[i] || "")) {
+      amount = parseEuroNum(tokens[i]);
+      i++;
+      if (tokens[i] === "€") i++;
+    }
+    if (moneyRe.test(tokens[i] || "")) {
+      balance = parseEuroNum(tokens[i]);
+      i++;
+      if (tokens[i] === "€") i++;
+    }
+
+    const desc = descParts.join(" ").replace(/\s+/g, " ").trim();
+    if (desc && Number.isFinite(amount)) {
+      out.push({ date: currentDate, valueDate: currentValueDate || currentDate, desc, amount: sign * amount, balance });
+      continue;
+    }
+
+    i++;
+  }
+
+  return out;
 }
 
 function parseSantanderStructured(text) {
