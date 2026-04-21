@@ -6326,6 +6326,8 @@ const KNOWN_BROKER_YAHOO_OVERRIDES = {
   "NL00150001Q9|STLA": "STLA",
   "AT0000A3EPA4|AMS-OSRAM": "AMS2.VI",
   "|MPW.US": "MPW",
+  "|MPW": "MPW",
+  "|CRSP": "CRSP",
   "|NZYMB.DK": "NSIS-B.CO",
   "|STM.FR": "STMPA.PA",
   "|RIO1": "RIO.L",
@@ -9619,6 +9621,10 @@ async function refreshLiveQuotes() {
     if (storedYahoo) push(storedYahoo);
 
     const rawBase = canonicalBrokerTickerBase(raw);
+    const highConfidence = normalizeResolvedYahoo(knownOverride || inferredYahoo || storedYahoo || "");
+    if (["MPW", "CRSP", "UNA.AS"].includes(highConfidence) || ["MPW", "CRSP", "UNA"].includes(rawBase)) {
+      return highConfidence ? [highConfidence] : (rawBase ? [rawBase] : out);
+    }
     const normRaw = toYahooTicker(raw);
     if (rawBase && rawBase !== raw) push(rawBase);
     if (normRaw && normRaw !== raw) push(normRaw);
