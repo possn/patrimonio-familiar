@@ -8146,7 +8146,7 @@ async function importBankFile(file) {
   const bankFmt = detectBankFormat(text || "");
   const bankNames = { cgd:"CGD", millennium:"Millennium BCP", novobanco:"Novo Banco",
     montepio:"Montepio", bpi:"BPI", santander:"Santander", generic:"Genérico" };
-  const bankLabel = bankNames[bankFmt] || (name.endsWith(".pdf") ? "Santander PDF" : "Genérico");
+  const bankLabel = (bankFmt === "generic" && name.endsWith(".pdf")) ? "Santander PDF" : (bankNames[bankFmt] || (name.endsWith(".pdf") ? "Santander PDF" : "Genérico"));
   setBankImportDebug(`Banco detectado: <b>${bankLabel}</b>${parsed.length ? ` · movimentos reconhecidos: <b>${parsed.length}</b>` : ""}`, parsed.length ? "ok" : "info");
 
   // Parsers específicos por banco detectado
@@ -8614,7 +8614,7 @@ async function extractTokenStreamFromSimplePdf(file) {
     let m;
     while ((m = pageContentRe.exec(rawStr)) !== null) {
       const objNum = Number(m[1]);
-      const objRe = new RegExp(`${objNum}\s+0\s+obj\s*<<(.*?)>>\s*stream\r?\n`, "s");
+      const objRe = new RegExp(`${objNum}\\s+0\\s+obj\\s*<<(.*?)>>\\s*stream\\r?\\n`, "s");
       const objMatch = objRe.exec(rawStr);
       if (!objMatch) continue;
       const start = objMatch.index + objMatch[0].length;
@@ -10718,7 +10718,7 @@ function detectBankFormat(text) {
   if (h.includes("novo banco") || h.includes("novobanco")) return "novobanco";
   if (h.includes("montepio")) return "montepio";
   if (/\bbpi\b/.test(h)) return "bpi";
-  if (h.includes("santander")) return "santander";
+  if (h.includes("santander") || ((h.includes("saldo disponível") || h.includes("saldo disponivel")) && h.includes("movimentos da sua conta") && (h.includes("d. valor") || h.includes("data da operação")))) return "santander";
   return "generic";
 }
 
