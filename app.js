@@ -360,6 +360,7 @@ const DEFAULT_STATE = {
   assets: [],
   liabilities: [],
   transactions: [],
+  bankTransactions: [],
   dividends: [],
   divSummaries: [], // {id, year, gross, tax, yieldPct, notes}
   history: [],
@@ -1582,7 +1583,7 @@ let editingTxId = null;
 
 function openTxModal(txId) {
   editingTxId = txId || null;
-  const existing = txId ? state.transactions.find(t => t.id === txId) : null;
+  const existing = txId ? ([...(state.bankTransactions || []), ...(state.transactions || [])].find(t => t.id === txId) || null) : null;
   const titleEl = $("modalTxTitle");
   const delBtn = $("btnDeleteTx");
 
@@ -1617,19 +1618,24 @@ function saveTxFromModal() {
   const notes = ($("tNotes").value || "").trim();
   if (!amount || amount <= 0) { toast("Valor tem de ser > 0."); return; }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { toast("Data inválida."); return; }
-  const obj = { id: editingTxId || uid(), type, category, amount, date, recurring, notes };
-  const ix = state.transactions.findIndex(t => t.id === obj.id);
-  if (ix >= 0) state.transactions[ix] = obj; else state.transactions.push(obj);
+  const obj = { id: editingTxId || uid(), type, category, amount, date, recurring, notes, manualBank: true, importSource: "manual_bank", importKind: "manual_bank" };
+  ensureBankTransactionsArray();
+  const bix = state.bankTransactions.findIndex(t => t.id === obj.id);
+  const tix = state.transactions.findIndex(t => t.id === obj.id);
+  if (bix >= 0) state.bankTransactions[bix] = { ...(state.bankTransactions[bix] || {}), ...obj };
+  else if (tix >= 0) state.transactions[tix] = { ...(state.transactions[tix] || {}), ...obj };
+  else state.bankTransactions.push(obj);
   saveState();
   closeModal("modalTx");
   renderCashflow();
-  toast(ix >= 0 ? "Movimento atualizado." : "Movimento guardado.");
+  toast((bix >= 0 || tix >= 0) ? "Movimento atualizado." : "Movimento guardado.");
 }
 
 function deleteTxEntry() {
   if (!editingTxId) return;
   if (!confirm("Apagar este movimento?")) return;
-  state.transactions = state.transactions.filter(t => t.id !== editingTxId);
+  state.transactions = (state.transactions || []).filter(t => t.id !== editingTxId);
+  state.bankTransactions = (state.bankTransactions || []).filter(t => t.id !== editingTxId);
   editingTxId = null;
   saveState();
   closeModal("modalTx");
@@ -1713,11 +1719,11 @@ function renderCatChart() {
   const m2 = String($("cfMonth").value).padStart(2, "0");
   const monthKey2 = `${y}-${m2}`;
   if (gran === "year") {
-    txs = expandRecurring(state.transactions).filter(t => String(t.date || "").slice(0,4) === y && t.type === "out" && notInternal(t));
+    txs = expandRecurring(getBalanceBaseTransactions()).filter(t => String(t.date || "").slice(0,4) === y && t.type === "out" && notInternal(t));
   } else if (gran === "all") {
-    txs = expandRecurring(state.transactions).filter(t => t.type === "out" && notInternal(t));
+    txs = expandRecurring(getBalanceBaseTransactions()).filter(t => t.type === "out" && notInternal(t));
   } else {
-    txs = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === monthKey2 && t.type === "out" && notInternal(t));
+    txs = expandRecurring(getBalanceBaseTransactions()).filter(t => monthKeyFromDateISO(t.date) === monthKey2 && t.type === "out" && notInternal(t));
   }
 
   const byCat = {};
@@ -2577,9 +2583,28 @@ function expandRecurring(tx) {
   return out;
 }
 
+function ensureBankTransactionsArray() {
+  if (!Array.isArray(state.bankTransactions)) state.bankTransactions = [];
+  return state.bankTransactions;
+}
+
+function isBankLedgerTx(t) {
+  if (!t) return false;
+  const source = normStr(t.importSource || t.importKind || "");
+  return !!(t.manualBank || source.includes("bank_statement") || source.includes("manual_bank"));
+}
+
+function getBalanceBaseTransactions() {
+  return ensureBankTransactionsArray().filter(Boolean);
+}
+
+function getExpandedBalanceTransactions() {
+  return expandRecurring(getBalanceBaseTransactions()).filter(t => isVisibleCashflowTx(t));
+}
+
 // ─── Cashflow granularity: daily / weekly / monthly / annual ─
 function cfGranData(granularity) {
-  const all = expandRecurring(state.transactions).filter(t => isVisibleCashflowTx(t));
+  const all = getExpandedBalanceTransactions();
   const bucket = {};
   for (const t of all) {
     let key;
@@ -2629,10 +2654,8 @@ function isInterAccountTransfer(t) {
 function isVisibleCashflowTx(t) {
   if (!t) return false;
   if (!(parseNum(t.amount) > 0)) return false;
+  if (!isBankLedgerTx(t)) return false;
   if (isInterAccountTransfer(t)) return false;
-  // O separador Balanço é para movimentos bancários/manuais do agregado.
-  // Excluir fluxos gerados pelo importador das corretoras (depósitos, levantamentos,
-  // juros, mais/menos-valias), porque estes distorcem entradas/saídas do banco.
   if (t.generatedFromBroker) return false;
   const source = normStr(t.importSource || t.importKind || "");
   if (source.includes("broker") || source.includes("corretora")) return false;
@@ -2647,7 +2670,7 @@ function renderCashflow() {
   const monthKey = `${y}-${m}`;
 
   // Filter transactions by selected period AND exclude internal transfers
-  const allExpanded = expandRecurring(state.transactions).filter(t => isVisibleCashflowTx(t));
+  const allExpanded = getExpandedBalanceTransactions();
 
   let periodTx;
   if (gran === "year") {
@@ -2782,7 +2805,7 @@ function renderTxList() {
   } else {
     txFilter = t => monthKeyFromDateISO(t.date) === key;
   }
-  const tx = state.transactions
+  const tx = getBalanceBaseTransactions()
     .filter(t => txFilter(t) && isVisibleCashflowTx(t))
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
@@ -2828,7 +2851,8 @@ function renderTxList() {
       const btn = e.currentTarget;
       if (btn.dataset.confirm === "1") {
         // Segunda vez — apagar
-        state.transactions = state.transactions.filter(x => x.id !== t.id);
+        state.transactions = (state.transactions || []).filter(x => x.id !== t.id);
+        state.bankTransactions = (state.bankTransactions || []).filter(x => x.id !== t.id);
         saveState();
         renderCashflow();
         toast("Movimento apagado.");
@@ -8243,22 +8267,23 @@ async function importBankFile(file) {
     const dates = parsed.map(r => normalizeDate(r.date) || r.date).filter(Boolean).sort();
     const minDate = dates[0] || null;
     const maxDate = dates[dates.length - 1] || null;
-    if (minDate && maxDate && Array.isArray(state.transactions)) {
-      const before = state.transactions.length;
-      state.transactions = state.transactions.filter(tx => {
+    if (minDate && maxDate) {
+      ensureBankTransactionsArray();
+      const before = state.bankTransactions.length;
+      state.bankTransactions = state.bankTransactions.filter(tx => {
         const d = normalizeDate(tx.date) || tx.date || "";
-        const looksLikeBankImport = tx && (tx.importSource === "bank_statement" || tx.importKind === "bank_statement" || Number.isFinite(parseNum(tx.bankBalance)));
-        if (!looksLikeBankImport) return true;
+        if (!isBankLedgerTx(tx)) return true;
         if (String(d) < String(minDate) || String(d) > String(maxDate)) return true;
         return false;
       });
-      replaced = Math.max(0, before - state.transactions.length);
+      replaced = Math.max(0, before - state.bankTransactions.length);
     }
   }
 
   const existingExact = new Set();
   const existingLegacy = new Set();
-  for (const tx of (state.transactions || [])) {
+  ensureBankTransactionsArray();
+  for (const tx of (state.bankTransactions || [])) {
     const origDesc = tx.notes || tx.category || "";
     existingExact.add(dedupKey(tx.date, tx.type, parseNum(tx.amount), origDesc, tx.bankBalance));
     existingLegacy.add(legacyDedupKey(tx.date, tx.type, parseNum(tx.amount), origDesc));
@@ -8293,8 +8318,8 @@ async function importBankFile(file) {
       importFileName: file.name || "",
       importBank: bankLabel || ""
     };
-    if (!Array.isArray(state.transactions)) state.transactions = [];
-    state.transactions.push(tx);
+    ensureBankTransactionsArray();
+    state.bankTransactions.push(tx);
     newTx.push(tx);
     if (dir === "in") totalIn += amount; else totalOut += amount;
     added++;
@@ -9825,16 +9850,18 @@ function wire() {
   }
 
   makeTwoTap("btnClearTransactions", "🗑️ Limpar movimentos (mantém ativos)", () => {
-    const n = state.transactions.length;
+    const n = (state.transactions.length || 0) + ((state.bankTransactions||[]).length || 0);
     if (!n) { toast("Sem movimentos para limpar."); return; }
     state.transactions = [];
+    state.bankTransactions = [];
     saveState(); renderAll(); checkDuplicateWarning();
     toast(`🗑️ ${n} movimentos apagados. Reimporta os ficheiros do banco.`, 4000);
   });
   makeTwoTap("btnClearTransactions2", "🗑️ Limpar movimentos e reimportar", () => {
-    const n = state.transactions.length;
+    const n = (state.transactions.length || 0) + ((state.bankTransactions||[]).length || 0);
     if (!n) { toast("Sem movimentos para limpar."); return; }
     state.transactions = [];
+    state.bankTransactions = [];
     saveState(); renderAll(); checkDuplicateWarning();
     toast(`🗑️ ${n} movimentos apagados. Reimporta os ficheiros do banco.`, 4000);
   });
@@ -10807,9 +10834,9 @@ function exportCashflowCSV() {
   const y = ($("cfYear") && $("cfYear").value) || String(new Date().getFullYear());
   const m = $("cfMonth") ? String($("cfMonth").value).padStart(2,"0") : "01";
   let txs;
-  if (gran === "all") txs = state.transactions.slice();
-  else if (gran === "year") txs = expandRecurring(state.transactions).filter(t => String(t.date||"").slice(0,4) === y);
-  else { const key = `${y}-${m}`; txs = expandRecurring(state.transactions).filter(t => monthKeyFromDateISO(t.date) === key); }
+  if (gran === "all") txs = getBalanceBaseTransactions().slice();
+  else if (gran === "year") txs = expandRecurring(getBalanceBaseTransactions()).filter(t => String(t.date||"").slice(0,4) === y);
+  else { const key = `${y}-${m}`; txs = expandRecurring(getBalanceBaseTransactions()).filter(t => monthKeyFromDateISO(t.date) === key); }
   txs = txs.sort((a,b) => String(a.date).localeCompare(String(b.date)));
   const header = ["Data","Tipo","Categoria","Valor (EUR)","Recorrente","Notas"];
   const rows = txs.map(t => [t.date||"", t.type==="in"?"Entrada":"Saída", t.category||"", parseNum(t.amount).toFixed(2), t.recurring||"none", (t.notes||"").replace(/"/g,"'")]);
@@ -10835,7 +10862,7 @@ function exportPortfolioXLSX() {
   const t = calcTotals();
   const assetRows = state.assets.map(a => ({ Tipo:"Ativo", Classe:a.class||"", Nome:a.name||"", "Valor EUR":parseNum(a.value), "Tipo Yield":a.yieldType||"none", "Yield Valor":parseNum(a.yieldValue), "Valorização Esperada %": hasExplicitAppreciationPct(a) ? parseNum(a.appreciationPct) : "", "Capitalização":a.compoundFreq||"", Vencimento:a.maturityDate||"", "Custo Aquis.":parseNum(a.costBasis||0), "Rend. Anual EUR":passiveFromItem(a), Notas:a.notes||"" }));
   const liabRows = state.liabilities.map(l => ({ Tipo:"Passivo", Classe:l.class||"", Nome:l.name||"", "Valor EUR":parseNum(l.value), "Tipo Yield":"","Yield Valor":"","Capitalização":"",Vencimento:"","Custo Aquis.":0,"Rend. Anual EUR":0, Notas:l.notes||"" }));
-  const txRows = state.transactions.map(tx => ({ Data:tx.date||"", Tipo:tx.type==="in"?"Entrada":"Saída", Categoria:tx.category||"", "Valor EUR":parseNum(tx.amount), Recorrente:tx.recurring||"none", Notas:tx.notes||"" }));
+  const txRows = getBalanceBaseTransactions().map(tx => ({ Data:tx.date||"", Tipo:tx.type==="in"?"Entrada":"Saída", Categoria:tx.category||"", "Valor EUR":parseNum(tx.amount), Recorrente:tx.recurring||"none", Notas:tx.notes||"" }));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([...assetRows,...liabRows]), "Portfólio");
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(txRows), "Movimentos");
