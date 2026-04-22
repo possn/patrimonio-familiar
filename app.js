@@ -8188,13 +8188,28 @@ async function importBankFile(file) {
     const bankNames0 = { cgd:"CGD", millennium:"Millennium BCP", novobanco:"Novo Banco", montepio:"Montepio", bpi:"BPI", santander:"Santander", generic:"Genérico" };
     bankLabel = (bankFmt === "generic" && name.endsWith(".pdf")) ? "Santander PDF" : (bankNames0[bankFmt] || (name.endsWith(".pdf") ? "Santander PDF" : "Genérico"));
 
-    if (!parsed.length && (/movimentos da sua conta/i.test(text) || /saldo dispon[ií]vel/i.test(text) || bankFmt === "santander")) {
-      tryParser("Parser Santander regex", () => parseSantanderRegex(text || ""));
+    const looksLikeSantanderPdf = /movimentos da sua conta/i.test(text) || /saldo dispon[ií]vel/i.test(text) || bankFmt === "santander";
+
+    if (looksLikeSantanderPdf) {
+      try {
+        const strict = parseSantanderStatementStrict(text || "");
+        if (Array.isArray(strict) && strict.length) {
+          parsed = strict;
+          setBankImportDebug(`Parser Santander exacto reconheceu <b>${parsed.length}</b> movimentos.`, "ok");
+        }
+      } catch (err) {
+        console.error("Exact Santander parser failed", err);
+        setBankImportDebug(`Parser Santander exacto falhou: ${escapeHtml(err && err.message ? err.message : String(err))}`, "warn");
+      }
     }
-    if (!parsed.length && (/movimentos da sua conta/i.test(text) || /saldo dispon[ií]vel/i.test(text) || bankFmt === "santander")) {
+
+    if (!parsed.length && looksLikeSantanderPdf) {
       tryParser("Parser Santander por texto", () => parseSantanderStructured(text || ""));
     }
-    if (!parsed.length) {
+    if (!parsed.length && looksLikeSantanderPdf) {
+      tryParser("Parser Santander regex", () => parseSantanderRegex(text || ""));
+    }
+    if (!parsed.length && !looksLikeSantanderPdf) {
       try {
         const rawParsed = await parseSantanderPDFFromFile(file);
         if (Array.isArray(rawParsed) && rawParsed.length) {
@@ -8240,6 +8255,20 @@ async function importBankFile(file) {
 
   if (parsed.length) {
     parsed = reconcileBankStatementRows(parsed, bankFmt);
+
+    if (name.endsWith(".pdf") && (bankFmt === "santander" || /movimentos da sua conta/i.test(text || ""))) {
+      const rawIn = parsed.filter(r => parseNum(r.amount) > 0).reduce((s, r) => s + parseNum(r.amount), 0);
+      const rawOut = parsed.filter(r => parseNum(r.amount) < 0).reduce((s, r) => s + Math.abs(parseNum(r.amount)), 0);
+      const suspicious = parsed.length > 320 || rawIn > 200000 || rawOut > 200000;
+      if (suspicious) {
+        const strict = parseSantanderStatementStrict(text || "");
+        const strictRows = reconcileBankStatementRows(strict, "santander");
+        if (strictRows.length) {
+          parsed = strictRows;
+          setBankImportDebug(`⚠️ Parse anómalo corrigido automaticamente. A usar parser exacto: <b>${parsed.length}</b> movimentos.`, "warn");
+        }
+      }
+    }
   }
 
   if (!parsed.length && !String(text || "").trim()) {
@@ -9024,6 +9053,141 @@ function parseSantanderStructured(text) {
 
   return out;
 }
+
+
+function parseSantanderStatementStrict(text) {
+  const src = String(text || "");
+  if (!src.trim()) return [];
+
+  const monthMap = {
+    jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
+    jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
+  };
+
+  function parsePTDateStrict(s) {
+    const m = String(s || "").trim().match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
+    if (!m) return null;
+    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
+    if (!mon) return null;
+    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+  }
+
+  function isNoise(line) {
+    return /^(titular\b|conta\s+pt|saldo dispon[ií]vel|movimentos da sua conta|data da opera[cç][aã]o\b|opera[cç][aã]o\b|valor\b|saldo\b|documento com data:|p[aá]gina\s+\d+\s+de\s+\d+|para pesquisas gen[eé]ricas)/i.test(String(line || "").trim());
+  }
+
+  function normLine(line) {
+    return String(line || "")
+      .replace(/\r/g, "")
+      .replace(/ /g, " ")
+      .replace(/\t+/g, " ")
+      .replace(/([\d,])\s+€/g, "$1€")
+      .replace(/[\u2212−]\s+(?=\d)/g, "−")
+      .replace(/-\s+(?=\d)/g, "-")
+      .replace(/D\s*\.?\s*valor\s*:/gi, "D. valor:")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function moneyTokens(line) {
+    return [...String(line || "").matchAll(/[\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2}(?:\s*€)?/g)];
+  }
+
+  const lines = src
+    .split(/\r?\n/)
+    .map(normLine)
+    .filter(Boolean)
+    .filter(l => !isNoise(l));
+
+  const out = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const opDate = parsePTDateStrict(lines[i]);
+    if (!opDate) { i++; continue; }
+
+    let valueDate = opDate;
+    let j = i + 1;
+    if (j < lines.length) {
+      const mvd = String(lines[j]).match(/^D\. valor:\s*(\d{1,2}\s+[A-Za-zÀ-ÿ]+\s+\d{4})$/i);
+      if (mvd) {
+        valueDate = parsePTDateStrict(mvd[1]) || opDate;
+        j++;
+      }
+    }
+
+    const descParts = [];
+    let amount = null;
+    let balance = null;
+    let consumed = j;
+
+    while (consumed < lines.length) {
+      const ln = lines[consumed];
+      if (parsePTDateStrict(ln) || /^D\. valor:/i.test(ln)) break;
+
+      const mts = moneyTokens(ln);
+      if (mts.length >= 2) {
+        const prefix = ln.slice(0, mts[0].index).trim();
+        if (prefix) descParts.push(prefix);
+        amount = parseEuroNum(mts[0][0]);
+        balance = parseEuroNum(mts[1][0]);
+        consumed++;
+        break;
+      }
+
+      if (mts.length === 1) {
+        const prefix = ln.slice(0, mts[0].index).trim();
+        const suffix = ln.slice(mts[0].index + mts[0][0].length).trim();
+
+        if (prefix && !suffix) {
+          descParts.push(prefix);
+          amount = parseEuroNum(mts[0][0]);
+
+          if (consumed + 1 < lines.length) {
+            const nextLine = lines[consumed + 1];
+            const nextMts = moneyTokens(nextLine);
+            if (nextMts.length === 1 && !parsePTDateStrict(nextLine) && !/^D\. valor:/i.test(nextLine)) {
+              const nextStripped = nextLine.replace(nextMts[0][0], "").trim();
+              if (!nextStripped) {
+                balance = parseEuroNum(nextMts[0][0]);
+                consumed += 2;
+                break;
+              }
+            }
+          }
+
+          consumed++;
+          break;
+        }
+      }
+
+      descParts.push(ln);
+      consumed++;
+    }
+
+    const desc = descParts.join(" ").replace(/\s+/g, " ").trim();
+    if (desc && Number.isFinite(parseNum(amount))) {
+      out.push({
+        date: opDate,
+        valueDate: valueDate || opDate,
+        desc,
+        amount: parseNum(amount),
+        balance: Number.isFinite(parseNum(balance)) ? parseNum(balance) : null
+      });
+    }
+
+    i = Math.max(consumed, i + 1);
+  }
+
+  const seen = new Set();
+  return out.filter(r => {
+    const key = `${r.date}|${r.valueDate}|${normStr(r.desc)}|${Math.round(parseNum(r.amount)*100)}|${Number.isFinite(parseNum(r.balance)) ? Math.round(parseNum(r.balance)*100) : "na"}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 
 function parseSantanderPDF(text) {
   return parseSantanderStructured(text);
