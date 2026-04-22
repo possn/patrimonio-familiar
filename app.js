@@ -8152,6 +8152,9 @@ async function importBankFile(file) {
     bankLabel = (bankFmt === "generic" && name.endsWith(".pdf")) ? "Santander PDF" : (bankNames0[bankFmt] || (name.endsWith(".pdf") ? "Santander PDF" : "Genérico"));
 
     if (!parsed.length && (/movimentos da sua conta/i.test(text) || /saldo dispon[ií]vel/i.test(text) || bankFmt === "santander")) {
+      tryParser("Parser Santander regex", () => parseSantanderRegex(text || ""));
+    }
+    if (!parsed.length && (/movimentos da sua conta/i.test(text) || /saldo dispon[ií]vel/i.test(text) || bankFmt === "santander")) {
       tryParser("Parser Santander por texto", () => parseSantanderStructured(text || ""));
     }
     if (!parsed.length) {
@@ -8188,6 +8191,7 @@ async function importBankFile(file) {
   if (!parsed.length && bankFmt === "novobanco") tryParser("Parser Novo Banco", () => parseNovoBancoCSV(text || ""));
   if (!parsed.length && (bankFmt === "montepio" || bankFmt === "bpi")) tryParser("Parser Montepio/BPI", () => parseMontepioBPI(text || ""));
 
+  if (!parsed.length) tryParser("Parser Santander regex", () => parseSantanderRegex(text || ""));
   if (!parsed.length) tryParser("Parser Santander tabular", () => parseSantanderTabular(text || ""));
   if (!parsed.length) tryParser("Parser Santander PDF", () => parseSantanderPDF(text || ""));
   if (!parsed.length) tryParser("Parser Millennium", () => parseMillenniumCSV(text || ""));
@@ -8215,6 +8219,24 @@ async function importBankFile(file) {
   function legacyDedupKey(date, type, amount, desc) {
     const shortDesc = normStr(desc || "").slice(0, 30);
     return `${String(date||"").slice(0,10)}|${type}|${Math.round(Math.abs(amount)*100)}|${shortDesc}`;
+  }
+
+  let replaced = 0;
+  if (parsed.length && name.endsWith(".pdf")) {
+    const dates = parsed.map(r => normalizeDate(r.date) || r.date).filter(Boolean).sort();
+    const minDate = dates[0] || null;
+    const maxDate = dates[dates.length - 1] || null;
+    if (minDate && maxDate && Array.isArray(state.transactions)) {
+      const before = state.transactions.length;
+      state.transactions = state.transactions.filter(tx => {
+        const d = normalizeDate(tx.date) || tx.date || "";
+        const looksLikeBankImport = tx && (tx.importSource === "bank_statement" || tx.importKind === "bank_statement" || Number.isFinite(parseNum(tx.bankBalance)));
+        if (!looksLikeBankImport) return true;
+        if (String(d) < String(minDate) || String(d) > String(maxDate)) return true;
+        return false;
+      });
+      replaced = Math.max(0, before - state.transactions.length);
+    }
   }
 
   const existingExact = new Set();
@@ -8248,7 +8270,11 @@ async function importBankFile(file) {
       recurring: "none",
       notes: r.desc || "",
       bankValueDate: normalizeDate(r.valueDate || r.date) || r.valueDate || r.date,
-      bankBalance: Number.isFinite(parseNum(r.balance)) ? parseNum(r.balance) : null
+      bankBalance: Number.isFinite(parseNum(r.balance)) ? parseNum(r.balance) : null,
+      importSource: "bank_statement",
+      importKind: "bank_statement",
+      importFileName: file.name || "",
+      importBank: bankLabel || ""
     };
     if (!Array.isArray(state.transactions)) state.transactions = [];
     state.transactions.push(tx);
@@ -8275,7 +8301,7 @@ async function importBankFile(file) {
     console.error("render after bank import failed", err);
   }
 
-  setBankImportDebug(`Importação concluída: <b>${added}</b> novos · <b>${dup}</b> duplicados · <b>${parsed.length}</b> lidos.${saveErr ? ` <br><small>⚠️ Guardar: ${escapeHtml(saveErr.message || String(saveErr))}</small>` : ""}${renderErr ? ` <br><small>⚠️ Render: ${escapeHtml(renderErr.message || String(renderErr))}</small>` : ""}`, added ? "ok" : "warn");
+  setBankImportDebug(`Importação concluída: <b>${added}</b> novos · <b>${dup}</b> duplicados · <b>${parsed.length}</b> lidos${replaced ? ` · <b>${replaced}</b> antigos substituídos` : ""}.${saveErr ? ` <br><small>⚠️ Guardar: ${escapeHtml(saveErr.message || String(saveErr))}</small>` : ""}${renderErr ? ` <br><small>⚠️ Render: ${escapeHtml(renderErr.message || String(renderErr))}</small>` : ""}`, added ? "ok" : "warn");
 
   const byCat = {};
   for (const tx of newTx) {
@@ -8294,7 +8320,7 @@ async function importBankFile(file) {
 
   if (added > 0 || dup > 0) {
     showBankResult(added > 0 ? "ok" : "info", `
-      <div style="margin-bottom:10px">${added > 0 ? `✅ <b>${added}</b> movimento${added!==1?"s":""} importado${added!==1?"s":""}` : `ℹ️ 0 novos`}${dup > 0 ? ` · <span style="color:#92400e">${dup} duplicado${dup!==1?"s":""} ignorado${dup!==1?"s":""}</span>` : ""}</div>
+      <div style="margin-bottom:10px">${added > 0 ? `✅ <b>${added}</b> movimento${added!==1?"s":""} importado${added!==1?"s":""}` : `ℹ️ 0 novos`}${replaced > 0 ? ` · <span style="color:#1d4ed8">${replaced} antigo${replaced!==1?"s":""} substituído${replaced!==1?"s":""}</span>` : ""}${dup > 0 ? ` · <span style="color:#92400e">${dup} duplicado${dup!==1?"s":""} ignorado${dup!==1?"s":""}</span>` : ""}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
         <div style="background:#f0fdf4;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Entradas</div><div style="font-weight:900;color:#059669">${fmtEUR2(totalIn)}</div></div>
         <div style="background:#fef2f2;border-radius:10px;padding:8px;text-align:center"><div style="font-size:11px;color:#667085">Saídas</div><div style="font-weight:900;color:#dc2626">${fmtEUR2(totalOut)}</div></div>
@@ -8304,8 +8330,8 @@ async function importBankFile(file) {
     `);
   }
 
-  toast(`${added} movimentos importados · Entradas ${fmtEUR2(totalIn)} · Saídas ${fmtEUR2(totalOut)}`);
-  return { added, dup, read: parsed.length, saveErr, renderErr };
+  toast(`${added} movimentos importados${replaced ? ` · ${replaced} substituídos` : ""} · Entradas ${fmtEUR2(totalIn)} · Saídas ${fmtEUR2(totalOut)}`);
+  return { added, dup, read: parsed.length, replaced, saveErr, renderErr };
 }
 
 function showBankResult(type, html) {
@@ -8762,6 +8788,49 @@ async function parseSantanderPDFFromFile(file) {
     i++;
   }
 
+  return out;
+}
+
+function parseSantanderRegex(text) {
+  const src = String(text || "");
+  if (!src.trim()) return [];
+
+  const monthMap = {
+    jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
+    jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
+  };
+
+  function parsePTDateLocal(s) {
+    const m = String(s || "").trim().match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
+    if (!m) return null;
+    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
+    if (!mon) return null;
+    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+  }
+
+  const norm = src
+    .replace(/\r/g, "")
+    .replace(/\t+/g, " ")
+    .replace(/ /g, " ")
+    .replace(/([\d,])\s+€/g, "$1€")
+    .replace(/[\u2212−]\s+(?=\d)/g, "−")
+    .replace(/-\s+(?=\d)/g, "-")
+    .replace(/D\s*\.?\s*valor\s*:/gi, "D. valor:")
+    .replace(/[ ]+/g, " ");
+
+  const re = /(\d{1,2}\s+[A-Za-zÀ-ÿ]+\s+\d{4})\s*D\. valor:\s*(\d{1,2}\s+[A-Za-zÀ-ÿ]+\s+\d{4})\s*([\s\S]*?)\s*([\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2})\s*€?\s*(\d{1,3}(?:\.\d{3})*,\d{2})\s*€?(?=\s*(?:\d{1,2}\s+[A-Za-zÀ-ÿ]+\s+\d{4}\s*D\. valor:|Documento com data:|Titular Pedro|Para pesquisas genéricas|$))/g;
+
+  const out = [];
+  let m;
+  while ((m = re.exec(norm)) !== null) {
+    const date = parsePTDateLocal(m[1]);
+    const valueDate = parsePTDateLocal(m[2]) || date;
+    const desc = String(m[3] || "").replace(/\s+/g, " ").trim();
+    const amount = parseEuroNum(m[4]);
+    const balance = parseEuroNum(m[5]);
+    if (!date || !desc || !Number.isFinite(amount)) continue;
+    out.push({ date, valueDate, desc, amount, balance: Number.isFinite(balance) ? balance : null });
+  }
   return out;
 }
 
