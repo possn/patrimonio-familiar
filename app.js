@@ -1,4 +1,4 @@
-/* Património Familiar — v31
+/* Património Familiar — v42
    Performance: memoização por ciclo de render (elimina cálculos redundantes)
    + Objetivo de rendimento passivo com barra de progresso
    + Alertas de vencimentos próximos (30 dias)
@@ -13,7 +13,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260422v41").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260422v42").catch(() => {});
     });
   }
 } catch (_) {}
@@ -1709,7 +1709,7 @@ function renderCatChart() {
   const gran = ($("cfGranularity") && $("cfGranularity").value) || "month";
 
   let txs;
-  const notInternal = t => !isInterAccountTransfer(t);
+  const notInternal = t => isVisibleCashflowTx(t);
   const m2 = String($("cfMonth").value).padStart(2, "0");
   const monthKey2 = `${y}-${m2}`;
   if (gran === "year") {
@@ -2579,7 +2579,7 @@ function expandRecurring(tx) {
 
 // ─── Cashflow granularity: daily / weekly / monthly / annual ─
 function cfGranData(granularity) {
-  const all = expandRecurring(state.transactions).filter(t => parseNum(t.amount) > 0 && !isInterAccountTransfer(t));
+  const all = expandRecurring(state.transactions).filter(t => isVisibleCashflowTx(t));
   const bucket = {};
   for (const t of all) {
     let key;
@@ -2626,6 +2626,19 @@ function isInterAccountTransfer(t) {
   return false;
 }
 
+function isVisibleCashflowTx(t) {
+  if (!t) return false;
+  if (!(parseNum(t.amount) > 0)) return false;
+  if (isInterAccountTransfer(t)) return false;
+  // O separador Balanço é para movimentos bancários/manuais do agregado.
+  // Excluir fluxos gerados pelo importador das corretoras (depósitos, levantamentos,
+  // juros, mais/menos-valias), porque estes distorcem entradas/saídas do banco.
+  if (t.generatedFromBroker) return false;
+  const source = normStr(t.importSource || t.importKind || "");
+  if (source.includes("broker") || source.includes("corretora")) return false;
+  return true;
+}
+
 function renderCashflow() {
   ensureMonthYearOptions();
   const y = $("cfYear").value;
@@ -2634,7 +2647,7 @@ function renderCashflow() {
   const monthKey = `${y}-${m}`;
 
   // Filter transactions by selected period AND exclude internal transfers
-  const allExpanded = expandRecurring(state.transactions).filter(t => !isInterAccountTransfer(t));
+  const allExpanded = expandRecurring(state.transactions).filter(t => isVisibleCashflowTx(t));
 
   let periodTx;
   if (gran === "year") {
@@ -2770,7 +2783,7 @@ function renderTxList() {
     txFilter = t => monthKeyFromDateISO(t.date) === key;
   }
   const tx = state.transactions
-    .filter(t => txFilter(t) && parseNum(t.amount) > 0)
+    .filter(t => txFilter(t) && isVisibleCashflowTx(t))
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
   if (!tx.length) {
