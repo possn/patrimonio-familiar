@@ -630,12 +630,24 @@ function prepareChartCanvas(canvas, fallbackHeight = 220) {
   if (wrap) {
     wrap.style.position = "relative";
     wrap.style.minHeight = `${height}px`;
-    if (!wrap.style.height || wrap.style.height === "auto") wrap.style.height = `${height}px`;
+    wrap.style.height = `${height}px`;
+    wrap.style.maxHeight = `${height}px`;
+    wrap.dataset.chartHeightApplied = String(height);
   }
   canvas.style.display = "block";
   canvas.style.width = "100%";
   canvas.style.height = `${height}px`;
+  canvas.dataset.chartHeightApplied = String(height);
   return canvas;
+}
+
+function niceCeil(value) {
+  const v = Math.max(1, Number(value) || 0);
+  const exp = Math.floor(Math.log10(v));
+  const base = Math.pow(10, exp);
+  const frac = v / base;
+  const nice = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
+  return nice * base;
 }
 
 function ensureChartCtx(id, fallbackHeight = 220) {
@@ -1665,13 +1677,14 @@ function preparePlainCanvas(id, fallbackHeight = 220) {
 }
 
 function drawPlainDonutChart(id, entries, total) {
-  const prep = preparePlainCanvas(id, 180);
+  const chartHeight = entries.length <= 4 ? 150 : entries.length <= 8 ? 170 : 190;
+  const prep = preparePlainCanvas(id, chartHeight);
   if (!prep) return false;
   const { ctx, width, height } = prep;
   const cx = width / 2;
   const cy = height / 2;
-  const radius = Math.min(width, height) * 0.34;
-  const inner = radius * 0.58;
+  const radius = Math.min(width, height) * 0.27;
+  const inner = radius * 0.60;
 
   if (!entries.length || total <= 0) {
     ctx.fillStyle = "#94a3b8";
@@ -2708,15 +2721,17 @@ function renderCashflow() {
 function renderBalance() { renderCashflow(); }
 
 function drawPlainBarChart(id, keys, data) {
-  const prep = preparePlainCanvas(id, 200);
+  const groups = Math.max(1, keys.length);
+  const chartHeight = groups <= 1 ? 150 : groups <= 3 ? 170 : groups <= 6 ? 190 : 220;
+  const prep = preparePlainCanvas(id, chartHeight);
   if (!prep) return false;
   const { ctx, width, height } = prep;
-  const left = 46, right = 12, top = 20, bottom = 34;
+  const left = 50, right = 12, top = 24, bottom = 34;
   const plotW = Math.max(40, width - left - right);
   const plotH = Math.max(40, height - top - bottom);
   const maxVal = Math.max(1, ...data.map(d => Math.max(parseNum(d.in), parseNum(d.out))));
   const steps = 4;
-  const niceMax = Math.max(1, Math.ceil(maxVal / 100) * 100);
+  const niceMax = niceCeil(maxVal * 1.12);
 
   ctx.fillStyle = "#0f172a";
   ctx.font = "600 12px system-ui, -apple-system, sans-serif";
@@ -2744,7 +2759,6 @@ function drawPlainBarChart(id, keys, data) {
     ctx.fillText(fmtEUR(val), left - 6, y + 3);
   }
 
-  const groups = Math.max(1, keys.length);
   const groupW = plotW / groups;
   const barW = Math.max(6, Math.min(18, groupW * 0.28));
   const tickStep = Math.max(1, Math.ceil(groups / 8));
