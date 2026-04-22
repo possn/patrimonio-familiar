@@ -13,7 +13,7 @@
 try {
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260421v35").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260422v41").catch(() => {});
     });
   }
 } catch (_) {}
@@ -8201,6 +8201,10 @@ async function importBankFile(file) {
   if (!parsed.length) tryParser("Parser CSV-like", () => parseBankCsvLikeText(text || ""));
   if (!parsed.length) tryParser("Parser genérico", () => parseBankCsvGeneric(text || ""));
 
+  if (parsed.length) {
+    parsed = reconcileBankStatementRows(parsed, bankFmt);
+  }
+
   if (!parsed.length && !String(text || "").trim()) {
     showBankResult("error", "Não foi possível extrair texto do ficheiro.");
     return { added: 0, dup: 0, read: 0 };
@@ -8989,6 +8993,56 @@ function parseSantanderPDF(text) {
 
 function parseSantanderTabular(text) {
   return parseSantanderStructured(text);
+}
+
+
+function reconcileBankStatementRows(rows, bankFmt = "generic") {
+  const arr = Array.isArray(rows) ? rows.map(r => ({ ...r })) : [];
+  if (!arr.length) return arr;
+
+  function round2(n) {
+    return Math.round((parseNum(n) + Number.EPSILON) * 100) / 100;
+  }
+
+  for (const r of arr) {
+    r.date = normalizeDate(r.date) || r.date || "";
+    r.valueDate = normalizeDate(r.valueDate || r.date) || r.valueDate || r.date || "";
+    r.desc = String(r.desc || r.notes || "").replace(/\s+/g, " ").trim();
+    r.amount = Number.isFinite(parseNum(r.amount)) ? round2(parseNum(r.amount)) : null;
+    r.balance = Number.isFinite(parseNum(r.balance)) ? round2(parseNum(r.balance)) : null;
+  }
+
+  const isSantanderLike = /santander/i.test(String(bankFmt || "")) || arr.some(r =>
+    /movimentos da sua conta|d\. valor|pagamento de conta cart[aã]o|via verde|mesada pedro/i.test(String(r.desc || ""))
+  );
+
+  if (isSantanderLike) {
+    for (let i = 0; i < arr.length - 1; i++) {
+      const cur = arr[i];
+      const nxt = arr[i + 1];
+      if (!Number.isFinite(cur.balance) || !Number.isFinite(nxt.balance)) continue;
+
+      const expected = round2(cur.balance - nxt.balance);
+      if (!Number.isFinite(expected) || Math.abs(expected) < 0.009) continue;
+
+      const parsedAmt = Number.isFinite(cur.amount) ? round2(cur.amount) : null;
+      const parsedLooksWrong = (
+        parsedAmt === null ||
+        Math.abs(parsedAmt - expected) > 0.011 ||
+        (Number.isFinite(cur.balance) && Math.abs(parsedAmt - cur.balance) < 0.011)
+      );
+
+      if (parsedLooksWrong) cur.amount = expected;
+    }
+  }
+
+  return arr.filter(r =>
+    r &&
+    r.date &&
+    r.desc &&
+    Number.isFinite(parseNum(r.amount)) &&
+    Math.abs(parseNum(r.amount)) > 0
+  );
 }
 
 async function extractTextFromXLSX(file) {
