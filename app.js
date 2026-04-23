@@ -641,12 +641,15 @@ function prepareChartCanvas(canvas, fallbackHeight = 220) {
     wrap.style.minHeight = `${height}px`;
     wrap.style.height = `${height}px`;
     wrap.style.maxHeight = `${height}px`;
+    wrap.style.overflow = "hidden";
     wrap.dataset.chartHeightApplied = String(height);
   }
-  canvas.style.display = "block";
-  canvas.style.width = "100%";
-  canvas.style.height = `${height}px`;
+  canvas.style.setProperty("display", "block", "important");
+  canvas.style.setProperty("width", "100%", "important");
+  canvas.style.setProperty("height", `${height}px`, "important");
+  canvas.style.maxHeight = `${height}px`;
   canvas.dataset.chartHeightApplied = String(height);
+  canvas.setAttribute("height", String(height));
   return canvas;
 }
 
@@ -1676,8 +1679,9 @@ function preparePlainCanvas(id, fallbackHeight = 220) {
   const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
-  canvas.style.width = width + "px";
-  canvas.style.height = height + "px";
+  canvas.style.setProperty("width", width + "px", "important");
+  canvas.style.setProperty("height", height + "px", "important");
+  canvas.style.maxHeight = height + "px";
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);

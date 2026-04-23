@@ -449,7 +449,9 @@ select.input   { cursor: pointer; }
 .chartWrap canvas {
   display: block !important;
   width: 100% !important;
-  height: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  max-height: 100% !important;
 }
 .chartFallback {
   position: absolute;
