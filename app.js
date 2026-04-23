@@ -662,6 +662,18 @@ function niceCeil(value) {
   return nice * base;
 }
 
+function buildNiceAxis(maxValue, targetSteps = 4) {
+  const v = Math.max(1, Number(maxValue) || 0);
+  const rawStep = v / Math.max(2, targetSteps);
+  const exp = Math.floor(Math.log10(rawStep));
+  const base = Math.pow(10, exp);
+  const frac = rawStep / base;
+  const niceFrac = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 2.5 ? 2.5 : frac <= 5 ? 5 : 10;
+  const step = niceFrac * base;
+  const steps = Math.max(2, Math.ceil(v / step));
+  return { max: step * steps, step, steps };
+}
+
 function ensureChartCtx(id, fallbackHeight = 220) {
   if (typeof Chart === "undefined") {
     renderChartUnavailable(id, "Biblioteca de gráficos não carregada");
@@ -724,6 +736,7 @@ async function loadStateAsync() {
       assets,
       liabilities: Array.isArray(p.liabilities) ? p.liabilities : [],
       transactions: Array.isArray(p.transactions) ? p.transactions : [],
+      bankTransactions: Array.isArray(p.bankTransactions) ? p.bankTransactions : [],
       dividends: Array.isArray(p.dividends) ? p.dividends : [],
       divSummaries: Array.isArray(p.divSummaries) ? p.divSummaries : [],
       history: Array.isArray(p.history) ? p.history : [],
@@ -1689,14 +1702,14 @@ function preparePlainCanvas(id, fallbackHeight = 220) {
 }
 
 function drawPlainDonutChart(id, entries, total) {
-  const chartHeight = entries.length <= 4 ? 120 : entries.length <= 8 ? 132 : entries.length <= 12 ? 144 : 156;
+  const chartHeight = entries.length <= 4 ? 148 : entries.length <= 8 ? 156 : entries.length <= 12 ? 164 : 172;
   const prep = preparePlainCanvas(id, chartHeight);
   if (!prep) return false;
   const { ctx, width, height } = prep;
   const cx = width / 2;
-  const cy = height / 2;
-  const radius = Math.min(width, height) * 0.25;
-  const inner = radius * 0.62;
+  const cy = Math.round(height / 2);
+  const radius = Math.min(width * 0.28, height * 0.40);
+  const inner = radius * 0.58;
 
   if (!entries.length || total <= 0) {
     ctx.fillStyle = "#94a3b8";
@@ -1727,7 +1740,7 @@ function drawPlainDonutChart(id, entries, total) {
   ctx.restore();
 
   ctx.fillStyle = "#0f172a";
-  ctx.font = "700 16px system-ui, -apple-system, sans-serif";
+  ctx.font = "700 14px system-ui, -apple-system, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText("Saídas", cx, cy - 8);
   ctx.font = "700 15px system-ui, -apple-system, sans-serif";
@@ -2734,46 +2747,51 @@ function renderBalance() { renderCashflow(); }
 
 function drawPlainBarChart(id, keys, data) {
   const groups = Math.max(1, keys.length);
-  const chartHeight = groups <= 1 ? 124 : groups <= 3 ? 136 : groups <= 6 ? 148 : 160;
+  const chartHeight = groups <= 1 ? 118 : groups <= 4 ? 132 : groups <= 8 ? 146 : 160;
   const prep = preparePlainCanvas(id, chartHeight);
   if (!prep) return false;
   const { ctx, width, height } = prep;
-  const left = 46, right = 8, top = 22, bottom = 28;
+  const left = 54, right = 12, top = 30, bottom = 30;
   const plotW = Math.max(40, width - left - right);
-  const plotH = Math.max(36, height - top - bottom);
+  const plotH = Math.max(44, height - top - bottom);
   const maxVal = Math.max(1, ...data.map(d => Math.max(parseNum(d.in), parseNum(d.out))));
-  const steps = 3;
-  const niceMax = niceCeil(maxVal * 1.18);
+  const axis = buildNiceAxis(maxVal * 1.05, 4);
+  const steps = axis.steps;
+  const niceMax = axis.max;
 
-  ctx.fillStyle = "#0f172a";
-  ctx.font = "600 12px system-ui, -apple-system, sans-serif";
+  ctx.font = "600 11px system-ui, -apple-system, sans-serif";
   ctx.textAlign = "left";
-  ctx.fillRect(left, 6, 12, 12);
-  ctx.fillStyle = "#0f172a";
-  ctx.fillText("Entradas", left + 18, 16);
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#10b981";
+  ctx.fillRect(left, 12, 10, 10);
+  ctx.fillStyle = "#cbd5e1";
+  ctx.fillText("Entradas", left + 16, 17);
   ctx.fillStyle = "#ef4444";
-  ctx.fillRect(left + 92, 6, 12, 12);
-  ctx.fillStyle = "#0f172a";
-  ctx.fillText("Saídas", left + 110, 16);
+  ctx.fillRect(left + 86, 12, 10, 10);
+  ctx.fillStyle = "#cbd5e1";
+  ctx.fillText("Saídas", left + 102, 17);
 
   for (let i = 0; i <= steps; i++) {
     const y = top + (plotH / steps) * i;
-    ctx.strokeStyle = "#e2e8f0";
+    ctx.strokeStyle = "rgba(148,163,184,0.28)";
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(left, y);
     ctx.lineTo(width - right, y);
     ctx.stroke();
     const val = niceMax * (1 - i / steps);
-    ctx.fillStyle = "#64748b";
+    ctx.fillStyle = "#94a3b8";
     ctx.font = "500 10px system-ui, -apple-system, sans-serif";
     ctx.textAlign = "right";
-    ctx.fillText(fmtEUR(val), left - 6, y + 3);
+    ctx.textBaseline = "middle";
+    ctx.fillText(fmtEUR(val), left - 8, y);
   }
 
   const groupW = plotW / groups;
-  const barW = Math.max(6, Math.min(18, groupW * 0.28));
-  const tickStep = Math.max(1, Math.ceil(groups / 8));
+  const barGap = Math.max(3, Math.min(8, groupW * 0.06));
+  const barW = Math.max(8, Math.min(18, (groupW - barGap * 3) / 2));
+  const tickStep = Math.max(1, Math.ceil(groups / 6));
+
   keys.forEach((label, idx) => {
     const center = left + groupW * idx + groupW / 2;
     const inVal = parseNum(data[idx].in);
@@ -2784,21 +2802,22 @@ function drawPlainBarChart(id, keys, data) {
     ctx.fillStyle = "#10b981";
     if (typeof ctx.roundRect === 'function') {
       ctx.beginPath();
-      ctx.roundRect(center - barW - 2, top + plotH - inH, barW, inH, 4);
+      ctx.roundRect(center - barW - barGap / 2, top + plotH - inH, barW, inH, 4);
       ctx.fill();
-    } else ctx.fillRect(center - barW - 2, top + plotH - inH, barW, inH);
+    } else ctx.fillRect(center - barW - barGap / 2, top + plotH - inH, barW, inH);
 
     ctx.fillStyle = "#ef4444";
     if (typeof ctx.roundRect === 'function') {
       ctx.beginPath();
-      ctx.roundRect(center + 2, top + plotH - outH, barW, outH, 4);
+      ctx.roundRect(center + barGap / 2, top + plotH - outH, barW, outH, 4);
       ctx.fill();
-    } else ctx.fillRect(center + 2, top + plotH - outH, barW, outH);
+    } else ctx.fillRect(center + barGap / 2, top + plotH - outH, barW, outH);
 
     if (idx % tickStep === 0 || idx === groups - 1) {
-      ctx.fillStyle = "#64748b";
+      ctx.fillStyle = "#94a3b8";
       ctx.font = "500 10px system-ui, -apple-system, sans-serif";
       ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
       ctx.fillText(String(label), center, height - 10);
     }
   });
@@ -10779,6 +10798,12 @@ async function fetchQuoteWithFallback(ref) {
   state.settings.lastQuoteRefresh = { updated, failed, errors, ts: new Date().toISOString() };
   await saveStateAsync();
   renderAll();
+  updatePassiveBar();
+  try { renderDashboard(); } catch (_) {}
+  try { renderItems(); } catch (_) {}
+  try { renderAnalysis(); } catch (_) {}
+  try { renderDividends(); } catch (_) {}
+  try { renderCashflow(); } catch (_) {}
   renderEquityPnL();
   // Disparar evento para outros listeners (P&L, price alerts)
   document.dispatchEvent(new CustomEvent("quotesUpdated"));
