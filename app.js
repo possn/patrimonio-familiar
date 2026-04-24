@@ -11271,7 +11271,7 @@ function renderIRSCard() {
   const now = new Date();
   const yearStart = now.getFullYear() + "-01-01";
   const divYTD = (state.dividends||[]).filter(d=>d.date>=yearStart).reduce((s,d)=>s+getDividendGross(d),0);
-  const rendasYTD = state.assets.filter(a=>a.yieldType==="rent_month").reduce((s,a)=>s+parseNum(a.yieldValue)*now.getMonth(),0);
+  const rendasYTD = state.assets.filter(a=>a.yieldType==="rent_month").reduce((s,a)=>s+parseNum(a.yieldValue)*(now.getMonth()+1),0);
   const latentGains = state.assets.map(a=>calcGainLoss(a)).filter(Boolean).filter(g=>g.gain>0).reduce((s,g)=>s+g.gain,0);
   const taxDiv = divYTD*0.28, taxRendas = rendasYTD*0.28, taxGains = latentGains*0.28;
   const total = taxDiv + taxRendas;
@@ -11680,7 +11680,7 @@ function renderFiscalPanel() {
   // 2. Rendas
   const rendasAcum = state.assets
     .filter(a => a.yieldType === "rent_month")
-    .reduce((s, a) => s + parseNum(a.yieldValue) * now.getMonth(), 0); // meses já passados
+    .reduce((s, a) => s + parseNum(a.yieldValue) * (now.getMonth() + 1), 0); // meses já passados
 
   // 3. Mais-valias latentes (não realizadas — informativo)
   const latentGains = state.assets
@@ -11709,7 +11709,7 @@ function renderFiscalPanel() {
 
     <!-- Rendas -->
     ${rendasAcum > 0 ? `<div style="border-bottom:1px solid #f1f5f9;padding:10px 0">
-      <div style="font-weight:700;margin-bottom:6px">🏠 Rendas recebidas (est. ${now.getMonth()} meses)</div>
+      <div style="font-weight:700;margin-bottom:6px">🏠 Rendas recebidas (est. ${now.getMonth()+1} meses)</div>
       <div style="display:flex;justify-content:space-between;font-size:14px"><span>Rendas acumuladas</span><span>${fmtEUR(rendasAcum)}</span></div>
       <div style="display:flex;justify-content:space-between;font-size:14px"><span>IRS estimado (28%)</span><span style="color:#dc2626">-${fmtEUR(rendasAcum * 0.28)}</span></div>
     </div>` : ""}
@@ -12394,9 +12394,15 @@ function renderRebalancing() {
   const totalBuy  = rows.filter(r => r.delta > 0).reduce((s, r) => s + r.delta, 0);
   const totalSell = rows.filter(r => r.delta < 0).reduce((s, r) => s + Math.abs(r.delta), 0);
 
+  // Verificar se targets somam 100%
+  const targetsSum = Object.values(targets).reduce((s, v) => s + parseNum(v), 0);
+  const targetsWarning = Math.abs(targetsSum - 100) > 1
+    ? `<div style="margin-bottom:10px;padding:8px 10px;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;font-size:12px;color:#9a3412">⚠️ Os alvos somam <b>${fmtPct(targetsSum)}</b> em vez de 100% — os cálculos de rebalancing podem estar incorrectos. Redefine a alocação.</div>`
+    : "";
+
   if (totalEl) totalEl.innerHTML = `Comprar ${fmtEUR(totalBuy)} · Vender ${fmtEUR(totalSell)}`;
 
-  el.innerHTML = rows.map(r => {
+  el.innerHTML = targetsWarning + rows.map(r => {
     const offTarget = Math.abs(r.currentPct - r.targetPct);
     const urgent = offTarget > 5;
     const action = r.delta > 0 ? "COMPRAR" : r.delta < 0 ? "VENDER" : "OK";
@@ -12589,7 +12595,7 @@ function buildPortfolioContext() {
       const now = new Date();
       const yearStart = now.getFullYear() + "-01-01";
       const divYTD = (state.dividends||[]).filter(d=>d.date>=yearStart).reduce((s,d)=>s+getDividendGross(d),0);
-      const rendasYTD = state.assets.filter(a=>a.yieldType==="rent_month").reduce((s,a)=>s+parseNum(a.yieldValue)*now.getMonth(),0);
+      const rendasYTD = state.assets.filter(a=>a.yieldType==="rent_month").reduce((s,a)=>s+parseNum(a.yieldValue)*(now.getMonth()+1),0);
       return { divYTD, rendasYTD, total: (divYTD+rendasYTD)*0.28 };
     } catch { return { divYTD:0, rendasYTD:0, total:0 }; }
   })();
@@ -14126,7 +14132,7 @@ function renderReturnBreakdown() {
   el.innerHTML = `
     <div style="margin-bottom:10px;padding:10px;background:var(--kpi-net);border-radius:var(--r-sm)">
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-size:13px;font-weight:700">Retorno total total</span>
+        <span style="font-size:13px;font-weight:700">Retorno total</span>
         <span style="font-size:20px;font-weight:900;color:var(--vio)">${fmtPct(py.totalReturnAnnual)}</span>
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:3px">
