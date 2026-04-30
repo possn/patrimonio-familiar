@@ -7108,7 +7108,8 @@ function parseXTBTradesRows(rows, meta) {
 
 /** XTB Open Positions CSV (portfolio snapshot) */
 function parseXTBPositionsRows(rows, meta) {
-  const positions = [];
+  // XTB exports one row per buy lot — aggregate all lots per ticker into one position
+  const lotMap = new Map(); // key: symbol → aggregated lot data
   for (const raw of (rows || [])) {
     const r = normalizeRow(raw);
     const symbol   = String(r.symbol || r.simbolo || r.instrumento || "").trim();
@@ -7118,33 +7119,37 @@ function parseXTBPositionsRows(rows, meta) {
     const purchaseValue = parseNumberSmart(r.purchase_value || r["purchase value"] || r.valor_de_compra || r.valor_compra);
 
     if (!symbol || !Number.isFinite(vol) || vol <= 0) continue;
-    const ticker = xtbTickerToYahoo(symbol);
     const nativeCcy = xtbSymbolCurrency(symbol);
     const fx = brokerApproxFxToEUR(nativeCcy);
     const usePrice = Number.isFinite(mktPx) && mktPx > 0 ? mktPx : (Number.isFinite(openPx) ? openPx : 0);
-    // v19: purchase_value é o valor EUR real pago pela XTB (usa o FX do dia da compra).
-    // Para manter o market value ancorado em EUR (sem depender de FX estáticos),
-    // aplicamos a RAZÃO entre preço actual e preço de abertura nativo.
-    // market_value_EUR ≈ purchase_value_EUR × (preço_actual / preço_abertura)
-    // Isto herda o FX real da XTB e captura apenas a variação de preço.
     const hasPV = Number.isFinite(purchaseValue) && purchaseValue > 0;
-    const costBasisEUR = hasPV
-      ? purchaseValue  // valor EUR exacto já pago
-      : vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : usePrice) * fx;
-    let marketValueEUR;
+    const lotCost = hasPV ? purchaseValue : vol * (Number.isFinite(openPx) && openPx > 0 ? openPx : usePrice) * fx;
+    let lotMktVal;
     if (hasPV && Number.isFinite(openPx) && openPx > 0 && Number.isFinite(usePrice) && usePrice > 0) {
-      // Método proporcional — preserva o FX implícito da XTB
-      marketValueEUR = purchaseValue * (usePrice / openPx);
+      lotMktVal = purchaseValue * (usePrice / openPx);
     } else {
-      // Fallback: usar FX estático
-      marketValueEUR = vol * usePrice * fx;
+      lotMktVal = vol * usePrice * fx;
     }
 
+    if (!lotMap.has(symbol)) {
+      lotMap.set(symbol, { symbol, totalQty: 0, totalCost: 0, totalMktVal: 0, lastMktPx: 0, nativeCcy });
+    }
+    const agg = lotMap.get(symbol);
+    agg.totalQty   += vol;
+    agg.totalCost  += lotCost;
+    agg.totalMktVal += lotMktVal;
+    if (usePrice > 0) agg.lastMktPx = usePrice; // keep last known market price
+  }
+
+  const positions = [];
+  for (const agg of lotMap.values()) {
+    const ticker = xtbTickerToYahoo(agg.symbol);
+    const avgPx  = agg.totalQty > 0 ? agg.lastMktPx : 0;
     const pos = {
       id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
-      ticker, isin: "", name: symbol,
-      qty: vol, costBasisEUR, marketValueEUR,
-      pricePerShare: usePrice, priceCurrency: nativeCcy,
+      ticker, isin: "", name: agg.symbol,
+      qty: agg.totalQty, costBasisEUR: agg.totalCost, marketValueEUR: agg.totalMktVal,
+      pricePerShare: avgPx, priceCurrency: agg.nativeCcy,
       class: brokerPositionClassFromTicker(ticker),
       positionKind: "market_snapshot",
       snapshotDate: meta.asOfDate || isoToday(),
@@ -7311,6 +7316,38 @@ function rebuildBrokerGeneratedData() {
   state.assets = (state.assets || []).filter(a => !a.generatedFromBroker);
   state.dividends = (state.dividends || []).filter(d => !d.generatedFromBroker);
   state.transactions = (state.transactions || []).filter(t => !t.generatedFromBroker);
+
+  // Deduplicate bd.positions by security identity for non-snapshot positions.
+  // When the same CSV files are imported multiple times, bd.positions can accumulate
+  // duplicate ledger-reconstructed entries for the same ticker/ISIN with slightly
+  // different qty/cost (different brokerPositionKey but same security).
+  // Keep only the entry with the highest qty per security+sourceName combination.
+  {
+    const seenLedger = new Map(); // secKey|sourceName → index of best entry
+    const toRemove = new Set();
+    (bd.positions || []).forEach((p, i) => {
+      if (p.positionKind === "market_snapshot") return; // snapshots handled separately
+      const secKey = makeBrokerSecurityKey(p);
+      const dedupeKey = `${secKey}|${p.sourceName || ""}`;
+      if (!seenLedger.has(dedupeKey)) {
+        seenLedger.set(dedupeKey, i);
+      } else {
+        // Keep the one with more qty (more complete reconstruction)
+        const prevIdx = seenLedger.get(dedupeKey);
+        const prevQty = parseNum((bd.positions[prevIdx] || {}).qty);
+        const curQty  = parseNum(p.qty);
+        if (curQty > prevQty) {
+          toRemove.add(prevIdx);
+          seenLedger.set(dedupeKey, i);
+        } else {
+          toRemove.add(i);
+        }
+      }
+    });
+    if (toRemove.size > 0) {
+      bd.positions = (bd.positions || []).filter((_, i) => !toRemove.has(i));
+    }
+  }
 
   const posMap = new Map();
   const touchPos = ({ ticker = "", isin = "", name = "", cls = "", currency = "EUR", sourceName = "" } = {}) => {
