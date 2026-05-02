@@ -1,6 +1,15 @@
-/* Património Familiar — Service Worker v52 */
-const CACHE_NAME = "pf-cache-v52";
-const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest"];
+/* Património Familiar — Service Worker v54 */
+const CACHE_NAME = "pf-cache-v54";
+const ASSETS = [
+  "./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest",
+  "./icon192.png", "./icon512.png",
+  "./icon192-maskable.png", "./icon512-maskable.png",
+  "./apple-touch-icon.png", "./apple-touch-icon-167.png",
+  "./apple-touch-icon-152.png", "./apple-touch-icon-120.png",
+  "./splash-430x932.png", "./splash-393x852.png", "./splash-390x844.png",
+  "./splash-375x812.png", "./splash-414x896.png", "./splash-375x667.png",
+  "./splash-1024x1366.png", "./splash-834x1194.png", "./splash-768x1024.png"
+];
 
 self.addEventListener("install", event => {
   self.skipWaiting();

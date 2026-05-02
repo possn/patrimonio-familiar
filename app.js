@@ -1270,11 +1270,22 @@ function setView(view) {
     window._pnlExpanded = false;
   }
   _initViewCache();
+  // Phase 1 (sync): switch visible section immediately — user sees tab change at once
   for (const s of _viewEls) s.hidden = s.dataset.view !== view;
   for (const b of _navEls) b.classList.toggle("navbtn--active", b.dataset.view === view);
-  if (view === "assets") updateQuoteErrorIndicator();
-  scheduleRenderView(view, { force: false, sync: false });
   try { window.scrollTo(0, 0); } catch (_) {}
+  // Phase 2 (deferred): render content after browser has painted the new tab frame.
+  // Using double-RAF ensures one paint cycle completes before heavy DOM work starts,
+  // making the tab feel instantly responsive even when render takes >100ms.
+  if (pendingViewRenderFrame) { try { cancelAnimationFrame(pendingViewRenderFrame); } catch(_){} }
+  pendingViewRenderFrame = requestAnimationFrame(() => {
+    pendingViewRenderFrame = requestAnimationFrame(() => {
+      pendingViewRenderFrame = null;
+      if (currentView !== view) return; // user navigated away before render
+      if (view === "assets") updateQuoteErrorIndicator();
+      renderView(view, { force: false, sync: true });
+    });
+  });
 }
 
 function openModal(id) {
@@ -7432,9 +7443,29 @@ function rebuildBrokerGeneratedData() {
         pos.hasSnapshot = true;
       }
     } else {
-      pos.qty += parseNum(p.qty);
-      pos.costBasis += Math.max(0, parseNum(p.costBasisEUR));
-      if (!pos.marketValueEUR && parseNum(p.marketValueEUR) > 0) pos.marketValueEUR = parseNum(p.marketValueEUR);
+      // Non-snapshot (ledger-reconstructed from T212 events).
+      // Guard: same sourceName only contributes once per security; if a second record
+      // from the same file appears with more qty (re-import), replace previous contribution.
+      const srcKey = (p.sourceName || "").trim();
+      if (!pos._srcQty) pos._srcQty = new Map();
+      if (!pos._srcCost) pos._srcCost = new Map();
+      const prevSrcQty = pos._srcQty.get(srcKey) || 0;
+      const thisQty = parseNum(p.qty);
+      const thisCost = Math.max(0, parseNum(p.costBasisEUR));
+      if (srcKey && thisQty <= prevSrcQty && prevSrcQty > 0) {
+        // Same source already contributed more qty → skip this smaller duplicate
+      } else {
+        if (srcKey && prevSrcQty > 0) {
+          // Same source with MORE qty → undo previous, apply this
+          pos.qty = Math.max(0, pos.qty - prevSrcQty);
+          pos.costBasis = Math.max(0, pos.costBasis - (pos._srcCost.get(srcKey) || 0));
+        }
+        pos.qty += thisQty;
+        pos.costBasis += thisCost;
+        pos._srcQty.set(srcKey, thisQty);
+        pos._srcCost.set(srcKey, thisCost);
+        if (!pos.marketValueEUR && parseNum(p.marketValueEUR) > 0) pos.marketValueEUR = parseNum(p.marketValueEUR);
+      }
     }
   }
 
@@ -7536,8 +7567,11 @@ function rebuildBrokerGeneratedData() {
     }
 
     if (e.type === "DIVIDEND" || e.type === "ROC" || e.type === "DIVIDEND_ADJ") {
-      const gross = Math.max(0, parseNum(e.totalEUR));
+      // T212: "Total" = NET credited after WHT. XTB: "Amount" for DIVIDENT = gross (WHT merged via v19).
+      // Correct gross for T212 = totalEUR + taxEUR (re-add WHT to get pre-tax amount).
+      const net_received = Math.max(0, parseNum(e.totalEUR));
       const tax = Math.max(0, parseNum(e.taxEUR));
+      const gross = (e.broker === "XTB") ? net_received : (net_received + tax);
       const net = Math.max(0, gross - tax);
       const divNoteParts = [e.actionRaw || e.type, e.broker || "Corretora"];
       if (e.sourceName) divNoteParts.push(e.sourceName);
@@ -8232,7 +8266,14 @@ function autoCategorise(desc, dir) {
   if (/transferencia entre contas/.test(d)) return "Transferência entre contas";
 
   // Serviços municipais
-  if (/servicos municip|camara|municipal/.test(d)) return "Serviços municipais";
+  if (/servicos municip|camara|municipal|municipio/.test(d)) return "Serviços municipais";
+
+  // Transferências emitidas (Revolut, MB Way, TRF imediata)
+  if (/trf\.imed\. p\/|trf\.imed\.para|transferencia para revolut|para revolut/.test(d)) return "Transferência poupança";
+  if (/mb way/.test(d) && dir === "out") return "MB Way enviado";
+
+  // Quotas / associações
+  if (/quota mensal|quota|varzea de sintra|recreativa|associacao|sociedade recreativa/.test(d)) return "Quotas associações";
 
   // Fallback
   return dir === "in" ? "Outros recebimentos" : "Outras despesas";
