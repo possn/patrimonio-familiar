@@ -270,10 +270,6 @@ function openTip(key) {
   openModal("tipModal");
 }
 
-// Helper to create an info button
-function infoBtn(key) {
-  return `<button class="info-btn" onclick="openTip('${key}')" title="Saber mais">ℹ️</button>`;
-}
 function toast(msg, duration = 3000) {
   let el = document.getElementById("toastEl");
   if (!el) {
@@ -586,6 +582,9 @@ function _scheduleRcInvalidate() {
 function invalidateRenderCache() {
   _rc = null;
   _rcScheduled = false;
+  // Invalidate calcTotals memo — ensures stale totals are never served after state change
+  calcTotals._cache = null;
+  calcTotals._sig = "";
   buildDividendStatsIndex._cache = null;
   buildDividendStatsIndex._sig = "";
   // Clear content hash guards so next render is fresh
@@ -652,16 +651,6 @@ function prepareChartCanvas(canvas, fallbackHeight = 220) {
   canvas.setAttribute("height", String(height));
   return canvas;
 }
-
-function niceCeil(value) {
-  const v = Math.max(1, Number(value) || 0);
-  const exp = Math.floor(Math.log10(v));
-  const base = Math.pow(10, exp);
-  const frac = v / base;
-  const nice = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
-  return nice * base;
-}
-
 function buildNiceAxis(maxValue, targetSteps = 4) {
   const v = Math.max(1, Number(maxValue) || 0);
   const rawStep = v / Math.max(2, targetSteps);
@@ -1161,6 +1150,12 @@ function calcPassiveAnnualSummary() {
 
 
 function calcTotals() {
+  // Memoize dentro do ciclo de render — a cadeia calcTotals→calcPassiveAnnualSummary→calcDividendYield
+  // é cara (itera todos os dividendos). Com 33 chamadas por sessão, o cache poupa ~32 iterações.
+  // Invalidação: ligada ao _rc (invalidateRenderCache limpa _rc e calcTotals._cache).
+  const _sig = `${(state.assets||[]).length}|${(state.liabilities||[]).length}|${(state.dividends||[]).length}|${(state.brokerData&&state.brokerData.events||[]).length}`;
+  if (calcTotals._cache && calcTotals._sig === _sig) return calcTotals._cache;
+
   const assetsTotal = state.assets.reduce((a, x) => a + parseNum(x.value), 0);
   const liabsTotal = state.liabilities.reduce((a, x) => a + parseNum(x.value), 0);
   const net = assetsTotal - liabsTotal;
@@ -1169,7 +1164,8 @@ function calcTotals() {
   const passiveAnnualReal = passive.realAnnual;
   const passiveAnnualProjected = passive.projectedAnnual > 0 ? passive.projectedAnnual : passiveAnnualReal;
 
-  return {
+  calcTotals._sig = _sig;
+  calcTotals._cache = {
     assetsTotal,
     liabsTotal,
     net,
@@ -1182,6 +1178,7 @@ function calcTotals() {
     passiveBreakdown: passive.breakdownProjected,
     passiveBreakdownReal: passive.breakdownReal
   };
+  return calcTotals._cache;
 }
 
 /* ─── COMPOUND INTEREST ENGINE ────────────────────────────── */
@@ -1400,91 +1397,6 @@ function classifySector(asset) {
   // No metadata yet — show as "Sem dados (⟳)"
   return null;
 }
-
-function renderSectorChart() {
-  const ctx = prepareChartCanvas(document.getElementById("sectorChart"), 220);
-  if (!ctx || typeof Chart === "undefined") { renderChartUnavailable("sectorChart"); return; }
-  clearChartUnavailable("sectorChart");
-
-  const EQUITY_CLASSES = ["Ações/ETFs","Cripto"];
-  const assets = state.assets.filter(a => EQUITY_CLASSES.includes(a.class) && parseNum(a.value) > 0);
-
-  const by = {};
-  let noData = 0;
-  for (const a of assets) {
-    const s = classifySector(a);
-    if (!s) { noData += parseNum(a.value); continue; }
-    by[s] = (by[s] || 0) + parseNum(a.value);
-  }
-  if (noData > 0) by["Sem dados (⟳)"] = noData;
-
-  const labels = Object.keys(by).sort((a,b) => by[b]-by[a]);
-  const values = labels.map(k => by[k]);
-  const total  = values.reduce((a,b) => a+b, 0);
-
-  const PALETTE = ["#5b5ce6","#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6",
-                   "#ec4899","#06b6d4","#84cc16","#f97316","#64748b","#0ea5e9",
-                   "#a855f7","#14b8a6"];
-
-  if (sectorChart) sectorChart.destroy();
-  sectorChart = new Chart(ctx.getContext("2d"), {
-    type: "doughnut",
-    data: { labels, datasets: [{ data: values, backgroundColor: PALETTE, borderWidth: 2, borderColor: "#fff" }] },
-    options: {
-      cutout: "65%",
-      plugins: {
-        legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 }, padding: 8 } },
-        tooltip: { callbacks: { label: c => `${c.label}: ${fmtEUR(c.raw)} (${fmtPct(total>0?c.raw/total*100:0)})` } }
-      }
-    }
-  });
-
-  // Update count label
-  const lbl = document.getElementById("sectorChartLabel");
-  if (lbl) lbl.textContent = `${assets.length} activos · ${labels.length} sectores`;
-}
-
-function renderGeoChart() {
-  const ctx = prepareChartCanvas(document.getElementById("geoChart"), 220);
-  if (!ctx || typeof Chart === "undefined") { renderChartUnavailable("geoChart"); return; }
-  clearChartUnavailable("geoChart");
-
-  const EQUITY_CLASSES = ["Ações/ETFs","Cripto"];
-  const assets = state.assets.filter(a => EQUITY_CLASSES.includes(a.class) && parseNum(a.value) > 0);
-
-  const by = {};
-  for (const a of assets) {
-    const g = classifyGeo(a);
-    by[g] = (by[g] || 0) + parseNum(a.value);
-  }
-
-  const GEO_COLORS = {
-    "USA":"#3b82f6","Europa":"#10b981","Asia":"#f59e0b","Asia/Pac":"#f97316",
-    "Canadá":"#8b5cf6","LatAm":"#ef4444","Cripto":"#64748b","Outros":"#94a3b8"
-  };
-
-  const labels = Object.keys(by).sort((a,b) => by[b]-by[a]);
-  const values = labels.map(k => by[k]);
-  const colors = labels.map(k => GEO_COLORS[k] || "#94a3b8");
-  const total  = values.reduce((a,b) => a+b, 0);
-
-  if (geoChart) geoChart.destroy();
-  geoChart = new Chart(ctx.getContext("2d"), {
-    type: "doughnut",
-    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 2, borderColor: "#fff" }] },
-    options: {
-      cutout: "65%",
-      plugins: {
-        legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 }, padding: 8 } },
-        tooltip: { callbacks: { label: c => `${c.label}: ${fmtEUR(c.raw)} (${fmtPct(total>0?c.raw/total*100:0)})` } }
-      }
-    }
-  });
-
-  const lbl = document.getElementById("geoChartLabel");
-  if (lbl) lbl.textContent = `${assets.length} activos · ${labels.length} regiões`;
-}
-
 function getDisplayedPassiveAnnual(totals) {
   const t = totals || (_rc ? _rc.totals : calcTotals());
   const real = parseNum(t && (t.passiveAnnualReal != null ? t.passiveAnnualReal : t.passiveAnnual));
@@ -2758,9 +2670,6 @@ function renderCashflow() {
   renderCashflowChart();
   renderCatChart();
 }
-
-function renderBalance() { renderCashflow(); }
-
 function drawPlainBarChart(id, keys, data) {
   const groups = Math.max(1, keys.length);
   const chartHeight = groups <= 1 ? 118 : groups <= 4 ? 132 : groups <= 8 ? 146 : 160;
@@ -4673,17 +4582,6 @@ const SECTOR_PALETTE = [
 const GEO_PALETTE = ["#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#84cc16"];
 
 let sectorChartInst = null, geoChartInst = null;
-
-function makeLegendRow(label, value, total, color) {
-  const pct = total > 0 ? (value / total * 100) : 0;
-  return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f1f5f9">
-    <div style="width:12px;height:12px;border-radius:3px;background:${color};flex-shrink:0"></div>
-    <div style="flex:1;font-size:13px;font-weight:600">${escapeHtml(label)}</div>
-    <div style="font-size:13px;color:#64748b">${fmtEUR(value)}</div>
-    <div style="font-size:12px;font-weight:700;min-width:44px;text-align:right">${pct.toFixed(1)}%</div>
-  </div>`;
-}
-
 function svgDonut(data, palette, totalLabel) {
   // data = [{label, value, pct}], returns SVG string
   const R = 90, cx = 110, cy = 110, stroke = 22;
@@ -5411,25 +5309,6 @@ function syncCompoundFromAsset(portfolioData, avgSavings) {
 
 /* ─── INTEGRAÇÃO P&L → COMPOUND + FIRE ─────────────────────── */
 /* ─── CAGR por posição (retorno anualizado real) ─────────────── */
-function calcPositionCAGR(pos, asset) {
-  // Usar TWR do portfólio se disponível — é o mais rigoroso
-  const twr = calcTWR();
-  if (twr && Math.abs(twr.annualised) < 100 && twr.years >= 0.5) {
-    return twr.annualised; // já anualizado e time-weighted
-  }
-  // Fallback: CAGR da posição individual
-  // gainPct é ganho total acumulado. Precisa da duração em anos.
-  // Temos lastUpdated mas não a data de compra — usar 1 ano como estimativa conservadora
-  // se não há data. Isto sub-estima o CAGR (mais conservador que sobre-estimar).
-  const years = asset.buyDate
-    ? (new Date() - new Date(asset.buyDate)) / (365.25 * 86400000)
-    : 1; // conservador: assume 1 ano se sem data
-  const yrs = Math.max(years, 0.5); // mínimo 6 meses
-  const totalReturn = pos.gainPct / 100;
-  const cagr = (Math.pow(1 + totalReturn, 1 / yrs) - 1) * 100;
-  return Math.max(-50, Math.min(cagr, 100)); // cap ±100% para segurança
-}
-
 function usePnLInCompound() {
   const t = calcTotals();
   $("compPrincipal").value = String(Math.round(t.net));
@@ -8373,8 +8252,8 @@ async function importBankFile(file) {
   if (!parsed.length && (bankFmt === "montepio" || bankFmt === "bpi")) tryParser("Parser Montepio/BPI", () => parseMontepioBPI(text || ""));
 
   if (!parsed.length) tryParser("Parser Santander regex", () => parseSantanderRegex((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
-  if (!parsed.length) tryParser("Parser Santander tabular", () => parseSantanderTabular((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
-  if (!parsed.length) tryParser("Parser Santander PDF", () => parseSantanderPDF((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
+  if (!parsed.length) tryParser("Parser Santander tabular", () => parseSantanderStructured((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
+  if (!parsed.length) tryParser("Parser Santander PDF", () => parseSantanderStructured((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
   if (!parsed.length) tryParser("Parser Millennium", () => parseMillenniumCSV(text || ""));
   if (!parsed.length) tryParser("Parser CGD", () => parseCGDCSV(text || ""));
   if (!parsed.length) tryParser("Parser Novo Banco", () => parseNovoBancoCSV(text || ""));
@@ -8924,15 +8803,6 @@ async function parseSantanderPDFFromFile(file) {
   };
   const noiseRe = /^(Titular|Pedro$|Conta$|PT\d{2} |Saldo disponível$|Movimentos da sua conta|Data da operação$|Operação$|Valor$|Saldo$|Documento com data:|Página \d+ de \d+|Para pesquisas genéricas)/i;
   const moneyRe = /^[\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2}(?:\s*€)?$/;
-
-  function parsePTDateExactLocal(s) {
-    const m = String(s || "").trim().match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
-    if (!m) return null;
-    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
-    if (!mon) return null;
-    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
-  }
-
   const out = [];
   let i = 0;
   let currentDate = null;
@@ -8942,12 +8812,12 @@ async function parseSantanderPDFFromFile(file) {
     let t = tokens[i];
     if (noiseRe.test(t) || t === "€") { i++; continue; }
 
-    const maybeDate = parsePTDateExactLocal(t);
+    const maybeDate = parseDateFlexible(t);
     if (maybeDate) { currentDate = maybeDate; i++; continue; }
 
     const m = t.match(/^D\. valor:\s*(\d{1,2}\s+[A-Za-zÀ-ÿ]+\s+\d{4})$/i);
     if (m) {
-      currentValueDate = parsePTDateExactLocal(m[1]) || currentDate;
+      currentValueDate = parseDateFlexible(m[1]) || currentDate;
       i++;
       continue;
     }
@@ -8958,7 +8828,7 @@ async function parseSantanderPDFFromFile(file) {
     while (i < tokens.length) {
       t = tokens[i];
       if (noiseRe.test(t) || t === "€") { i++; continue; }
-      if (parsePTDateExactLocal(t) || /^D\. valor:/i.test(t) || t === "−" || t === "-" || moneyRe.test(t)) break;
+      if (parseDateFlexible(t) || /^D\. valor:/i.test(t) || t === "−" || t === "-" || moneyRe.test(t)) break;
       descParts.push(t);
       i++;
     }
@@ -8999,15 +8869,6 @@ function parseSantanderRegex(text) {
     jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
     jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
   };
-
-  function parsePTDateLocal(s) {
-    const m = String(s || "").trim().match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
-    if (!m) return null;
-    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
-    if (!mon) return null;
-    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
-  }
-
   const norm = src
     .replace(/\r/g, "")
     .replace(/\t+/g, " ")
@@ -9023,8 +8884,8 @@ function parseSantanderRegex(text) {
   const out = [];
   let m;
   while ((m = re.exec(norm)) !== null) {
-    const date = parsePTDateLocal(m[1]);
-    const valueDate = parsePTDateLocal(m[2]) || date;
+    const date = parseDateFlexible(m[1]);
+    const valueDate = parseDateFlexible(m[2]) || date;
     const desc = String(m[3] || "").replace(/\s+/g, " ").trim();
     const amount = parseEuroNum(m[4]);
     const balance = parseEuroNum(m[5]);
@@ -9040,22 +8901,6 @@ function parseSantanderStructured(text) {
     jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
     jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
   };
-
-  function parsePTDateExact(s) {
-    const m = String(s || "").trim().match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
-    if (!m) return null;
-    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
-    if (!mon) return null;
-    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
-  }
-
-  function parseValueDate(s) {
-    const m = String(s || "").match(/D[\.\s]?\s*valor\s*:\s*(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})/i);
-    if (!m) return null;
-    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
-    if (!mon) return null;
-    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
-  }
 
   function isNoiseLine(line) {
     return /^(titular\b|conta\s+pt|saldo disponível|movimentos da sua conta|data da operação\b|documento com data:|página\s+\d+\s+de\s+\d+|para pesquisas genéricas)/i.test(line);
@@ -9090,7 +8935,7 @@ function parseSantanderStructured(text) {
     const line = lines[i];
     if (isNoiseLine(line)) { i++; continue; }
 
-    const maybeDate = parsePTDateExact(line);
+    const maybeDate = parseDateFlexible(line);
     if (maybeDate) {
       currentDate = maybeDate;
       i++;
@@ -9115,7 +8960,7 @@ function parseSantanderStructured(text) {
       const inner = lines[i];
       if (isNoiseLine(inner)) { i++; continue; }
 
-      const nextDate = parsePTDateExact(inner);
+      const nextDate = parseDateFlexible(inner);
       if (nextDate) break;
 
       const nextValueDate = parseValueDate(inner);
@@ -9145,7 +8990,7 @@ function parseSantanderStructured(text) {
           while (k < lines.length && !lines[k].trim()) k++;
           if (k < lines.length) {
             const maybeBalLine = lines[k];
-            if (!isNoiseLine(maybeBalLine) && !parsePTDateExact(maybeBalLine) && !parseValueDate(maybeBalLine)) {
+            if (!isNoiseLine(maybeBalLine) && !parseDateFlexible(maybeBalLine) && !parseValueDate(maybeBalLine)) {
               const balTokens = extractMoneyTokens(maybeBalLine);
               if (balTokens.length === 1 && maybeBalLine.replace(balTokens[0][0], "").trim() === "") {
                 balance = parseEuroNum(balTokens[0][0]);
@@ -9175,7 +9020,7 @@ function parseSantanderStructured(text) {
     }
 
     if (!parsed) {
-      if (i < lines.length && parsePTDateExact(lines[i])) continue;
+      if (i < lines.length && parseDateFlexible(lines[i])) continue;
       i++;
     }
   }
@@ -9234,22 +9079,7 @@ function parseSantanderStatementStrict(text) {
   const monthMap = {
     jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
     jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
-  };
-
-  function parsePTDateStrict(s) {
-    const m = String(s || "").trim().match(/^(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})$/);
-    if (!m) return null;
-    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
-    if (!mon) return null;
-    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
-  }
-
-  function parseValueDateStrict(s) {
-    const m = String(s || "").trim().match(/^D\.\s*valor:\s*(\d{1,2}\s+[A-Za-zÀ-ÿ]+\s+\d{4})$/i);
-    return m ? (parsePTDateStrict(m[1]) || null) : null;
-  }
-
-  function isNoise(line) {
+  };  function isNoise(line) {
     return /^(titular\b|conta\s+pt|saldo dispon[ií]vel|movimentos da sua conta|data da opera[cç][aã]o\b|opera[cç][aã]o\b|valor\b|saldo\b|documento com data:|p[aá]gina\s+\d+\s+de\s+\d+|para pesquisas gen[eé]ricas)/i.test(String(line || "").trim());
   }
 
@@ -9283,13 +9113,13 @@ function parseSantanderStatementStrict(text) {
   let i = 0;
 
   while (i < lines.length) {
-    const opDate = parsePTDateStrict(lines[i]);
+    const opDate = parseDateFlexible(lines[i]);
     if (!opDate) { i++; continue; }
 
     let valueDate = opDate;
     i += 1;
     if (i < lines.length) {
-      const maybeVD = parseValueDateStrict(lines[i]);
+      const maybeVD = parseValueDate(lines[i]);
       if (maybeVD) {
         valueDate = maybeVD || opDate;
         i += 1;
@@ -9302,7 +9132,7 @@ function parseSantanderStatementStrict(text) {
 
     while (i < lines.length) {
       const ln = lines[i];
-      if (parsePTDateStrict(ln) || parseValueDateStrict(ln)) break;
+      if (parseDateFlexible(ln) || parseValueDate(ln)) break;
 
       let m = ln.match(amountBalanceOnlyRe);
       if (m) {
@@ -9327,7 +9157,7 @@ function parseSantanderStatementStrict(text) {
         if (i + 1 < lines.length) {
           const nextLine = lines[i + 1];
           const mb = nextLine.match(amountOnlyRe);
-          if (mb && !parsePTDateStrict(nextLine) && !parseValueDateStrict(nextLine)) {
+          if (mb && !parseDateFlexible(nextLine) && !parseValueDate(nextLine)) {
             balance = parseMoneyToken(mb[1]);
             i += 2;
             break;
@@ -9363,13 +9193,7 @@ function parseSantanderStatementStrict(text) {
 }
 
 
-function parseSantanderPDF(text) {
-  return parseSantanderStructured(text);
-}
 
-function parseSantanderTabular(text) {
-  return parseSantanderStructured(text);
-}
 
 
 function reconcileBankStatementRows(rows, bankFmt = "generic") {
@@ -10321,6 +10145,65 @@ function wire() {
   const btnDivToggle = document.getElementById("btnDivToggle");
   if (btnDivToggle) btnDivToggle.addEventListener("click", () => { divExpanded = !divExpanded; renderDividends(); });
 
+
+  // ── Exports, notifications, print (ex-wireV15) ──────────────
+  {
+    const b = id => document.getElementById(id);
+    if (b("btnExportCashflowCSV"))  b("btnExportCashflowCSV").addEventListener("click", exportCashflowCSV);
+    if (b("btnExportPortfolioCSV")) b("btnExportPortfolioCSV").addEventListener("click", exportPortfolioCSV);
+    if (b("btnExportPortfolioXLSX")) b("btnExportPortfolioXLSX").addEventListener("click", exportPortfolioXLSX);
+    if (b("btnEnableNotifications")) b("btnEnableNotifications").addEventListener("click", requestNotifications);
+    if (b("btnPrintDashboard"))     b("btnPrintDashboard").addEventListener("click", printDashboard);
+    if (b("btnEnableNotifications") && typeof Notification !== "undefined" && Notification.permission === "granted") {
+      b("btnEnableNotifications").textContent = "🔔 Notificações ativas";
+      b("btnEnableNotifications").disabled = true;
+    }
+  }
+
+  // ── E-se, export fiscal (ex-wireV15b) ────────────────────────
+  {
+    const btnWI = document.getElementById("btnWhatIf");
+    if (btnWI) btnWI.addEventListener("click", runWhatIf);
+    const wiInput = document.getElementById("whatIfPct");
+    if (wiInput) wiInput.addEventListener("keydown", e => { if (e.key === "Enter") runWhatIf(); });
+    const btnFisc = document.getElementById("btnExportFiscal");
+    if (btnFisc) btnFisc.addEventListener("click", exportFiscalCSV);
+  }
+
+  // ── Drawdown, benchmark, price alerts (ex-wireV16) ───────────
+  ["drawdownWithdrawal","drawdownReturn","drawdownInflation","drawdownYears"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("change", renderDrawdownPanel);
+  });
+  document.addEventListener("quotesUpdated", checkPriceAlerts);
+
+  // ── AI analysis buttons (ex-wireAI) ──────────────────────────
+  {
+    const btnAI = document.getElementById("btnAiAnalyse");
+    if (btnAI) btnAI.addEventListener("click", runAIAnalysis);
+    const btnCopy = document.getElementById("btnAiCopy");
+    if (btnCopy) btnCopy.addEventListener("click", () => {
+      const text = document.getElementById("aiResultContent");
+      if (!text) return;
+      navigator.clipboard.writeText(text.innerText || text.textContent || "")
+        .then(() => toast("✅ Copiado para a área de transferência."))
+        .catch(() => toast("Não foi possível copiar."));
+    });
+    const analysisTabEl = document.getElementById("analysisTab");
+    if (analysisTabEl) analysisTabEl.addEventListener("change", () => {
+      const v = analysisTabEl.value;
+      if (v === "ai")          { renderAIHistory(); updateAIKeyStatus(); }
+      if (v === "performance") { renderBenchmarkComparison(); renderRebalancing(); }
+      if (v === "drawdown")    renderDrawdownPanel();
+    });
+    document.querySelectorAll(".navbtn").forEach(b => {
+      if (b.dataset.view === "settings") b.addEventListener("click", () => setTimeout(updateAIKeyStatus, 100));
+    });
+  }
+
+  // ── P&L on quote update (ex-wirePnL) ─────────────────────────
+  document.addEventListener("quotesUpdated", renderEquityPnL);
+
   // Init
   setModeLiabs(false);
   setView("dashboard");
@@ -10904,14 +10787,9 @@ async function fetchQuoteWithFallback(ref) {
   state.settings.lastQuoteRefreshDate = new Date().toISOString().slice(0, 10);
   state.settings.lastQuoteRefreshTs   = Date.now();
   await saveStateAsync();
+  // renderAll() já marca todas as views como dirty e agenda o render da view actual.
+  // As chamadas individuais anteriores eram redundantes — cada tab era renderizada 2x.
   renderAll();
-  updatePassiveBar();
-  try { renderDashboard(); } catch (_) {}
-  try { renderItems(); } catch (_) {}
-  try { renderAnalysis(); } catch (_) {}
-  try { renderDividends(); } catch (_) {}
-  try { renderCashflow(); } catch (_) {}
-  renderEquityPnL();
   // Disparar evento para outros listeners (P&L, price alerts)
   document.dispatchEvent(new CustomEvent("quotesUpdated"));
 
@@ -11498,27 +11376,6 @@ function realRate(nominalPct, inflationPct) {
 /* ─── PRINT / PDF ────────────────────────────────────────────── */
 function printDashboard() { window.print(); }
 
-/* ─── WIRE V15: botões extra ────────────────────────────────── */
-(function wireV15() {
-  // Aguardar DOM pronto
-  const init = () => {
-    if (window.__PF_WIRE_V15_DONE) return;
-    window.__PF_WIRE_V15_DONE = true;
-    const b = id => document.getElementById(id);
-    if (b("btnExportCashflowCSV")) b("btnExportCashflowCSV").addEventListener("click", exportCashflowCSV);
-    if (b("btnExportPortfolioCSV")) b("btnExportPortfolioCSV").addEventListener("click", exportPortfolioCSV);
-    if (b("btnExportPortfolioXLSX")) b("btnExportPortfolioXLSX").addEventListener("click", exportPortfolioXLSX);
-    if (b("btnEnableNotifications")) b("btnEnableNotifications").addEventListener("click", requestNotifications);
-    if (b("btnPrintDashboard")) b("btnPrintDashboard").addEventListener("click", printDashboard);
-    // Actualizar estado botão notificações
-    if (b("btnEnableNotifications") && typeof Notification !== "undefined" && Notification.permission === "granted") {
-      b("btnEnableNotifications").textContent = "🔔 Notificações ativas";
-      b("btnEnableNotifications").disabled = true;
-    }
-  };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
-  else init();
-})();
 
 /* ═══════════════════════════════════════════════════════════════
    PATRIMÓNIO FAMILIAR — v15 PARTE 2
@@ -11912,30 +11769,6 @@ function exportFiscalCSV() {
 
 /* v15: FIRE custom params lidos directamente em renderFire via window._fireCustomR/Inf */
 
-/* ─── WIRE v15 PARTE 2 ───────────────────────────────────────── */
-(function wireV15b() {
-  const init = () => {
-    if (window.__PF_WIRE_V15B_DONE) return;
-    window.__PF_WIRE_V15B_DONE = true;
-    // Simulador E-se?
-    const btnWI = document.getElementById("btnWhatIf");
-    if (btnWI) btnWI.addEventListener("click", runWhatIf);
-
-    // Enter no campo E-se
-    const wiInput = document.getElementById("whatIfPct");
-    if (wiInput) wiInput.addEventListener("keydown", e => { if (e.key === "Enter") runWhatIf(); });
-
-    // Export fiscal
-    const btnFisc = document.getElementById("btnExportFiscal");
-    if (btnFisc) btnFisc.addEventListener("click", exportFiscalCSV);
-
-    // FIRE custom inputs — wired via wire() principal
-
-    // Nota: renderFiscalPanel é chamada directamente em renderAnalysis quando tab === "fiscal"
-  };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
-  else init();
-})();
 
 /* v15: renderHealthRatios e renderRiskAlerts chamados directamente em renderDashboard */
 
@@ -11945,42 +11778,7 @@ function exportFiscalCSV() {
    alerta DP próximo do vencimento, net worth milestone
    ═══════════════════════════════════════════════════════════════ */
 
-/* ─── HISTÓRICO DE TAXA DE POUPANÇA (últimos 12 meses) ──────── */
-function calcSavingsHistory() {
-  const byMonth = new Map();
-  for (const tx of state.transactions) {
-    if (isInterAccountTransfer(tx)) continue;
-    const d = (tx.date || "").slice(0, 7);
-    if (!d) continue;
-    const cur = byMonth.get(d) || { in: 0, out: 0 };
-    if (tx.type === "in") cur.in += parseNum(tx.amount);
-    else cur.out += parseNum(tx.amount);
-    byMonth.set(d, cur);
-  }
-  const keys = [...byMonth.keys()].sort().slice(-12);
-  return keys.map(k => {
-    const { in: inc, out } = byMonth.get(k);
-    const net = inc - out;
-    const rate = inc > 0 ? Math.max(0, net / inc * 100) : 0;
-    return { month: k, in: inc, out, net, rate };
-  });
-}
-
-/* ─── DCA (Dollar-Cost Averaging) TRACKER ──────────────────── */
-function calcDCA(assetId) {
-  // Calcula preço médio ponderado das compras do asset via transacções marcadas como "Compra"
-  const buys = state.transactions.filter(t =>
-    t.type === "in" &&
-    (t.category || "").toLowerCase().includes("compra") &&
-    t.assetRef === assetId
-  );
-  if (!buys.length) return null;
-  const totalSpent = buys.reduce((s, t) => s + parseNum(t.amount), 0);
-  const totalUnits = buys.reduce((s, t) => s + parseNum(t.units || 0), 0);
-  return { totalSpent, totalUnits, avgPrice: totalUnits > 0 ? totalSpent / totalUnits : 0, count: buys.length };
-}
-
-/* ─── METAS / MILESTONES DE NET WORTH ───────────────────────── */
+/* ─── HISTÓRICO DE TAXA DE POUPANÇA (últimos 12 meses) ──────── *//* ─── DCA (Dollar-Cost Averaging) TRACKER ──────────────────── *//* ─── METAS / MILESTONES DE NET WORTH ───────────────────────── */
 function renderMilestones() {
   const el = document.getElementById("milestonesContent");
   const card = document.getElementById("milestonesCard");
@@ -12191,27 +11989,6 @@ function xirr(cashflows) {
   }
   return Number.isFinite(r) && Math.abs(r) < 100 ? r * 100 : null; // em %
 }
-
-function calcPortfolioXIRR() {
-  const t = calcTotals();
-  if (t.assetsTotal === 0) return null;
-
-  // Fluxos: entradas de cashflow marcadas como investimento, valor actual como retorno
-  const investFlows = state.transactions
-    .filter(tx => tx.type === "in" && (tx.category || "").toLowerCase().match(/poupança|investimento|depósito|compra/))
-    .map(tx => ({ date: tx.date, amount: -parseNum(tx.amount) })); // saída de caixa = negativo
-
-  if (investFlows.length === 0) return null;
-
-  // Ordenar por data
-  investFlows.sort((a, b) => a.date.localeCompare(b.date));
-
-  // Adicionar valor actual como retorno hoje
-  investFlows.push({ date: isoToday(), amount: t.net });
-
-  return xirr(investFlows);
-}
-
 /* ─── TWR — Time-Weighted Return ────────────────────────────── */
 // Elimina o efeito dos fluxos externos (depósitos/levantamentos)
 // Usa os snapshots mensais como sub-períodos
@@ -12714,31 +12491,6 @@ function renderDrawdownPanel() {
     </div>`;
 }
 
-/* ─── WIRE v16 ───────────────────────────────────────────────── */
-(function wireV16() {
-  const init = () => {
-    if (window.__PF_WIRE_V16_DONE) return;
-    window.__PF_WIRE_V16_DONE = true;
-    // Drawdown recalc
-    ["drawdownWithdrawal","drawdownReturn","drawdownInflation","drawdownYears"].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.addEventListener("change", renderDrawdownPanel);
-    });
-    // Benchmark tab
-    const tab = document.getElementById("analysisTab");
-    if (tab) tab.addEventListener("change", () => {
-      if (tab.value === "performance") {
-        renderBenchmarkComparison();
-        renderRebalancing();
-      }
-      if (tab.value === "drawdown") renderDrawdownPanel();
-    });
-    // Verificar alertas de preço após actualização de cotações
-    document.addEventListener("quotesUpdated", checkPriceAlerts);
-  };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
-  else init();
-})();
 
 /* ═══════════════════════════════════════════════════════════════
    PATRIMÓNIO FAMILIAR — ANÁLISE POR IA (Claude API)
@@ -13248,36 +13000,6 @@ function clearAIKey(provider) {
   toast(`API key de ${name} removida.`);
 }
 
-/* ─── WIRE IA ────────────────────────────────────────────────── */
-(function wireAI() {
-  const init = () => {
-    if (window.__PF_WIRE_AI_DONE) return;
-    window.__PF_WIRE_AI_DONE = true;
-    const btn = document.getElementById("btnAiAnalyse");
-    if (btn) btn.addEventListener("click", runAIAnalysis);
-
-    const btnCopy = document.getElementById("btnAiCopy");
-    if (btnCopy) btnCopy.addEventListener("click", () => {
-      const text = document.getElementById("aiResultContent");
-      if (!text) return;
-      navigator.clipboard.writeText(text.innerText || text.textContent || "")
-        .then(() => toast("✅ Copiado para a área de transferência."))
-        .catch(() => toast("Não foi possível copiar."));
-    });
-
-    // Renderizar análise quando entra na tab
-    const tab = document.getElementById("analysisTab");
-    if (tab) tab.addEventListener("change", () => {
-      if (tab.value === "ai") { renderAIHistory(); updateAIKeyStatus(); }
-    });
-    // Actualizar status quando entra nas Definições
-    document.querySelectorAll(".navbtn").forEach(b => {
-      if (b.dataset.view === "settings") b.addEventListener("click", () => setTimeout(updateAIKeyStatus, 100));
-    });
-  };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
-  else init();
-})();
 
 /* ═══════════════════════════════════════════════════════════════
    PORTFOLIO DE ACÇÕES/ETFs — P&L por posição + resumo global
@@ -14160,17 +13882,6 @@ function wireCurrencyModal() {
   curSel.addEventListener("change", update);
   vlEl.addEventListener("input",    update);
 }
-/* ─── WIRE P&L ───────────────────────────────────────────────── */
-(function wirePnL() {
-  const init = () => {
-    if (window.__PF_WIRE_PNL_DONE) return;
-    window.__PF_WIRE_PNL_DONE = true;
-    // Renderizar P&L quando entra na tab "assets" e quando cotações são actualizadas
-    document.addEventListener("quotesUpdated", renderEquityPnL);
-  };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
-  else init();
-})();
 
 /* ═══════════════════════════════════════════════════════════════
    MELHORIAS ADICIONAIS v16.1
@@ -14337,25 +14048,7 @@ function renderReturnBreakdown() {
     </div>`;
 }
 
-/* ─── ANOS ATÉ FIRE COM DCA ──────────────────────────────────── */
-function calcYearsToFIRE(capital, annualSavings, returnRate, expenses) {
-  const fireNumber = expenses / 0.04; // regra 4% SWR
-  if (capital >= fireNumber) return 0;
-
-  const monthlyRate = returnRate / 100 / 12;
-  const monthlyDCA  = annualSavings / 12;
-  let cap = capital;
-  let months = 0;
-  const MAX_MONTHS = 600; // 50 anos
-
-  while (cap < fireNumber && months < MAX_MONTHS) {
-    cap = cap * (1 + monthlyRate) + monthlyDCA;
-    months++;
-  }
-  return months < MAX_MONTHS ? months / 12 : null;
-}
-
-/* ─── EXPORTAR RELATÓRIO ANUAL ───────────────────────────────── */
+/* ─── ANOS ATÉ FIRE COM DCA ──────────────────────────────────── *//* ─── EXPORTAR RELATÓRIO ANUAL ───────────────────────────────── */
 function exportAnnualReport() {
   const t    = calcTotals();
   const py   = calcPortfolioYield();
