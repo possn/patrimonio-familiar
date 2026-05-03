@@ -2054,7 +2054,12 @@ function renderSummary() {
     const sourceBadge = it.generatedFromBroker
       ? `<span class="badge" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe">Corretora</span>`
       : ``;
-    row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(it.name || "—")} ${badge} ${sourceBadge}${ccyBadge(it)}</div><div class="item__s">${escapeHtml(it.class || "")}</div></div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
+    const todayPtCard = new Date().toLocaleDateString("pt-PT");
+    const isStaleCard = it.ticker && (!it.lastUpdated || String(it.lastUpdated || "") !== todayPtCard);
+    const staleBadge = isStaleCard
+      ? `<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;font-size:10px" title="Cotação desactualizada">⏱ desact.</span>`
+      : ``;
+    row.innerHTML = `<div class="item__l"><div class="item__t">${escapeHtml(it.name || "—")} ${badge} ${sourceBadge}${staleBadge}${ccyBadge(it)}</div><div class="item__s">${escapeHtml(it.class || "")}</div></div><div class="item__v">${fmtEUR(parseNum(it.value))}</div>`;
     row.addEventListener("click", () => { setView("assets"); editItem(it.id); });
     list.appendChild(row);
   }
@@ -10411,6 +10416,25 @@ async function refreshLiveQuotes() {
   let updated = 0, failed = 0;
   const errors = [];
 
+  // Show persistent progress indicator during refresh
+  const _showRefreshProgress = (msg) => {
+    let el = document.getElementById("quoteRefreshProgress");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "quoteRefreshProgress";
+      el.style.cssText = "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:#5b5ce6;color:#fff;padding:10px 20px;border-radius:20px;font-weight:700;font-size:14px;z-index:998;max-width:90vw;text-align:center;box-shadow:0 8px 24px rgba(91,92,230,.3)";
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.style.display = "block";
+    el.style.opacity = "1";
+  };
+  const _hideRefreshProgress = () => {
+    const el = document.getElementById("quoteRefreshProgress");
+    if (el) { el.style.opacity = "0"; setTimeout(() => { if (el) el.style.display = "none"; }, 300); }
+  };
+  _showRefreshProgress("⟳ A actualizar cotações…");
+
   // Convert local / broker tickers into Yahoo candidates.
   // Several imports keep a stale ISIN→Yahoo guess; try that first, then sensible fallbacks.
   const SKIP_TICKERS = new Set(["WBA","14","DN3.DE","OD7F.DE","U9UA.DE"]);
@@ -10874,6 +10898,11 @@ async function fetchQuoteWithFallback(ref) {
 
   if (!state.settings) state.settings = {};
   state.settings.lastQuoteRefresh = { updated, failed, errors, ts: new Date().toISOString() };
+  // Hide progress indicator
+  try { _hideRefreshProgress(); } catch (_) {}
+  // Record staleness timestamp for auto-refresh logic
+  state.settings.lastQuoteRefreshDate = new Date().toISOString().slice(0, 10);
+  state.settings.lastQuoteRefreshTs   = Date.now();
   await saveStateAsync();
   renderAll();
   updatePassiveBar();
@@ -11091,8 +11120,53 @@ function checkDuplicateWarning() {
   card.style.display = hasDups ? "" : "none";
 }
 
+/* ─── AUTO-REFRESH DE COTAÇÕES ───────────────────────────────────
+   Chama refreshLiveQuotes automaticamente se:
+   - O Worker URL estiver configurado
+   - Houver activos com ticker
+   - A última actualização foi há mais de 30 minutos OU nunca foi hoje
+   ────────────────────────────────────────────────────────────── */
+function autoRefreshQuotesIfStale() {
+  const workerUrl = (state.settings && state.settings.workerUrl) || "";
+  if (!workerUrl) return; // Worker não configurado — não fazer nada
+
+  const candidates = (state.assets || []).filter(assetLooksQuoteEligible);
+  if (!candidates.length) return;
+
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const lastRefreshISO = (state.settings && state.settings.lastQuoteRefreshDate) || "";
+  const lastRefreshTs  = (state.settings && state.settings.lastQuoteRefreshTs)   || 0;
+  const msSinceRefresh = Date.now() - lastRefreshTs;
+  const STALE_MS = 30 * 60 * 1000; // 30 minutos
+
+  const needsRefresh = (lastRefreshISO !== todayISO) || (msSinceRefresh > STALE_MS);
+  if (!needsRefresh) return;
+
+  console.log("[AutoRefresh] Cotações desactualizadas — a actualizar em background…");
+  refreshLiveQuotes().catch(e => console.warn("[AutoRefresh] Falha:", e));
+}
+
+/* ─── GUARD DE PREÇO ANTIGO ──────────────────────────────────────
+   Ao aplicar uma cotação nova, guarda sempre o último preço conhecido
+   para usar como fallback se o Yahoo falhar.
+   Esta função é chamada DEPOIS de um refreshLiveQuotes bem sucedido.
+   ────────────────────────────────────────────────────────────── */
+function recordQuoteRefreshTimestamp() {
+  if (!state.settings) state.settings = {};
+  state.settings.lastQuoteRefreshDate = new Date().toISOString().slice(0, 10);
+  state.settings.lastQuoteRefreshTs   = Date.now();
+  saveStateAsync().catch(() => {});
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
+  // Show loading overlay immediately — before any async work
+  const _splash = document.getElementById("appLoadingOverlay");
+  const _splashMsg = document.getElementById("appLoadingMsg");
+  const _setMsg = m => { if (_splashMsg) _splashMsg.textContent = m; };
+  if (_splash) _splash.style.display = "flex";
+
   try { await requestPersistentStorage(); } catch (e) { console.error("Persistent storage init falhou", e); }
+  _setMsg("A carregar dados…");
   try { state = await loadStateAsync(); } catch (e) {
     console.error("Falha ao carregar estado; a usar estado por defeito.", e);
     state = safeClone(DEFAULT_STATE);
@@ -11102,6 +11176,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (migrateDividendRecords()) changed = true;
     const bd = ensureBrokerData();
     if ((bd.files||[]).length || (bd.events||[]).length || (bd.positions||[]).length) {
+      _setMsg("A processar corretoras…");
       const sig = getBrokerDataSignature();
       const prevSig = (((state || {}).settings || {}).brokerRebuildSig) || "";
       const prevSchema = parseInt((((state || {}).settings || {}).brokerRebuildSchemaVersion) || 0, 10) || 0;
@@ -11129,12 +11204,21 @@ document.addEventListener("DOMContentLoaded", async () => {
   try { if (syncBrokerAssetDividendYieldsFromRecords()) await saveStateAsync(); } catch (e) { console.error("Falha ao sincronizar dividendos das posições", e); }
   try { ensureAllChartCanvasesReady(); } catch (e) { console.error("Falha ao preparar gráficos", e); }
   try { wire(); } catch (e) { console.error("Falha no binding dos botões", e); }
+  _setMsg("A renderizar…");
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
-  // v18: diferir tarefas não-críticas para depois do primeiro render
+  // Hide loading overlay with fade
+  if (_splash) {
+    _splash.style.transition = "opacity 0.3s ease";
+    _splash.style.opacity = "0";
+    setTimeout(() => { if (_splash) _splash.style.display = "none"; }, 320);
+  }
+  // Deferred non-critical tasks
   setTimeout(() => {
     try { autoSnapshotIfNeeded(); } catch (e) { console.error("Falha no auto snapshot", e); }
     try { checkAndNotifyMaturities(); } catch (e) { console.error("Falha nas notificações de vencimento", e); }
-  }, 500);
+    // Auto-refresh quotes if stale (>30min since last update or never updated today)
+    try { autoRefreshQuotesIfStale(); } catch (e) { console.error("Falha no auto-refresh de cotações", e); }
+  }, 600);
   window.openDividendBaseModal = openDividendBaseModal;
   window.setDividendYieldDisplayMode = setDividendYieldDisplayMode;
   window.applyPreferredDividendYieldToProjection = applyPreferredDividendYieldToProjection;
@@ -13245,6 +13329,17 @@ function parsePositionFromAsset(asset) {
   if (isStaleQuote && currentValue > costBasis * 20 && costBasis > 0) {
     currentValue = costBasis; // show P&L=0 rather than wildly wrong value
   }
+  // Stale label: how old is the price?
+  const _staleLabel = (() => {
+    if (!asset.lastUpdated) return "sem cotação";
+    const d = new Date(asset.lastUpdated);
+    if (isNaN(d)) return "sem cotação";
+    const diffDays = Math.floor((Date.now() - d.getTime()) / 86400000);
+    if (diffDays === 0) return null; // today — not stale
+    if (diffDays === 1) return "1 dia";
+    if (diffDays < 30) return `${diffDays} dias`;
+    return `${Math.floor(diffDays/30)}m`;
+  })();
 
   const gain = currentValue - costBasis;
   const gainPct = (gain / costBasis) * 100;
