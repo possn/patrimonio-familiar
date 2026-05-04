@@ -1208,6 +1208,47 @@
       <button class="seg__btn" id="segFire">FIRE</button>
     </div>
     <div id="paneSettings">
+      <!-- Segurança / PIN -->
+      <div class="card" id="pinSettingsCard">
+        <div class="card__title" style="margin-bottom:6px">🔒 Segurança</div>
+        <div class="card__muted" style="margin-bottom:14px">Protege a app com um PIN de 4-6 dígitos.</div>
+        <div id="pinCurrentStatus" style="margin-bottom:12px;font-size:13px;color:#64748b"></div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div id="pinSetRow">
+            <label class="lbl">Novo PIN (4-6 dígitos)</label>
+            <div style="display:flex;gap:8px">
+              <input id="pinNewInput" type="password" inputmode="numeric" pattern="[0-9]*"
+                maxlength="6" class="input" placeholder="••••" autocomplete="new-password" style="flex:1">
+              <input id="pinConfirmInput" type="password" inputmode="numeric" pattern="[0-9]*"
+                maxlength="6" class="input" placeholder="Confirmar" autocomplete="new-password" style="flex:1">
+            </div>
+            <button class="btn btn--primary" style="margin-top:8px;width:100%" onclick="pinSetFromUI()">
+              Activar PIN
+            </button>
+          </div>
+          <div id="pinClearRow" style="display:none">
+            <label class="lbl">PIN actual</label>
+            <input id="pinCurrentInput" type="password" inputmode="numeric" pattern="[0-9]*"
+              maxlength="6" class="input" placeholder="••••" autocomplete="current-password">
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button class="btn btn--outline" style="flex:1" onclick="pinChangeFromUI()">Alterar PIN</button>
+              <button class="btn btn--ghost" style="flex:1;color:#dc2626" onclick="pinRemoveFromUI()">Remover PIN</button>
+            </div>
+          </div>
+          <div id="pinTimeoutRow">
+            <label class="lbl">Bloquear após inactividade</label>
+            <select class="input" id="pinTimeoutSelect" onchange="pinSaveTimeout()">
+              <option value="1">1 minuto</option>
+              <option value="5" selected>5 minutos</option>
+              <option value="15">15 minutos</option>
+              <option value="30">30 minutos</option>
+              <option value="60">1 hora</option>
+            </select>
+          </div>
+        </div>
+        <div id="pinFeedback" style="margin-top:8px;font-size:13px;min-height:18px"></div>
+      </div>
+
       <div class="card">
         <div class="card__title" style="margin-bottom:12px">Preferências</div>
         <label class="lbl">Moeda base</label>

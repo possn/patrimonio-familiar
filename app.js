@@ -25,7 +25,7 @@ try {
           }
         }
       } catch (_) {}
-      navigator.serviceWorker.register("sw.js?v=20260512v65").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260513v66").catch(() => {});
     });
   }
 } catch (_) {}
@@ -1307,6 +1307,7 @@ function setView(view) {
       if (currentView !== view) return; // user navigated away before render
       if (view === "assets") updateQuoteErrorIndicator();
       if (view === "import") try { renderConflictPanel(); } catch (_) {}
+      if (view === "settings") try { renderPinSettingsUI(); } catch (_) {}
       renderView(view, { force: false, sync: true });
     });
   });
@@ -11175,6 +11176,288 @@ function renderConflictPanel() {
 }
 
 
+/* ═══════════════════════════════════════════════════════════════
+   SEGURANÇA — PIN LOCK
+   PIN de 4-6 dígitos, hash SHA-256, auto-lock por inactividade,
+   lock ao background, 5 tentativas máximas com cooldown.
+   ═══════════════════════════════════════════════════════════════ */
+
+const PIN_STORAGE_KEY = "PF_PIN_V1";
+let _pinLocked = false;
+let _pinFailCount = 0;
+let _pinCooldownUntil = 0;
+let _pinInactivityTimer = null;
+const PIN_INACTIVITY_MS = () => {
+  const mins = parseInt((state.settings && state.settings.pinTimeoutMins) || 5);
+  return mins * 60 * 1000;
+};
+const PIN_MAX_ATTEMPTS = 5;
+const PIN_COOLDOWN_MS  = 30_000; // 30 seconds
+
+async function pinHash(pin) {
+  const enc = new TextEncoder().encode(String(pin) + "pf_salt_v1");
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+}
+
+function pinIsSet() {
+  try { return !!localStorage.getItem(PIN_STORAGE_KEY); } catch { return false; }
+}
+
+async function pinCheck(input) {
+  try {
+    const stored = localStorage.getItem(PIN_STORAGE_KEY);
+    if (!stored) return true; // no PIN set — always open
+    const h = await pinHash(input);
+    return h === stored;
+  } catch { return false; }
+}
+
+async function pinSet(newPin) {
+  const h = await pinHash(newPin);
+  try { localStorage.setItem(PIN_STORAGE_KEY, h); } catch (_) {}
+  if (!state.settings) state.settings = {};
+  state.settings.pinEnabled = true;
+  await saveStateAsync();
+}
+
+function pinClear() {
+  try { localStorage.removeItem(PIN_STORAGE_KEY); } catch (_) {}
+  if (!state.settings) state.settings = {};
+  state.settings.pinEnabled = false;
+  saveStateAsync();
+}
+
+function pinLock(reason) {
+  if (!pinIsSet()) return;
+  _pinLocked = true;
+  _resetPinInactivityTimer();
+  showPinScreen(reason || "");
+}
+
+function pinUnlock() {
+  _pinLocked = false;
+  _pinFailCount = 0;
+  hidePinScreen();
+  resetPinInactivity();
+}
+
+function resetPinInactivity() {
+  clearTimeout(_pinInactivityTimer);
+  if (!pinIsSet()) return;
+  _pinInactivityTimer = setTimeout(() => {
+    pinLock("Sessão expirada por inactividade.");
+  }, PIN_INACTIVITY_MS());
+}
+
+function _resetPinInactivityTimer() {
+  clearTimeout(_pinInactivityTimer);
+}
+
+function showPinScreen(message) {
+  let overlay = document.getElementById("pinLockOverlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "pinLockOverlay";
+    overlay.style.cssText = [
+      "position:fixed","inset:0","z-index:99999",
+      "background:var(--bg, #eef1f6)","display:flex",
+      "flex-direction:column","align-items:center",
+      "justify-content:center","gap:16px","padding:24px"
+    ].join(";");
+    document.body.appendChild(overlay);
+  }
+  overlay.style.display = "flex";
+  _renderPinScreen(overlay, message || "");
+}
+
+function hidePinScreen() {
+  const overlay = document.getElementById("pinLockOverlay");
+  if (overlay) overlay.style.display = "none";
+}
+
+function _renderPinScreen(overlay, message) {
+  const isError = message && (message.includes("Incorrecto") || message.includes("Aguarda"));
+  overlay.innerHTML = `
+    <div style="text-align:center;margin-bottom:8px">
+      <div style="font-size:48px;margin-bottom:8px">🔒</div>
+      <div style="font-size:22px;font-weight:800;color:var(--accent,#5b5ce6)">Património Familiar</div>
+      <div style="font-size:13px;color:var(--muted,#64748b);margin-top:4px">Introduz o teu PIN</div>
+    </div>
+    ${message ? `<div style="font-size:13px;color:${isError?"#dc2626":"#64748b"};text-align:center;min-height:20px;font-weight:600">${escapeHtml(message)}</div>` : "<div style='min-height:20px'></div>"}
+    <div id="pinDots" style="display:flex;gap:12px;margin:4px 0">
+      ${[0,1,2,3,4,5].map(i => `<div id="pinDot${i}" style="width:14px;height:14px;border-radius:50%;background:#e2e8f0;transition:background .15s"></div>`).join("")}
+    </div>
+    <input id="pinInput" type="password" inputmode="numeric" pattern="[0-9]*"
+      maxlength="6" autocomplete="off" autocorrect="off" spellcheck="false"
+      style="opacity:0;position:absolute;pointer-events:none;width:1px;height:1px"
+      aria-label="PIN">
+    <div style="display:grid;grid-template-columns:repeat(3,72px);gap:10px;margin-top:8px">
+      ${[1,2,3,4,5,6,7,8,9,"",0,"⌫"].map(k => {
+        if (k === "") return `<div></div>`;
+        const isBack = k === "⌫";
+        return `<button onclick="_pinKeyPress(${JSON.stringify(String(k))})"
+          style="height:72px;border-radius:16px;border:2px solid #e2e8f0;background:var(--card,#fff);
+          font-size:${isBack?"22px":"26px"};font-weight:700;cursor:pointer;color:var(--text,#1e293b);
+          transition:background .1s;-webkit-tap-highlight-color:transparent"
+          onpointerdown="this.style.background='#e2e8f0'" onpointerup="this.style.background=''"
+          >${k}</button>`;
+      }).join("")}
+    </div>
+  `;
+  // Focus hidden input for keyboard entry
+  setTimeout(() => { const inp = document.getElementById("pinInput"); if (inp) inp.focus(); }, 100);
+}
+
+// PIN key state
+let _pinBuffer = "";
+function _pinKeyPress(key) {
+  if (_pinLocked && Date.now() < _pinCooldownUntil) {
+    const secs = Math.ceil((_pinCooldownUntil - Date.now()) / 1000);
+    _updatePinMessage(`Aguarda ${secs}s antes de tentar novamente.`);
+    return;
+  }
+  if (key === "⌫") {
+    _pinBuffer = _pinBuffer.slice(0, -1);
+  } else if (_pinBuffer.length < 6) {
+    _pinBuffer += key;
+  }
+  _updatePinDots(_pinBuffer.length);
+  if (_pinBuffer.length >= 4) {
+    // Auto-submit after 4+ digits with brief delay for visual feedback
+    clearTimeout(_pinBuffer._t);
+    _pinBuffer._t = setTimeout(() => _submitPin(), 300);
+  }
+}
+// Keyboard support
+document.addEventListener("keydown", e => {
+  if (!_pinLocked) return;
+  if (e.key >= "0" && e.key <= "9") _pinKeyPress(e.key);
+  else if (e.key === "Backspace") _pinKeyPress("⌫");
+  else if (e.key === "Enter" && _pinBuffer.length >= 4) _submitPin();
+});
+
+function _updatePinDots(n) {
+  for (let i = 0; i < 6; i++) {
+    const d = document.getElementById("pinDot" + i);
+    if (d) d.style.background = i < n ? "#5b5ce6" : "#e2e8f0";
+  }
+}
+function _updatePinMessage(msg) {
+  const overlay = document.getElementById("pinLockOverlay");
+  if (!overlay) return;
+  const isError = msg && (msg.includes("Incorrecto") || msg.includes("Aguarda"));
+  const msgEl = overlay.querySelector("[id^=pinMsg]") || overlay.children[1];
+  if (msgEl) { msgEl.textContent = msg; msgEl.style.color = isError ? "#dc2626" : "#64748b"; }
+}
+async function _submitPin() {
+  const attempt = _pinBuffer;
+  _pinBuffer = "";
+  _updatePinDots(0);
+  if (Date.now() < _pinCooldownUntil) return;
+  const ok = await pinCheck(attempt);
+  if (ok) {
+    pinUnlock();
+  } else {
+    _pinFailCount++;
+    if (_pinFailCount >= PIN_MAX_ATTEMPTS) {
+      _pinCooldownUntil = Date.now() + PIN_COOLDOWN_MS;
+      const overlay = document.getElementById("pinLockOverlay");
+      if (overlay) _renderPinScreen(overlay, `Demasiadas tentativas. Aguarda 30 segundos.`);
+    } else {
+      const rem = PIN_MAX_ATTEMPTS - _pinFailCount;
+      const overlay = document.getElementById("pinLockOverlay");
+      if (overlay) _renderPinScreen(overlay, `PIN incorrecto. ${rem} tentativa${rem!==1?"s":""} restante${rem!==1?"s":""}.`);
+    }
+  }
+}
+
+// Lock when app goes to background
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    saveStateAsync();
+    if (pinIsSet()) pinLock("Aplicação em segundo plano.");
+  }
+  if (document.visibilityState === "visible" && _pinLocked) {
+    showPinScreen("");
+  }
+});
+
+// Reset inactivity timer on user interaction
+["click","touchstart","keydown","pointerdown"].forEach(evt => {
+  document.addEventListener(evt, () => { if (!_pinLocked && pinIsSet()) resetPinInactivity(); }, { passive: true });
+});
+
+
+/* ─── PIN SETTINGS UI ──────────────────────────────────────── */
+function renderPinSettingsUI() {
+  const isSet = pinIsSet();
+  const statusEl = document.getElementById("pinCurrentStatus");
+  const setRow   = document.getElementById("pinSetRow");
+  const clearRow = document.getElementById("pinClearRow");
+  const timeoutSel = document.getElementById("pinTimeoutSelect");
+
+  if (statusEl) statusEl.textContent = isSet ? "🔐 PIN activo — a app bloqueia ao ir para segundo plano." : "🔓 Sem PIN. Os teus dados estão acessíveis a quem abrir a app.";
+  if (setRow)   setRow.style.display   = isSet ? "none" : "";
+  if (clearRow) clearRow.style.display = isSet ? ""     : "none";
+
+  if (timeoutSel) {
+    const saved = String((state.settings && state.settings.pinTimeoutMins) || 5);
+    timeoutSel.value = saved;
+  }
+}
+
+async function pinSetFromUI() {
+  const np = (document.getElementById("pinNewInput")?.value || "").trim();
+  const cp = (document.getElementById("pinConfirmInput")?.value || "").trim();
+  const fb = document.getElementById("pinFeedback");
+  if (np.length < 4) { if (fb) { fb.textContent = "O PIN deve ter 4-6 dígitos."; fb.style.color = "#dc2626"; } return; }
+  if (!/^\d+$/.test(np)) { if (fb) { fb.textContent = "Apenas dígitos."; fb.style.color = "#dc2626"; } return; }
+  if (np !== cp) { if (fb) { fb.textContent = "Os PINs não coincidem."; fb.style.color = "#dc2626"; } return; }
+  await pinSet(np);
+  if (document.getElementById("pinNewInput"))     document.getElementById("pinNewInput").value     = "";
+  if (document.getElementById("pinConfirmInput")) document.getElementById("pinConfirmInput").value = "";
+  if (fb) { fb.textContent = "✅ PIN activado com sucesso."; fb.style.color = "#059669"; }
+  renderPinSettingsUI();
+  setTimeout(() => { if (fb) fb.textContent = ""; }, 3000);
+}
+
+async function pinChangeFromUI() {
+  const cur = (document.getElementById("pinCurrentInput")?.value || "").trim();
+  const fb  = document.getElementById("pinFeedback");
+  const ok  = await pinCheck(cur);
+  if (!ok) { if (fb) { fb.textContent = "PIN actual incorrecto."; fb.style.color = "#dc2626"; } return; }
+  // Show new PIN fields
+  const setRow = document.getElementById("pinSetRow");
+  if (setRow) { setRow.style.display = ""; }
+  if (fb) { fb.textContent = "Introduz o novo PIN abaixo."; fb.style.color = "#5b5ce6"; }
+  pinClear(); // clear current so pinSetFromUI can set new one
+  renderPinSettingsUI();
+}
+
+async function pinRemoveFromUI() {
+  const cur = (document.getElementById("pinCurrentInput")?.value || "").trim();
+  const fb  = document.getElementById("pinFeedback");
+  const ok  = await pinCheck(cur);
+  if (!ok) { if (fb) { fb.textContent = "PIN incorrecto."; fb.style.color = "#dc2626"; } return; }
+  pinClear();
+  if (document.getElementById("pinCurrentInput")) document.getElementById("pinCurrentInput").value = "";
+  if (fb) { fb.textContent = "✅ PIN removido."; fb.style.color = "#059669"; }
+  renderPinSettingsUI();
+  setTimeout(() => { if (fb) fb.textContent = ""; }, 3000);
+}
+
+function pinSaveTimeout() {
+  const sel = document.getElementById("pinTimeoutSelect");
+  if (!sel) return;
+  if (!state.settings) state.settings = {};
+  state.settings.pinTimeoutMins = parseInt(sel.value) || 5;
+  saveStateAsync();
+  resetPinInactivity();
+  toast(`Bloqueio automático: ${sel.value} minuto${sel.value==="1"?"":"s"}.`);
+}
+
+
 /* ─── AUTO-REFRESH DE COTAÇÕES ───────────────────────────────────
    Chama refreshLiveQuotes automaticamente se:
    - O Worker URL estiver configurado
@@ -11266,6 +11549,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     _splash.style.transition = "opacity 0.3s ease";
     _splash.style.opacity = "0";
     setTimeout(() => { if (_splash) _splash.style.display = "none"; }, 320);
+  }
+  // Show PIN lock if set
+  if (pinIsSet()) {
+    pinLock("");
+  } else {
+    resetPinInactivity();
   }
   // Deferred non-critical tasks
   setTimeout(() => {
