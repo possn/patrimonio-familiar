@@ -2400,11 +2400,11 @@ function editItem(id) {
   buildClassSelect(kind);
   $("mClass").value = it.class || (kind === "liab" ? CLASSES_LIABS[0] : CLASSES_ASSETS[0]);
     $("mName").value = it.name || "";
-  $("mValue").value = String(parseNum(it.value) || "");
+  $("mValue").value = String(Math.round(parseNum(it.value) * 100) / 100 || "");
   const curSel2 = document.getElementById("mCurrency");
   if (curSel2) curSel2.value = it.currency || "EUR";
   const vlEl2 = document.getElementById("mValueLocal");
-  if (vlEl2) vlEl2.value = it.valueLocal ? String(it.valueLocal) : "";
+  if (vlEl2) vlEl2.value = it.valueLocal ? String(Math.round(parseNum(it.valueLocal) * 100) / 100) : "";
   $("mNotes").value = it.notes || "";
   toggleYieldFields(kind);
   wireCurrencyModal();
@@ -11180,12 +11180,18 @@ function exportPortfolioXLSX() {
 
 /* ─── AUTO-SNAPSHOT MENSAL ─────────────────────────────────── */
 function autoSnapshotIfNeeded() {
-  const thisMonth = isoToday().slice(0,7);
-  const last = state.history.slice().sort((a,b) => String(b.dateISO).localeCompare(String(a.dateISO)))[0];
-  if (last && String(last.dateISO||"").slice(0,7) === thisMonth) return;
+  const today = isoToday();
+  // Daily snapshot — check if today already has an entry
+  const alreadyToday = state.history.some(h => String(h.dateISO || "").slice(0, 10) === today);
+  if (alreadyToday) return;
   if (!state.assets.length) return;
   const t = calcTotals();
-  state.history.push({ dateISO:isoToday(), net:t.net, assets:t.assetsTotal, liabilities:t.liabsTotal, passiveAnnual:t.passiveAnnual, auto:true });
+  // Prune history beyond 3 years (1095 days) to keep storage bounded
+  if (state.history.length >= 1095) {
+    state.history.sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
+    state.history.splice(0, state.history.length - 1094);
+  }
+  state.history.push({ dateISO: today, net: t.net, assets: t.assetsTotal, liabilities: t.liabsTotal, passiveAnnual: t.passiveAnnual, auto: true });
   saveState();
 }
 

@@ -1,5 +1,5 @@
-/* Património Familiar — Service Worker v60 */
-const CACHE_NAME = "pf-cache-v60";
+/* Património Familiar — Service Worker v61 */
+const CACHE_NAME = "pf-cache-v61";
 const ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest",
   "./icon192.png", "./icon512.png",
