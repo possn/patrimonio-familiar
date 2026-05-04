@@ -10,7 +10,7 @@
   <link rel="apple-touch-icon" href="icon192.png">
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
-  <link rel="stylesheet" href="styles.css?v=20260424v52">
+  <link rel="stylesheet" href="styles.css?v=20260504audit1">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
@@ -28,7 +28,7 @@
       document.head.appendChild(s);
     })();
   </script>
-  <script defer src="app.js?v=20260424v52" fetchpriority="high"></script>
+  <script defer src="app.js?v=20260504audit1" fetchpriority="high"></script>
 </head>
 <body>
   <!-- App loading overlay — shown during boot, hidden after first render -->
@@ -348,6 +348,9 @@
 
   <!-- IMPORT -->
   <section class="view" data-view="import" id="viewImport" hidden>
+    <!-- Broker vs Manual conflict resolution panel -->
+    <div id="brokerConflictPanel" style="border:2px solid #f97316;border-radius:14px;padding:16px;display:none;margin-bottom:12px;background:#fff7ed"></div>
+
     <div class="card" id="dupWarningCard" style="border:2px solid #fbbf24;display:none">
       <div class="card__title" style="margin-bottom:6px">⚠️ Possíveis dados duplicados</div>
       <div class="card__muted" style="margin-bottom:10px">Detectámos movimentos possivelmente importados mais do que uma vez. Limpa e reimporta para corrigir.</div>

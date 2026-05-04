@@ -12,8 +12,20 @@
 /* ─── PWA ─────────────────────────────────────────────────── */
 try {
   if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260422v46").catch(() => {});
+    window.addEventListener("load", async () => {
+      // Unregister any stale SW with old version strings (fixes Android cache issue)
+      try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) {
+          const swUrl = reg.active?.scriptURL || reg.installing?.scriptURL || reg.waiting?.scriptURL || "";
+          // If SW URL has old version (pre-v65), force unregister and re-register
+          if (swUrl && !swUrl.includes("v65") && !swUrl.includes("v64") && !swUrl.includes("v63")) {
+            await reg.unregister();
+            console.log("[PWA] Unregistered stale SW:", swUrl);
+          }
+        }
+      } catch (_) {}
+      navigator.serviceWorker.register("sw.js?v=20260512v65").catch(() => {});
     });
   }
 } catch (_) {}
@@ -336,8 +348,27 @@ async function storageGet() {
 }
 
 async function storageSet(raw) {
-  if (idbAvailable()) { try { await idbSet(DB_KEY, raw); return; } catch (_) {} }
-  try { localStorage.setItem(STORAGE_KEY, raw); } catch (_) {}
+  if (idbAvailable()) {
+    try { await idbSet(DB_KEY, raw); return; } catch (e) {
+      console.error("IndexedDB write failed:", e);
+    }
+  }
+  // localStorage fallback — warn if data is too large (>4MB approaching 5MB limit)
+  try {
+    if (raw && raw.length > 4_000_000) {
+      console.warn(`storageSet: payload ${(raw.length/1024/1024).toFixed(1)}MB — approaching localStorage limit`);
+      // Show one-time warning to user
+      if (!storageSet._warnedSize) {
+        storageSet._warnedSize = true;
+        toast("⚠️ Base de dados grande. Recomenda-se usar browser com IndexedDB (Chrome/Firefox).");
+      }
+    }
+    localStorage.setItem(STORAGE_KEY, raw);
+  } catch (e) {
+    // QuotaExceededError — data was NOT saved
+    console.error("localStorage write failed (quota exceeded):", e);
+    toast("❌ Erro ao guardar dados: espaço insuficiente. Usa Chrome ou limpa dados antigos.");
+  }
 }
 
 async function storageClear() {
@@ -617,13 +648,16 @@ const NOOP_EL = {
 function $(id) { return document.getElementById(id) || NOOP_EL; }
 
 function resolveChartHeight(canvas, fallbackHeight = 220) {
-  const desired = Number.isFinite(Number(fallbackHeight)) && Number(fallbackHeight) > 80
-    ? Number(fallbackHeight)
-    : NaN;
+  // Altura responsiva e limitada. A versão anterior forçava alturas fixas e
+  // podia deixar gráficos gigantes ou com canvas distorcido em iPhone/Safari.
   const explicit = parseInt(canvas?.dataset?.chartHeight || canvas?.getAttribute?.("height") || "", 10);
-  if (Number.isFinite(desired) && desired > 80) return Math.round(desired);
-  if (Number.isFinite(explicit) && explicit > 80) return explicit;
-  return 220;
+  const base = Number.isFinite(Number(fallbackHeight)) && Number(fallbackHeight) > 80
+    ? Number(fallbackHeight)
+    : (Number.isFinite(explicit) && explicit > 80 ? explicit : 220);
+  const vw = (typeof window !== "undefined" && window.innerWidth) ? window.innerWidth : 390;
+  const maxByViewport = vw <= 420 ? 240 : vw <= 768 ? 280 : 340;
+  const minByViewport = vw <= 420 ? 140 : 160;
+  return Math.round(Math.max(minByViewport, Math.min(base, maxByViewport)));
 }
 
 function prepareChartCanvas(canvas, fallbackHeight = 220) {
@@ -641,7 +675,7 @@ function prepareChartCanvas(canvas, fallbackHeight = 220) {
   canvas.style.setProperty("display", "block", "important");
   canvas.style.setProperty("width", "100%", "important");
   canvas.style.setProperty("height", `${height}px`, "important");
-  canvas.style.maxHeight = `${height}px`;
+  canvas.style.setProperty("max-height", `${height}px`, "important");
   canvas.dataset.chartHeightApplied = String(height);
   canvas.setAttribute("height", String(height));
   return canvas;
@@ -1275,6 +1309,7 @@ function setView(view) {
       pendingViewRenderFrame = null;
       if (currentView !== view) return; // user navigated away before render
       if (view === "assets") updateQuoteErrorIndicator();
+      if (view === "import") try { renderConflictPanel(); } catch (_) {}
       renderView(view, { force: false, sync: true });
     });
   });
@@ -1610,9 +1645,9 @@ function preparePlainCanvas(id, fallbackHeight = 220) {
   const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
-  canvas.style.setProperty("width", width + "px", "important");
+  canvas.style.setProperty("width", "100%", "important");
   canvas.style.setProperty("height", height + "px", "important");
-  canvas.style.maxHeight = height + "px";
+  canvas.style.setProperty("max-height", height + "px", "important");
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
@@ -7562,6 +7597,8 @@ function rebuildBrokerGeneratedData() {
   if (!state.settings) state.settings = {};
   state.settings.brokerRebuildSig = getBrokerDataSignature();
   state.settings.brokerRebuildSchemaVersion = BROKER_REBUILD_SCHEMA_VERSION;
+  // Detect manual vs broker conflicts after rebuild
+  try { setTimeout(() => renderConflictPanel(), 0); } catch (_) {}
 }
 
 
@@ -8233,11 +8270,14 @@ async function importBankFile(file) {
     if (!parsed.length && looksLikeSantanderPdf) {
       tryParser("Parser Santander regex", () => parseSantanderRegex(santanderText || ""));
     }
-    if (!parsed.length && !looksLikeSantanderPdf) {
+    if (!parsed.length) {
+      // Fallback robusto para PDFs Santander/contas quando pdf.js extrai texto
+      // com ordem errada, sem sinal negativo ou sem cabeçalhos detectáveis.
       try {
         const rawParsed = await parseSantanderPDFFromFile(file);
         if (Array.isArray(rawParsed) && rawParsed.length) {
           parsed = rawParsed;
+          bankFmt = bankFmt === "generic" ? "santander" : bankFmt;
           setBankImportDebug(`Parser PDF dedicado reconheceu <b>${parsed.length}</b> movimentos.`, "ok");
         }
       } catch (err) {
@@ -9145,14 +9185,22 @@ function parseSantanderStatementStrict(text) {
     const descParts = [];
     let amount = null;
     let balance = null;
+    let pendingNegative = false;
 
     while (i < lines.length) {
       const ln = lines[i];
       if (parseDateFlexible(ln) || parseValueDate(ln)) break;
 
+      if (/^[\u2212−-]$/.test(ln)) {
+        pendingNegative = true;
+        i += 1;
+        continue;
+      }
+
       let m = ln.match(amountBalanceOnlyRe);
       if (m) {
         amount = parseMoneyToken(m[1]);
+        if (pendingNegative && Number.isFinite(amount) && amount > 0) amount = -amount;
         balance = parseMoneyToken(m[2]);
         i += 1;
         break;
@@ -9160,8 +9208,11 @@ function parseSantanderStatementStrict(text) {
 
       m = ln.match(descAmountBalanceRe);
       if (m && String(m[1] || "").trim()) {
-        descParts.push(String(m[1] || "").trim());
+        let prefix = String(m[1] || "").trim();
+        if (/[\u2212−-]$/.test(prefix)) { pendingNegative = true; prefix = prefix.replace(/[\u2212−-]$/, "").trim(); }
+        if (prefix) descParts.push(prefix);
         amount = parseMoneyToken(m[2]);
+        if (pendingNegative && Number.isFinite(amount) && amount > 0) amount = -amount;
         balance = parseMoneyToken(m[3]);
         i += 1;
         break;
@@ -9170,6 +9221,7 @@ function parseSantanderStatementStrict(text) {
       m = ln.match(amountOnlyRe);
       if (m) {
         amount = parseMoneyToken(m[1]);
+        if (pendingNegative && Number.isFinite(amount) && amount > 0) amount = -amount;
         if (i + 1 < lines.length) {
           const nextLine = lines[i + 1];
           const mb = nextLine.match(amountOnlyRe);
@@ -10201,9 +10253,24 @@ function wire() {
     if (btnCopy) btnCopy.addEventListener("click", () => {
       const text = document.getElementById("aiResultContent");
       if (!text) return;
-      navigator.clipboard.writeText(text.innerText || text.textContent || "")
-        .then(() => toast("✅ Copiado para a área de transferência."))
-        .catch(() => toast("Não foi possível copiar."));
+      const textToCopy = text.innerText || text.textContent || "";
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(textToCopy)
+          .then(() => toast("✅ Copiado para a área de transferência."))
+          .catch(() => toast("Não foi possível copiar."));
+      } else {
+        // Fallback for older Android WebView (no clipboard API)
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = textToCopy;
+          ta.style.position = "fixed"; ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+          toast("✅ Copiado.");
+        } catch (_) { toast("Não foi possível copiar."); }
+      }
     });
     const analysisTabEl = document.getElementById("analysisTab");
     if (analysisTabEl) analysisTabEl.addEventListener("change", () => {
@@ -11013,6 +11080,118 @@ function checkDuplicateWarning() {
   const hasDups = Object.values(counts).some(v => v >= 3);
   card.style.display = hasDups ? "" : "none";
 }
+
+/* ─── CONFLITO MANUAL vs BROKER ───────────────────────────────────────────────
+   Quando rebuildBrokerGeneratedData cria um ativo com ticker/ISIN que já existe
+   como ativo manual, registamos o conflito em state.settings.brokerConflicts
+   para resolução pelo utilizador na tab Importar.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+function detectBrokerManualConflicts() {
+  // Find manual assets that share ticker or ISIN with a broker-generated asset
+  const manualAssets  = (state.assets || []).filter(a => !a.generatedFromBroker);
+  const brokerAssets  = (state.assets || []).filter(a =>  a.generatedFromBroker);
+  if (!manualAssets.length || !brokerAssets.length) return [];
+
+  const conflicts = [];
+  const resolved  = (state.settings && state.settings.brokerConflictResolutions) || {};
+
+  for (const broker of brokerAssets) {
+    const bTicker = String(broker.ticker || "").trim().toUpperCase();
+    const bISIN   = String(broker.isin   || "").trim().toUpperCase();
+    const bName   = String(broker.name   || "").trim().toLowerCase();
+
+    for (const manual of manualAssets) {
+      const mTicker = String(manual.ticker || "").trim().toUpperCase();
+      const mISIN   = String(manual.isin   || "").trim().toUpperCase();
+      const mName   = String(manual.name   || "").trim().toLowerCase();
+
+      const sameISIN   = bISIN   && mISIN   && bISIN   === mISIN;
+      const sameTicker = bTicker && mTicker && bTicker === mTicker;
+      const sameName   = bName   && mName   && (bName === mName || bName.includes(mName) || mName.includes(bName));
+
+      if (sameISIN || sameTicker || sameName) {
+        const key = `${manual.id}|${broker.id}`;
+        if (!resolved[key]) {
+          conflicts.push({ key, manualId: manual.id, brokerId: broker.id,
+            manualName: manual.name, brokerName: broker.name,
+            manualValue: parseNum(manual.value), brokerValue: parseNum(broker.value),
+            matchReason: sameISIN ? "ISIN" : sameTicker ? "ticker" : "nome" });
+        }
+      }
+    }
+  }
+  return conflicts;
+}
+
+function resolveBrokerConflict(key, action) {
+  // action: "keep_manual" | "keep_broker" | "merge"
+  if (!state.settings) state.settings = {};
+  if (!state.settings.brokerConflictResolutions) state.settings.brokerConflictResolutions = {};
+  state.settings.brokerConflictResolutions[key] = action;
+
+  const [manualId, brokerId] = key.split("|");
+
+  if (action === "keep_manual") {
+    // Remove the broker-generated duplicate
+    state.assets = state.assets.filter(a => a.id !== brokerId);
+  } else if (action === "keep_broker") {
+    // Remove the manual asset, keep broker one
+    state.assets = state.assets.filter(a => a.id !== manualId);
+  } else if (action === "merge") {
+    // Copy broker financial data (value, qty, costBasis, ticker) into manual asset, remove broker
+    const manual = state.assets.find(a => a.id === manualId);
+    const broker = state.assets.find(a => a.id === brokerId);
+    if (manual && broker) {
+      manual.value       = broker.value;
+      manual.qty         = broker.qty;
+      manual.costBasis   = broker.costBasis;
+      manual.ticker      = broker.ticker || manual.ticker;
+      manual.yahooTicker = broker.yahooTicker || manual.yahooTicker;
+      manual.isin        = broker.isin || manual.isin;
+      manual.yieldType   = broker.yieldType !== "none" ? broker.yieldType : manual.yieldType;
+      manual.yieldValue  = broker.yieldValue > 0 ? broker.yieldValue : manual.yieldValue;
+      manual.notes       = (manual.notes ? manual.notes + " | " : "") + "Fundido com importação de corretora.";
+    }
+    state.assets = state.assets.filter(a => a.id !== brokerId);
+  }
+
+  saveState();
+  renderItems();
+  renderConflictPanel();
+  toast(action === "keep_manual" ? "✅ Ativo manual mantido." : action === "keep_broker" ? "✅ Importação aplicada." : "✅ Ativos fundidos.");
+}
+
+function renderConflictPanel() {
+  const panel = document.getElementById("brokerConflictPanel");
+  if (!panel) return;
+
+  const conflicts = detectBrokerManualConflicts();
+  if (!conflicts.length) {
+    panel.style.display = "none";
+    return;
+  }
+
+  panel.style.display = "";
+  panel.innerHTML = `
+    <div class="card__title" style="margin-bottom:6px">⚠️ ${conflicts.length} conflito${conflicts.length !== 1 ? "s" : ""} manual vs importação</div>
+    <div class="card__muted" style="margin-bottom:12px">O mesmo ativo existe como entrada manual e como importação de corretora. Escolhe como resolver cada um.</div>
+    ${conflicts.map(c => `
+      <div style="border:1px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:10px;background:#fff">
+        <div style="font-weight:700;margin-bottom:4px">${escapeHtml(c.manualName)} <span style="font-size:11px;color:#94a3b8">(via ${escapeHtml(c.matchReason)})</span></div>
+        <div style="font-size:12px;color:#64748b;margin-bottom:10px">
+          Manual: <b>${fmtEUR(c.manualValue)}</b> &nbsp;·&nbsp; Importação: <b>${fmtEUR(c.brokerValue)}</b>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn--sm btn--outline" onclick="resolveBrokerConflict('${c.key}','keep_manual')" style="font-size:12px">Manter manual</button>
+          <button class="btn btn--sm btn--primary" onclick="resolveBrokerConflict('${c.key}','keep_broker')" style="font-size:12px">Usar importação</button>
+          <button class="btn btn--sm btn--ghost" onclick="resolveBrokerConflict('${c.key}','merge')" style="font-size:12px">Fundir</button>
+        </div>
+      </div>
+    `).join("")}
+  `;
+}
+
 
 /* ─── AUTO-REFRESH DE COTAÇÕES ───────────────────────────────────
    Chama refreshLiveQuotes automaticamente se:
