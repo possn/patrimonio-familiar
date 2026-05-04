@@ -25,7 +25,7 @@ try {
           }
         }
       } catch (_) {}
-      navigator.serviceWorker.register("sw.js?v=20260512v65").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260512v65c").catch(() => {});
     });
   }
 } catch (_) {}
@@ -7324,6 +7324,14 @@ function rebuildBrokerGeneratedData() {
       for (const [k, existing] of posMap.entries()) {
         const existingIsin = normalizeISIN(existing.isin);
         if (existingIsin) continue;
+        // Don't merge positions from different brokers — e.g. T212 O and XTB O.US
+        // are both Realty Income but held in separate accounts and must stay separate
+        const existingBrokers = existing.brokers || new Set();
+        const incomingBroker = String(sourceName || "").split(/[_\-]/)[0].toLowerCase();
+        const existingBrokerArr = Array.from(existingBrokers).map(b => String(b).split(/[_\-]/)[0].toLowerCase());
+        const differentBroker = incomingBroker && existingBrokerArr.length > 0 
+          && !existingBrokerArr.some(b => b === incomingBroker || b.includes(incomingBroker) || incomingBroker.includes(b));
+        if (differentBroker) continue; // keep separate per broker
         if (sameBrokerSecurityIdentity(existing, { isin: isinNorm, ticker: tickerNorm, yahooTicker: inferredYahoo, name: nameNorm })) { key = k; break; }
       }
     }
@@ -7342,6 +7350,7 @@ function rebuildBrokerGeneratedData() {
       currency: currencyNorm || "EUR",
       priceCurrency: currencyNorm || "EUR",
       sourceNames: new Set(),
+      brokers: new Set(),
       hasSnapshot: false
     };
     if (!prev.ticker && tickerNorm) prev.ticker = tickerNorm;
@@ -7358,6 +7367,8 @@ function rebuildBrokerGeneratedData() {
   for (const p of (bd.positions || [])) {
     const cls = p.class || brokerPositionClassFromTicker(p.ticker);
     const pos = touchPos({ ticker: p.ticker, isin: p.isin, name: p.name, cls, sourceName: p.sourceName, currency: p.priceCurrency || "EUR" });
+    // Track which broker contributed to this posMap entry
+    if (p.broker && pos.brokers) pos.brokers.add(String(p.broker).toLowerCase());
     if (p.positionKind === "market_snapshot") {
       const d = String(p.snapshotDate || "");
       if (!pos.hasSnapshot || !pos.snapshotDate || (d && d > pos.snapshotDate)) {
@@ -7551,8 +7562,17 @@ function rebuildBrokerGeneratedData() {
   }
 
   for (const p of posMap.values()) {
-    const finalQty = p.hasSnapshot && p.snapshotQty > 0 ? p.snapshotQty : p.qty;
-    const finalValue = p.hasSnapshot && p.marketValueEUR > 0 ? p.marketValueEUR : (p.marketValueEUR > 0 ? p.marketValueEUR : p.costBasis);
+    // When both a broker snapshot (e.g. XTB) and ledger events (e.g. T212) contribute
+    // to the same security, combine both quantities and values.
+    // snapshot = qty/value from XTB open positions export
+    // ledger   = qty/cost reconstructed from T212 buy/sell events
+    const snapshotQty  = p.hasSnapshot && p.snapshotQty > 0 ? p.snapshotQty : 0;
+    const ledgerQty    = p.qty > 0 ? p.qty : 0;
+    const finalQty     = snapshotQty + ledgerQty > 0 ? snapshotQty + ledgerQty : (snapshotQty || ledgerQty);
+    // Value: snapshot market value + ledger cost basis (best available for each portion)
+    const snapshotVal  = p.hasSnapshot && p.marketValueEUR > 0 ? p.marketValueEUR : 0;
+    const ledgerVal    = !p.hasSnapshot || ledgerQty > 0 ? p.costBasis : 0;
+    const finalValue   = snapshotVal + ledgerVal > 0 ? snapshotVal + ledgerVal : (snapshotVal || ledgerVal || p.costBasis);
     if (!(finalQty > 0) || !(finalValue > 0 || p.costBasis > 0)) continue;
     // Use full name when available (e.g. "Corticeira Amorim" not just "COR")
     const displayName = p.name && p.name !== p.ticker ? p.name :
