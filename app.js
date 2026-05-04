@@ -25,7 +25,7 @@ try {
           }
         }
       } catch (_) {}
-      navigator.serviceWorker.register("sw.js?v=20260514v67").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260515v68").catch(() => {});
     });
   }
 } catch (_) {}
@@ -11187,6 +11187,7 @@ let _pinLocked = false;
 let _pinFailCount = 0;
 let _pinCooldownUntil = 0;
 let _pinInactivityTimer = null;
+let _pinSubmitTimer = null;    // separate timer for auto-submit (cannot use _pinBuffer._t — string primitive)
 let _appReady = false; // prevent PIN lock before app has fully booted
 const PIN_INACTIVITY_MS = () => {
   const mins = parseInt((state.settings && state.settings.pinTimeoutMins) || 5);
@@ -11326,8 +11327,8 @@ function _pinKeyPress(key) {
   _updatePinDots(_pinBuffer.length);
   if (_pinBuffer.length >= 4) {
     // Auto-submit after 4+ digits with brief delay for visual feedback
-    clearTimeout(_pinBuffer._t);
-    _pinBuffer._t = setTimeout(() => _submitPin(), 300);
+    clearTimeout(_pinSubmitTimer);
+    _pinSubmitTimer = setTimeout(() => _submitPin(), 300);
   }
 }
 // Keyboard support
@@ -11352,6 +11353,8 @@ function _updatePinMessage(msg) {
   if (msgEl) { msgEl.textContent = msg; msgEl.style.color = isError ? "#dc2626" : "#64748b"; }
 }
 async function _submitPin() {
+  clearTimeout(_pinSubmitTimer);
+  _pinSubmitTimer = null;
   const attempt = _pinBuffer;
   _pinBuffer = "";
   _updatePinDots(0);
