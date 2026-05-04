@@ -2330,6 +2330,29 @@ function toggleMarketFields(kind) {
   mr.style.display = MARKET_CLASSES_FOR_TICKER.has(cls) ? "" : "none";
 }
 
+function normalizeLookupTickerForYahoo(raw, cls) {
+  const t = String(raw || "").trim().toUpperCase();
+  if (!t) return "";
+  const c = String(cls || "").trim().toLowerCase();
+  const cryptoTk = (c === "cripto" || c === "crypto") && typeof cryptoToYahoo === "function" ? cryptoToYahoo(t) : null;
+  if (cryptoTk) return cryptoTk;
+  if (t.endsWith(".US")) return t.slice(0, -3); // Yahoo usa O, AAPL, MSFT, etc.; não O.US
+  if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD");
+  const map = {".PT":".LS",".GB":".L",".UK":".L",".PL":".WA",".CH":".SW",".DK":".CO",".SE":".ST",".NO":".OL",".FI":".HE",".BE":".BR",".IT":".MI",".FR":".PA",".NL":".AS",".ES":".MC",".AU":".AX",".CA":".TO"};
+  for (const [from, to] of Object.entries(map)) if (t.endsWith(from)) return t.slice(0, -from.length) + to;
+  return t;
+}
+
+function inferLookupQuoteCurrency(originalTicker, yahooTicker, quoteCurrency) {
+  const qc = String(quoteCurrency || "").trim().toUpperCase();
+  const raw = String(originalTicker || "").trim().toUpperCase();
+  const y = String(yahooTicker || "").trim().toUpperCase();
+  // Alguns workers/Yahoo devolvem currency vazio/errado para tickers introduzidos como O.US.
+  if (!qc || (qc === "EUR" && (raw.endsWith(".US") || (y && !/[.=]/.test(y) && /^[A-Z]{1,5}$/.test(y))))) return "USD";
+  if (y.endsWith("-USD")) return "USD";
+  return qc || "EUR";
+}
+
 /* v21: Ligar classe change → toggle + botão Buscar cotação */
 function wireMarketLookup() {
   const clsEl = document.getElementById("mClass");
@@ -2367,16 +2390,12 @@ function wireMarketLookup() {
         isin: ""
       };
       let candidates = [];
-      // Cripto: resolver directamente via CRYPTO_YAHOO_MAP
       const clsNorm = String(fakeAsset.class).toLowerCase();
-      if (clsNorm === "cripto" || clsNorm === "crypto") {
-        const cTk = (typeof cryptoToYahoo === "function") ? cryptoToYahoo(tk) : null;
-        if (cTk) candidates.push(cTk);
-      }
-      // Adicionar também o ticker raw e variantes conhecidas
-      if (!candidates.includes(tk)) candidates.push(tk);
-      // Tentar com sufixos comuns se é cripto não listada
-      if (clsNorm === "cripto" && !tk.includes("-")) {
+      const normTk = normalizeLookupTickerForYahoo(tk, fakeAsset.class);
+      if (normTk && !candidates.includes(normTk)) candidates.push(normTk);
+      // Só depois tentar o ticker cru. Ex.: O.US falha/tem moeda errada em alguns workers; O é o Yahoo correcto.
+      if (tk && tk !== normTk && !candidates.includes(tk)) candidates.push(tk);
+      if (clsNorm === "cripto" && !tk.includes("-") && !tk.endsWith(".CC")) {
         const fallback = tk + "-USD";
         if (!candidates.includes(fallback)) candidates.push(fallback);
       }
@@ -2391,7 +2410,7 @@ function wireMarketLookup() {
       if (!quote) throw lastErr || new Error("Sem cotação disponível para esse ticker");
 
       // FX para EUR se preciso
-      const ccy = (quote.currency || "EUR").toUpperCase();
+      const ccy = inferLookupQuoteCurrency(tk, usedTk, quote.currency);
       let fxToEur = 1;
       if (ccy !== "EUR") {
         try {
@@ -2496,7 +2515,10 @@ function saveItemFromModal() {
   const savedVL  = vlElS ? parseNum(vlElS.value) : 0;
   // If user entered a local value and currency != EUR, auto-convert to EUR
   let eurValue = parseNum($("mValue").value);
-  if (savedCcy !== "EUR" && savedVL > 0) {
+  // O campo "Valor actual (€ equivalente)" é a fonte principal.
+  // Só converter o valor local quando o campo EUR estiver vazio; caso contrário,
+  // uma cotação acabada de buscar podia ser substituída por um FX estático antigo.
+  if ((!eurValue || eurValue <= 0) && savedCcy !== "EUR" && savedVL > 0) {
     eurValue = toEUR(savedVL, savedCcy);
   }
   const obj = {
@@ -11201,10 +11223,10 @@ function renderConflictPanel() {
    ────────────────────────────────────────────────────────────── */
 function autoRefreshQuotesIfStale() {
   const workerUrl = (state.settings && state.settings.workerUrl) || "";
-  if (!workerUrl) return; // Worker não configurado — não fazer nada
+  if (!workerUrl) return Promise.resolve(false); // Worker não configurado — não fazer nada
 
   const candidates = (state.assets || []).filter(assetLooksQuoteEligible);
-  if (!candidates.length) return;
+  if (!candidates.length) return Promise.resolve(false);
 
   const todayISO = new Date().toISOString().slice(0, 10);
   const lastRefreshISO = (state.settings && state.settings.lastQuoteRefreshDate) || "";
@@ -11213,10 +11235,12 @@ function autoRefreshQuotesIfStale() {
   const STALE_MS = 30 * 60 * 1000; // 30 minutos
 
   const needsRefresh = (lastRefreshISO !== todayISO) || (msSinceRefresh > STALE_MS);
-  if (!needsRefresh) return;
+  if (!needsRefresh) return Promise.resolve(false);
 
-  console.log("[AutoRefresh] Cotações desactualizadas — a actualizar em background…");
-  refreshLiveQuotes().catch(e => console.warn("[AutoRefresh] Falha:", e));
+  console.log("[AutoRefresh] Cotações desactualizadas — a actualizar…");
+  return refreshLiveQuotes()
+    .then(() => true)
+    .catch(e => { console.warn("[AutoRefresh] Falha:", e); return false; });
 }
 
 /* ─── GUARD DE PREÇO ANTIGO ──────────────────────────────────────
@@ -11279,6 +11303,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   try { wire(); } catch (e) { console.error("Falha no binding dos botões", e); }
   _setMsg("A renderizar…");
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
+  _setMsg("A actualizar cotações…");
+  try { await autoRefreshQuotesIfStale(); } catch (e) { console.error("Falha no auto-refresh de cotações", e); }
+  _setMsg("Pronto.");
   // Hide loading overlay with fade
   if (_splash) {
     _splash.style.transition = "opacity 0.3s ease";
@@ -11289,8 +11316,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setTimeout(() => {
     try { autoSnapshotIfNeeded(); } catch (e) { console.error("Falha no auto snapshot", e); }
     try { checkAndNotifyMaturities(); } catch (e) { console.error("Falha nas notificações de vencimento", e); }
-    // Auto-refresh quotes if stale (>30min since last update or never updated today)
-    try { autoRefreshQuotesIfStale(); } catch (e) { console.error("Falha no auto-refresh de cotações", e); }
+    // Auto-refresh de cotações já correu antes de mostrar o Dashboard.
   }, 600);
   window.openDividendBaseModal = openDividendBaseModal;
   window.setDividendYieldDisplayMode = setDividendYieldDisplayMode;

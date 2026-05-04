@@ -28,7 +28,7 @@
       document.head.appendChild(s);
     })();
   </script>
-  <script defer src="app.js?v=20260504audit1" fetchpriority="high"></script>
+  <script defer src="app.js?v=20260504audit2" fetchpriority="high"></script>
 </head>
 <body>
   <!-- App loading overlay — shown during boot, hidden after first render -->
@@ -40,16 +40,15 @@
     <img src="icon192.png" alt="" width="72" height="72" style="border-radius:18px;box-shadow:0 4px 24px rgba(91,92,230,.18)">
     <div style="font-size:1.15rem;font-weight:600;color:#5b5ce6;letter-spacing:.01em">Património Familiar</div>
     <div id="appLoadingMsg" style="font-size:.85rem;color:#888;min-height:1.2em">A iniciar…</div>
-    <div style="width:48px;height:4px;border-radius:2px;background:#e0e0f0;overflow:hidden;margin-top:4px">
-      <div style="height:100%;width:40%;background:#5b5ce6;border-radius:2px;animation:pf-loading-bar 1.2s ease-in-out infinite"></div>
-    </div>
+    <div class="pf-spinner" aria-hidden="true"></div>
   </div>
   <style>
-    @keyframes pf-loading-bar {
-      0%   { transform: translateX(-100%); }
-      50%  { transform: translateX(150%); }
-      100% { transform: translateX(150%); }
+    .pf-spinner {
+      width:38px; height:38px; border-radius:50%;
+      border:4px solid #dfe3f3; border-top-color:#5b5ce6;
+      animation:pf-spin .85s linear infinite; margin-top:4px;
     }
+    @keyframes pf-spin { to { transform: rotate(360deg); } }
   </style>
 
 <header class="topbar">
