@@ -12,20 +12,8 @@
 /* ─── PWA ─────────────────────────────────────────────────── */
 try {
   if ("serviceWorker" in navigator) {
-    window.addEventListener("load", async () => {
-      // Unregister any stale SW with old version strings (fixes Android cache issue)
-      try {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        for (const reg of regs) {
-          const swUrl = reg.active?.scriptURL || reg.installing?.scriptURL || reg.waiting?.scriptURL || "";
-          // If SW URL has old version (pre-v65), force unregister and re-register
-          if (swUrl && !swUrl.includes("v65") && !swUrl.includes("v64") && !swUrl.includes("v63")) {
-            await reg.unregister();
-            console.log("[PWA] Unregistered stale SW:", swUrl);
-          }
-        }
-      } catch (_) {}
-      navigator.serviceWorker.register("sw.js?v=20260512v65").catch(() => {});
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js?v=20260422v46").catch(() => {});
     });
   }
 } catch (_) {}
@@ -94,16 +82,21 @@ function parseNum(x) {
   return neg ? -(Number.isFinite(n) ? n : 0) : (Number.isFinite(n) ? n : 0);
 }
 
-function fmtEUR(n, dec = 0) {
+function fmtEUR(n) {
   const cur = (state.settings && state.settings.currency) || "EUR";
   const v = Number(n || 0);
   try {
-    return new Intl.NumberFormat("pt-PT", { style: "currency", currency: cur, maximumFractionDigits: dec, minimumFractionDigits: dec }).format(v);
-  } catch { return (dec > 0 ? v.toFixed(dec) : Math.round(v)) + " " + cur; }
+    return new Intl.NumberFormat("pt-PT", { style: "currency", currency: cur, maximumFractionDigits: 0 }).format(v);
+  } catch { return Math.round(v) + " " + cur; }
 }
 
-// fmtEUR2 kept as alias for backwards compatibility with any external references
-function fmtEUR2(n) { return fmtEUR(n, 2); }
+function fmtEUR2(n) {
+  const cur = (state.settings && state.settings.currency) || "EUR";
+  const v = Number(n || 0);
+  try {
+    return new Intl.NumberFormat("pt-PT", { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(v);
+  } catch { return v.toFixed(2) + " " + cur; }
+}
 
 function fmt(n, maxFrac = 4) {
   const v = Number(n);
@@ -348,27 +341,8 @@ async function storageGet() {
 }
 
 async function storageSet(raw) {
-  if (idbAvailable()) {
-    try { await idbSet(DB_KEY, raw); return; } catch (e) {
-      console.error("IndexedDB write failed:", e);
-    }
-  }
-  // localStorage fallback — warn if data is too large (>4MB approaching 5MB limit)
-  try {
-    if (raw && raw.length > 4_000_000) {
-      console.warn(`storageSet: payload ${(raw.length/1024/1024).toFixed(1)}MB — approaching localStorage limit`);
-      // Show one-time warning to user
-      if (!storageSet._warnedSize) {
-        storageSet._warnedSize = true;
-        toast("⚠️ Base de dados grande. Recomenda-se usar browser com IndexedDB (Chrome/Firefox).");
-      }
-    }
-    localStorage.setItem(STORAGE_KEY, raw);
-  } catch (e) {
-    // QuotaExceededError — data was NOT saved
-    console.error("localStorage write failed (quota exceeded):", e);
-    toast("❌ Erro ao guardar dados: espaço insuficiente. Usa Chrome ou limpa dados antigos.");
-  }
+  if (idbAvailable()) { try { await idbSet(DB_KEY, raw); return; } catch (_) {} }
+  try { localStorage.setItem(STORAGE_KEY, raw); } catch (_) {}
 }
 
 async function storageClear() {
@@ -648,16 +622,13 @@ const NOOP_EL = {
 function $(id) { return document.getElementById(id) || NOOP_EL; }
 
 function resolveChartHeight(canvas, fallbackHeight = 220) {
-  // Altura responsiva e limitada. A versão anterior forçava alturas fixas e
-  // podia deixar gráficos gigantes ou com canvas distorcido em iPhone/Safari.
-  const explicit = parseInt(canvas?.dataset?.chartHeight || canvas?.getAttribute?.("height") || "", 10);
-  const base = Number.isFinite(Number(fallbackHeight)) && Number(fallbackHeight) > 80
+  const desired = Number.isFinite(Number(fallbackHeight)) && Number(fallbackHeight) > 80
     ? Number(fallbackHeight)
-    : (Number.isFinite(explicit) && explicit > 80 ? explicit : 220);
-  const vw = (typeof window !== "undefined" && window.innerWidth) ? window.innerWidth : 390;
-  const maxByViewport = vw <= 420 ? 240 : vw <= 768 ? 280 : 340;
-  const minByViewport = vw <= 420 ? 140 : 160;
-  return Math.round(Math.max(minByViewport, Math.min(base, maxByViewport)));
+    : NaN;
+  const explicit = parseInt(canvas?.dataset?.chartHeight || canvas?.getAttribute?.("height") || "", 10);
+  if (Number.isFinite(desired) && desired > 80) return Math.round(desired);
+  if (Number.isFinite(explicit) && explicit > 80) return explicit;
+  return 220;
 }
 
 function prepareChartCanvas(canvas, fallbackHeight = 220) {
@@ -675,7 +646,7 @@ function prepareChartCanvas(canvas, fallbackHeight = 220) {
   canvas.style.setProperty("display", "block", "important");
   canvas.style.setProperty("width", "100%", "important");
   canvas.style.setProperty("height", `${height}px`, "important");
-  canvas.style.setProperty("max-height", `${height}px`, "important");
+  canvas.style.maxHeight = `${height}px`;
   canvas.dataset.chartHeightApplied = String(height);
   canvas.setAttribute("height", String(height));
   return canvas;
@@ -1309,7 +1280,6 @@ function setView(view) {
       pendingViewRenderFrame = null;
       if (currentView !== view) return; // user navigated away before render
       if (view === "assets") updateQuoteErrorIndicator();
-      if (view === "import") try { renderConflictPanel(); } catch (_) {}
       renderView(view, { force: false, sync: true });
     });
   });
@@ -1645,9 +1615,9 @@ function preparePlainCanvas(id, fallbackHeight = 220) {
   const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
-  canvas.style.setProperty("width", "100%", "important");
+  canvas.style.setProperty("width", width + "px", "important");
   canvas.style.setProperty("height", height + "px", "important");
-  canvas.style.setProperty("max-height", height + "px", "important");
+  canvas.style.maxHeight = height + "px";
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
@@ -2012,9 +1982,6 @@ function renderSummary() {
       ? "▲ Ver menos"
       : `▼ Ver mais (${items.length - 10} de ${items.length} ativos)`;
   }
-  // Top collapse button — only visible when expanded
-  const togTop = document.getElementById("summaryCollapseTop");
-  if (togTop) togTop.style.display = (summaryExpanded && items.length > 10) ? "" : "none";
   // Update subtitle with total count
   const sub = document.getElementById("itemsSub") || document.querySelector("#viewDashboard .card__muted");
   const dashSub = document.querySelector("#summaryList")?.closest(".card")?.querySelector(".card__muted");
@@ -2071,27 +2038,12 @@ function renderTrendChart() {
     return;
   }
   if (hint) hint.style.display = "none";
-  if (trendSub) trendSub.textContent = `${h.length} snapshot${h.length!==1?"s":""} · ${h[0].dateISO} → ${h[h.length-1].dateISO}`;
+  if (trendSub) trendSub.textContent = `${h.length} snapshot${h.length!==1?"s":""} · ${h[0].dateISO.slice(0,7)} → ${h[h.length-1].dateISO.slice(0,7)}`;
 
-  // Smart downsampling: keep chart readable regardless of history size
-  // >365 points → keep 1 per week (most recent of each week)
-  // >90 points  → keep 1 per week
-  // ≤90 points  → show all
-  let displayed = h;
-  if (h.length > 90) {
-    const byWeek = new Map();
-    for (const s of h) {
-      const d = new Date(s.dateISO);
-      const week = `${d.getFullYear()}-W${String(Math.ceil((d - new Date(d.getFullYear(),0,1)) / 604800000)).padStart(2,"0")}`;
-      byWeek.set(week, s); // last entry per week wins
-    }
-    displayed = Array.from(byWeek.values()).sort((a,b) => String(a.dateISO).localeCompare(String(b.dateISO)));
-  }
-
-  const labels = displayed.map(x => h.length > 90 ? x.dateISO.slice(0,7) : x.dateISO);
-  const netData = displayed.map(x => parseNum(x.net));
-  const assetData = displayed.map(x => parseNum(x.assets));
-  const passData = displayed.map(x => parseNum(x.passiveAnnual||0));
+  const labels = h.map(x => x.dateISO.slice(0, 7));
+  const netData = h.map(x => parseNum(x.net));
+  const assetData = h.map(x => parseNum(x.assets));
+  const passData = h.map(x => parseNum(x.passiveAnnual||0));
 
   // v18: update em vez de destroy+recreate
   if (trendChart && trendChart.data) {
@@ -2232,21 +2184,18 @@ function renderItems() {
     list.appendChild(row);
   }
 
-  // Botão Ver todos / Ver menos (fundo da lista)
+  // Botão Ver todos / Ver menos
   const tog = document.getElementById("btnItemsToggle");
   if (tog) {
     if (src.length > LIMIT && !isSearching) {
       tog.style.display = "";
       tog.textContent = itemsExpanded
         ? "▲ Ver menos"
-        : `▼ Ver mais (${src.length - LIMIT} de ${src.length} ativos)`;
+        : `▼ Ver mais (${src.length})`;
     } else {
       tog.style.display = "none";
     }
   }
-  // Botão "Ver menos" no topo — só visível quando expandido
-  const togTop = document.getElementById("itemsCollapseTop");
-  if (togTop) togTop.style.display = (itemsExpanded && src.length > LIMIT && !isSearching) ? "" : "none";
 }
 
 function yieldBadge(it) {
@@ -2330,29 +2279,6 @@ function toggleMarketFields(kind) {
   mr.style.display = MARKET_CLASSES_FOR_TICKER.has(cls) ? "" : "none";
 }
 
-function normalizeLookupTickerForYahoo(raw, cls) {
-  const t = String(raw || "").trim().toUpperCase();
-  if (!t) return "";
-  const c = String(cls || "").trim().toLowerCase();
-  const cryptoTk = (c === "cripto" || c === "crypto") && typeof cryptoToYahoo === "function" ? cryptoToYahoo(t) : null;
-  if (cryptoTk) return cryptoTk;
-  if (t.endsWith(".US")) return t.slice(0, -3); // Yahoo usa O, AAPL, MSFT, etc.; não O.US
-  if (t.endsWith(".CC")) return t.replace(/\.CC$/, "-USD");
-  const map = {".PT":".LS",".GB":".L",".UK":".L",".PL":".WA",".CH":".SW",".DK":".CO",".SE":".ST",".NO":".OL",".FI":".HE",".BE":".BR",".IT":".MI",".FR":".PA",".NL":".AS",".ES":".MC",".AU":".AX",".CA":".TO"};
-  for (const [from, to] of Object.entries(map)) if (t.endsWith(from)) return t.slice(0, -from.length) + to;
-  return t;
-}
-
-function inferLookupQuoteCurrency(originalTicker, yahooTicker, quoteCurrency) {
-  const qc = String(quoteCurrency || "").trim().toUpperCase();
-  const raw = String(originalTicker || "").trim().toUpperCase();
-  const y = String(yahooTicker || "").trim().toUpperCase();
-  // Alguns workers/Yahoo devolvem currency vazio/errado para tickers introduzidos como O.US.
-  if (!qc || (qc === "EUR" && (raw.endsWith(".US") || (y && !/[.=]/.test(y) && /^[A-Z]{1,5}$/.test(y))))) return "USD";
-  if (y.endsWith("-USD")) return "USD";
-  return qc || "EUR";
-}
-
 /* v21: Ligar classe change → toggle + botão Buscar cotação */
 function wireMarketLookup() {
   const clsEl = document.getElementById("mClass");
@@ -2390,12 +2316,16 @@ function wireMarketLookup() {
         isin: ""
       };
       let candidates = [];
+      // Cripto: resolver directamente via CRYPTO_YAHOO_MAP
       const clsNorm = String(fakeAsset.class).toLowerCase();
-      const normTk = normalizeLookupTickerForYahoo(tk, fakeAsset.class);
-      if (normTk && !candidates.includes(normTk)) candidates.push(normTk);
-      // Só depois tentar o ticker cru. Ex.: O.US falha/tem moeda errada em alguns workers; O é o Yahoo correcto.
-      if (tk && tk !== normTk && !candidates.includes(tk)) candidates.push(tk);
-      if (clsNorm === "cripto" && !tk.includes("-") && !tk.endsWith(".CC")) {
+      if (clsNorm === "cripto" || clsNorm === "crypto") {
+        const cTk = (typeof cryptoToYahoo === "function") ? cryptoToYahoo(tk) : null;
+        if (cTk) candidates.push(cTk);
+      }
+      // Adicionar também o ticker raw e variantes conhecidas
+      if (!candidates.includes(tk)) candidates.push(tk);
+      // Tentar com sufixos comuns se é cripto não listada
+      if (clsNorm === "cripto" && !tk.includes("-")) {
         const fallback = tk + "-USD";
         if (!candidates.includes(fallback)) candidates.push(fallback);
       }
@@ -2410,7 +2340,7 @@ function wireMarketLookup() {
       if (!quote) throw lastErr || new Error("Sem cotação disponível para esse ticker");
 
       // FX para EUR se preciso
-      const ccy = inferLookupQuoteCurrency(tk, usedTk, quote.currency);
+      const ccy = (quote.currency || "EUR").toUpperCase();
       let fxToEur = 1;
       if (ccy !== "EUR") {
         try {
@@ -2470,11 +2400,11 @@ function editItem(id) {
   buildClassSelect(kind);
   $("mClass").value = it.class || (kind === "liab" ? CLASSES_LIABS[0] : CLASSES_ASSETS[0]);
     $("mName").value = it.name || "";
-  $("mValue").value = String(Math.round(parseNum(it.value) * 100) / 100 || "");
+  $("mValue").value = String(parseNum(it.value) || "");
   const curSel2 = document.getElementById("mCurrency");
   if (curSel2) curSel2.value = it.currency || "EUR";
   const vlEl2 = document.getElementById("mValueLocal");
-  if (vlEl2) vlEl2.value = it.valueLocal ? String(Math.round(parseNum(it.valueLocal) * 100) / 100) : "";
+  if (vlEl2) vlEl2.value = it.valueLocal ? String(it.valueLocal) : "";
   $("mNotes").value = it.notes || "";
   toggleYieldFields(kind);
   wireCurrencyModal();
@@ -2515,10 +2445,7 @@ function saveItemFromModal() {
   const savedVL  = vlElS ? parseNum(vlElS.value) : 0;
   // If user entered a local value and currency != EUR, auto-convert to EUR
   let eurValue = parseNum($("mValue").value);
-  // O campo "Valor actual (€ equivalente)" é a fonte principal.
-  // Só converter o valor local quando o campo EUR estiver vazio; caso contrário,
-  // uma cotação acabada de buscar podia ser substituída por um FX estático antigo.
-  if ((!eurValue || eurValue <= 0) && savedCcy !== "EUR" && savedVL > 0) {
+  if (savedCcy !== "EUR" && savedVL > 0) {
     eurValue = toEUR(savedVL, savedCcy);
   }
   const obj = {
@@ -7619,8 +7546,6 @@ function rebuildBrokerGeneratedData() {
   if (!state.settings) state.settings = {};
   state.settings.brokerRebuildSig = getBrokerDataSignature();
   state.settings.brokerRebuildSchemaVersion = BROKER_REBUILD_SCHEMA_VERSION;
-  // Detect manual vs broker conflicts after rebuild
-  try { setTimeout(() => renderConflictPanel(), 0); } catch (_) {}
 }
 
 
@@ -8292,14 +8217,11 @@ async function importBankFile(file) {
     if (!parsed.length && looksLikeSantanderPdf) {
       tryParser("Parser Santander regex", () => parseSantanderRegex(santanderText || ""));
     }
-    if (!parsed.length) {
-      // Fallback robusto para PDFs Santander/contas quando pdf.js extrai texto
-      // com ordem errada, sem sinal negativo ou sem cabeçalhos detectáveis.
+    if (!parsed.length && !looksLikeSantanderPdf) {
       try {
         const rawParsed = await parseSantanderPDFFromFile(file);
         if (Array.isArray(rawParsed) && rawParsed.length) {
           parsed = rawParsed;
-          bankFmt = bankFmt === "generic" ? "santander" : bankFmt;
           setBankImportDebug(`Parser PDF dedicado reconheceu <b>${parsed.length}</b> movimentos.`, "ok");
         }
       } catch (err) {
@@ -8330,8 +8252,8 @@ async function importBankFile(file) {
   if (!parsed.length && (bankFmt === "montepio" || bankFmt === "bpi")) tryParser("Parser Montepio/BPI", () => parseMontepioBPI(text || ""));
 
   if (!parsed.length) tryParser("Parser Santander regex", () => parseSantanderRegex((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
-  if (!parsed.length) tryParser("Parser Santander tabular", () => parseSantanderStructured((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
-  if (!parsed.length) tryParser("Parser Santander PDF", () => parseSantanderStructured((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
+  if (!parsed.length) tryParser("Parser Santander tabular", () => parseSantanderTabular((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
+  if (!parsed.length) tryParser("Parser Santander PDF", () => parseSantanderPDF((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
   if (!parsed.length) tryParser("Parser Millennium", () => parseMillenniumCSV(text || ""));
   if (!parsed.length) tryParser("Parser CGD", () => parseCGDCSV(text || ""));
   if (!parsed.length) tryParser("Parser Novo Banco", () => parseNovoBancoCSV(text || ""));
@@ -8979,6 +8901,13 @@ function parseSantanderStructured(text) {
     jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
     jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
   };
+  function parseValueDate(s) {
+    const m = String(s || "").match(/D[\.\s]?\s*valor\s*:\s*(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})/i);
+    if (!m) return null;
+    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
+    if (!mon) return null;
+    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+  }
 
   function isNoiseLine(line) {
     return /^(titular\b|conta\s+pt|saldo disponível|movimentos da sua conta|data da operação\b|documento com data:|página\s+\d+\s+de\s+\d+|para pesquisas genéricas)/i.test(line);
@@ -9207,22 +9136,14 @@ function parseSantanderStatementStrict(text) {
     const descParts = [];
     let amount = null;
     let balance = null;
-    let pendingNegative = false;
 
     while (i < lines.length) {
       const ln = lines[i];
       if (parseDateFlexible(ln) || parseValueDate(ln)) break;
 
-      if (/^[\u2212−-]$/.test(ln)) {
-        pendingNegative = true;
-        i += 1;
-        continue;
-      }
-
       let m = ln.match(amountBalanceOnlyRe);
       if (m) {
         amount = parseMoneyToken(m[1]);
-        if (pendingNegative && Number.isFinite(amount) && amount > 0) amount = -amount;
         balance = parseMoneyToken(m[2]);
         i += 1;
         break;
@@ -9230,11 +9151,8 @@ function parseSantanderStatementStrict(text) {
 
       m = ln.match(descAmountBalanceRe);
       if (m && String(m[1] || "").trim()) {
-        let prefix = String(m[1] || "").trim();
-        if (/[\u2212−-]$/.test(prefix)) { pendingNegative = true; prefix = prefix.replace(/[\u2212−-]$/, "").trim(); }
-        if (prefix) descParts.push(prefix);
+        descParts.push(String(m[1] || "").trim());
         amount = parseMoneyToken(m[2]);
-        if (pendingNegative && Number.isFinite(amount) && amount > 0) amount = -amount;
         balance = parseMoneyToken(m[3]);
         i += 1;
         break;
@@ -9243,7 +9161,6 @@ function parseSantanderStatementStrict(text) {
       m = ln.match(amountOnlyRe);
       if (m) {
         amount = parseMoneyToken(m[1]);
-        if (pendingNegative && Number.isFinite(amount) && amount > 0) amount = -amount;
         if (i + 1 < lines.length) {
           const nextLine = lines[i + 1];
           const mb = nextLine.match(amountOnlyRe);
@@ -9283,7 +9200,13 @@ function parseSantanderStatementStrict(text) {
 }
 
 
+function parseSantanderPDF(text) {
+  return parseSantanderStructured(text);
+}
 
+function parseSantanderTabular(text) {
+  return parseSantanderStructured(text);
+}
 
 
 function reconcileBankStatementRows(rows, bankFmt = "generic") {
@@ -10275,24 +10198,9 @@ function wire() {
     if (btnCopy) btnCopy.addEventListener("click", () => {
       const text = document.getElementById("aiResultContent");
       if (!text) return;
-      const textToCopy = text.innerText || text.textContent || "";
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(textToCopy)
-          .then(() => toast("✅ Copiado para a área de transferência."))
-          .catch(() => toast("Não foi possível copiar."));
-      } else {
-        // Fallback for older Android WebView (no clipboard API)
-        try {
-          const ta = document.createElement("textarea");
-          ta.value = textToCopy;
-          ta.style.position = "fixed"; ta.style.opacity = "0";
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          document.body.removeChild(ta);
-          toast("✅ Copiado.");
-        } catch (_) { toast("Não foi possível copiar."); }
-      }
+      navigator.clipboard.writeText(text.innerText || text.textContent || "")
+        .then(() => toast("✅ Copiado para a área de transferência."))
+        .catch(() => toast("Não foi possível copiar."));
     });
     const analysisTabEl = document.getElementById("analysisTab");
     if (analysisTabEl) analysisTabEl.addEventListener("change", () => {
@@ -10369,12 +10277,19 @@ async function fetchQuote(ticker, workerUrl) {
 }
 
 
-async function refreshLiveQuotes() {
+async function refreshLiveQuotes(options = {}) {
   const btn = $("btnRefreshQuotes");
   const workerUrl = (state.settings && state.settings.workerUrl) || "";
+  const silent = !!options.silent;
+  const suppressPrompt = !!options.suppressPrompt;
+  const suppressToasts = !!options.suppressToasts;
+  const suppressErrorsModal = !!options.suppressErrorsModal;
+  const suppressRender = !!options.suppressRender;
+  const progressCb = typeof options.onProgress === "function" ? options.onProgress : null;
 
   if (!workerUrl) {
     // Sem Worker configurado — mostrar modal de configuração
+    if (silent || suppressPrompt) return { updated:0, failed:0, skipped:true, reason:"worker-missing" };
     const url = prompt(
       "⚙️ Cloudflare Worker URL\n\nIntroduz o URL do teu Worker para actualizar cotações automaticamente.\nEx: https://patrimonio-quotes.SEU-NOME.workers.dev\n\n(Deixa em branco para configurar mais tarde)"
     );
@@ -10394,8 +10309,8 @@ async function refreshLiveQuotes() {
   const candidates = state.assets.filter(assetLooksQuoteEligible);
 
   if (!candidates.length) {
-    toast("Sem ativos com ticker detectado em Ações/ETFs/Cripto.", 3000);
-    return;
+    if (!suppressToasts) toast("Sem ativos com ticker detectado em Ações/ETFs/Cripto.", 3000);
+    return { updated:0, failed:0, skipped:true, reason:"no-candidates" };
   }
 
   // UI: spinning button
@@ -10421,7 +10336,8 @@ async function refreshLiveQuotes() {
     const el = document.getElementById("quoteRefreshProgress");
     if (el) { el.style.opacity = "0"; setTimeout(() => { if (el) el.style.display = "none"; }, 300); }
   };
-  _showRefreshProgress("⟳ A actualizar cotações…");
+  if (progressCb) progressCb("A actualizar cotações…");
+  if (!silent) _showRefreshProgress("⟳ A actualizar cotações…");
 
   // Convert local / broker tickers into Yahoo candidates.
   // Several imports keep a stale ISIN→Yahoo guess; try that first, then sensible fallbacks.
@@ -10887,41 +10803,41 @@ async function fetchQuoteWithFallback(ref) {
   if (!state.settings) state.settings = {};
   state.settings.lastQuoteRefresh = { updated, failed, errors, ts: new Date().toISOString() };
   // Hide progress indicator
-  try { _hideRefreshProgress(); } catch (_) {}
+  if (!silent) { try { _hideRefreshProgress(); } catch (_) {} }
   // Record staleness timestamp for auto-refresh logic
   state.settings.lastQuoteRefreshDate = new Date().toISOString().slice(0, 10);
   state.settings.lastQuoteRefreshTs   = Date.now();
   await saveStateAsync();
   // renderAll() já marca todas as views como dirty e agenda o render da view actual.
   // As chamadas individuais anteriores eram redundantes — cada tab era renderizada 2x.
-  renderAll();
+  if (!suppressRender) renderAll();
   // Disparar evento para outros listeners (P&L, price alerts)
   document.dispatchEvent(new CustomEvent("quotesUpdated"));
 
   if (btn) { btn.disabled = false; btn.textContent = "⟳ Cotações"; }
 
-  if (updated > 0 && !failed) {
+  if (!suppressToasts && updated > 0 && !failed) {
     toast(`✅ ${updated} ativo${updated !== 1 ? "s" : ""} actualizado${updated !== 1 ? "s" : ""}`, 3000);
-  } else if (updated > 0) {
-    // Show clickable toast — tapping opens full error list modal
+  } else if (updated > 0 && failed) {
     showQuoteErrors(updated, failed, errors, updated, failed);
     quoteErrorsInlineOpen = true;
     renderQuoteErrorsInline(true);
-    openModal("modalQuoteErrors");
-    toastClickable(
+    if (!suppressErrorsModal) openModal("modalQuoteErrors");
+    if (!suppressToasts) toastClickable(
       `✅ ${updated} actualizado${updated !== 1 ? "s" : ""} · ⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver`,
       () => openModal("modalQuoteErrors"), 8000
     );
-  } else {
+  } else if (failed) {
     showQuoteErrors(0, failed, errors, 0, failed);
     quoteErrorsInlineOpen = true;
     renderQuoteErrorsInline(true);
-    openModal("modalQuoteErrors");
-    toastClickable(
+    if (!suppressErrorsModal) openModal("modalQuoteErrors");
+    if (!suppressToasts) toastClickable(
       `⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver detalhes`,
       () => openModal("modalQuoteErrors"), 8000
     );
   }
+  return { updated, failed, errors };
 }
 
 
@@ -11103,130 +11019,18 @@ function checkDuplicateWarning() {
   card.style.display = hasDups ? "" : "none";
 }
 
-/* ─── CONFLITO MANUAL vs BROKER ───────────────────────────────────────────────
-   Quando rebuildBrokerGeneratedData cria um ativo com ticker/ISIN que já existe
-   como ativo manual, registamos o conflito em state.settings.brokerConflicts
-   para resolução pelo utilizador na tab Importar.
-   ─────────────────────────────────────────────────────────────────────────── */
-
-function detectBrokerManualConflicts() {
-  // Find manual assets that share ticker or ISIN with a broker-generated asset
-  const manualAssets  = (state.assets || []).filter(a => !a.generatedFromBroker);
-  const brokerAssets  = (state.assets || []).filter(a =>  a.generatedFromBroker);
-  if (!manualAssets.length || !brokerAssets.length) return [];
-
-  const conflicts = [];
-  const resolved  = (state.settings && state.settings.brokerConflictResolutions) || {};
-
-  for (const broker of brokerAssets) {
-    const bTicker = String(broker.ticker || "").trim().toUpperCase();
-    const bISIN   = String(broker.isin   || "").trim().toUpperCase();
-    const bName   = String(broker.name   || "").trim().toLowerCase();
-
-    for (const manual of manualAssets) {
-      const mTicker = String(manual.ticker || "").trim().toUpperCase();
-      const mISIN   = String(manual.isin   || "").trim().toUpperCase();
-      const mName   = String(manual.name   || "").trim().toLowerCase();
-
-      const sameISIN   = bISIN   && mISIN   && bISIN   === mISIN;
-      const sameTicker = bTicker && mTicker && bTicker === mTicker;
-      const sameName   = bName   && mName   && (bName === mName || bName.includes(mName) || mName.includes(bName));
-
-      if (sameISIN || sameTicker || sameName) {
-        const key = `${manual.id}|${broker.id}`;
-        if (!resolved[key]) {
-          conflicts.push({ key, manualId: manual.id, brokerId: broker.id,
-            manualName: manual.name, brokerName: broker.name,
-            manualValue: parseNum(manual.value), brokerValue: parseNum(broker.value),
-            matchReason: sameISIN ? "ISIN" : sameTicker ? "ticker" : "nome" });
-        }
-      }
-    }
-  }
-  return conflicts;
-}
-
-function resolveBrokerConflict(key, action) {
-  // action: "keep_manual" | "keep_broker" | "merge"
-  if (!state.settings) state.settings = {};
-  if (!state.settings.brokerConflictResolutions) state.settings.brokerConflictResolutions = {};
-  state.settings.brokerConflictResolutions[key] = action;
-
-  const [manualId, brokerId] = key.split("|");
-
-  if (action === "keep_manual") {
-    // Remove the broker-generated duplicate
-    state.assets = state.assets.filter(a => a.id !== brokerId);
-  } else if (action === "keep_broker") {
-    // Remove the manual asset, keep broker one
-    state.assets = state.assets.filter(a => a.id !== manualId);
-  } else if (action === "merge") {
-    // Copy broker financial data (value, qty, costBasis, ticker) into manual asset, remove broker
-    const manual = state.assets.find(a => a.id === manualId);
-    const broker = state.assets.find(a => a.id === brokerId);
-    if (manual && broker) {
-      manual.value       = broker.value;
-      manual.qty         = broker.qty;
-      manual.costBasis   = broker.costBasis;
-      manual.ticker      = broker.ticker || manual.ticker;
-      manual.yahooTicker = broker.yahooTicker || manual.yahooTicker;
-      manual.isin        = broker.isin || manual.isin;
-      manual.yieldType   = broker.yieldType !== "none" ? broker.yieldType : manual.yieldType;
-      manual.yieldValue  = broker.yieldValue > 0 ? broker.yieldValue : manual.yieldValue;
-      manual.notes       = (manual.notes ? manual.notes + " | " : "") + "Fundido com importação de corretora.";
-    }
-    state.assets = state.assets.filter(a => a.id !== brokerId);
-  }
-
-  saveState();
-  renderItems();
-  renderConflictPanel();
-  toast(action === "keep_manual" ? "✅ Ativo manual mantido." : action === "keep_broker" ? "✅ Importação aplicada." : "✅ Ativos fundidos.");
-}
-
-function renderConflictPanel() {
-  const panel = document.getElementById("brokerConflictPanel");
-  if (!panel) return;
-
-  const conflicts = detectBrokerManualConflicts();
-  if (!conflicts.length) {
-    panel.style.display = "none";
-    return;
-  }
-
-  panel.style.display = "";
-  panel.innerHTML = `
-    <div class="card__title" style="margin-bottom:6px">⚠️ ${conflicts.length} conflito${conflicts.length !== 1 ? "s" : ""} manual vs importação</div>
-    <div class="card__muted" style="margin-bottom:12px">O mesmo ativo existe como entrada manual e como importação de corretora. Escolhe como resolver cada um.</div>
-    ${conflicts.map(c => `
-      <div style="border:1px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:10px;background:#fff">
-        <div style="font-weight:700;margin-bottom:4px">${escapeHtml(c.manualName)} <span style="font-size:11px;color:#94a3b8">(via ${escapeHtml(c.matchReason)})</span></div>
-        <div style="font-size:12px;color:#64748b;margin-bottom:10px">
-          Manual: <b>${fmtEUR(c.manualValue)}</b> &nbsp;·&nbsp; Importação: <b>${fmtEUR(c.brokerValue)}</b>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn--sm btn--outline" onclick="resolveBrokerConflict('${c.key}','keep_manual')" style="font-size:12px">Manter manual</button>
-          <button class="btn btn--sm btn--primary" onclick="resolveBrokerConflict('${c.key}','keep_broker')" style="font-size:12px">Usar importação</button>
-          <button class="btn btn--sm btn--ghost" onclick="resolveBrokerConflict('${c.key}','merge')" style="font-size:12px">Fundir</button>
-        </div>
-      </div>
-    `).join("")}
-  `;
-}
-
-
 /* ─── AUTO-REFRESH DE COTAÇÕES ───────────────────────────────────
    Chama refreshLiveQuotes automaticamente se:
    - O Worker URL estiver configurado
    - Houver activos com ticker
    - A última actualização foi há mais de 30 minutos OU nunca foi hoje
    ────────────────────────────────────────────────────────────── */
-function autoRefreshQuotesIfStale() {
+async function autoRefreshQuotesIfStale(options = {}) {
   const workerUrl = (state.settings && state.settings.workerUrl) || "";
-  if (!workerUrl) return Promise.resolve(false); // Worker não configurado — não fazer nada
+  if (!workerUrl) return false; // Worker não configurado — não fazer nada
 
   const candidates = (state.assets || []).filter(assetLooksQuoteEligible);
-  if (!candidates.length) return Promise.resolve(false);
+  if (!candidates.length) return false;
 
   const todayISO = new Date().toISOString().slice(0, 10);
   const lastRefreshISO = (state.settings && state.settings.lastQuoteRefreshDate) || "";
@@ -11235,12 +11039,25 @@ function autoRefreshQuotesIfStale() {
   const STALE_MS = 30 * 60 * 1000; // 30 minutos
 
   const needsRefresh = (lastRefreshISO !== todayISO) || (msSinceRefresh > STALE_MS);
-  if (!needsRefresh) return Promise.resolve(false);
+  if (!needsRefresh) return false;
 
   console.log("[AutoRefresh] Cotações desactualizadas — a actualizar…");
-  return refreshLiveQuotes()
-    .then(() => true)
-    .catch(e => { console.warn("[AutoRefresh] Falha:", e); return false; });
+  if (typeof options.onProgress === "function") options.onProgress("A actualizar cotações…");
+  try {
+    await refreshLiveQuotes({
+      silent: !!options.silent,
+      boot: !!options.boot,
+      suppressPrompt: true,
+      suppressToasts: !!options.suppressToasts,
+      suppressErrorsModal: !!options.suppressErrorsModal,
+      suppressRender: !!options.suppressRender,
+      onProgress: options.onProgress
+    });
+    return true;
+  } catch (e) {
+    console.warn("[AutoRefresh] Falha:", e);
+    return false;
+  }
 }
 
 /* ─── GUARD DE PREÇO ANTIGO ──────────────────────────────────────
@@ -11301,22 +11118,34 @@ document.addEventListener("DOMContentLoaded", async () => {
   try { if (syncBrokerAssetDividendYieldsFromRecords()) await saveStateAsync(); } catch (e) { console.error("Falha ao sincronizar dividendos das posições", e); }
   try { ensureAllChartCanvasesReady(); } catch (e) { console.error("Falha ao preparar gráficos", e); }
   try { wire(); } catch (e) { console.error("Falha no binding dos botões", e); }
-  _setMsg("A renderizar…");
+  _setMsg("A verificar cotações…");
+  try {
+    await autoRefreshQuotesIfStale({
+      boot: true,
+      silent: true,
+      suppressToasts: true,
+      suppressErrorsModal: true,
+      suppressRender: true,
+      onProgress: _setMsg
+    });
+  } catch (e) { console.error("Falha no auto-refresh inicial de cotações", e); }
+  _setMsg("A renderizar dashboard…");
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
-  _setMsg("A actualizar cotações…");
-  try { await autoRefreshQuotesIfStale(); } catch (e) { console.error("Falha no auto-refresh de cotações", e); }
-  _setMsg("Pronto.");
-  // Hide loading overlay with fade
+  // Hide loading overlay only after boot + quote refresh + first render.
   if (_splash) {
-    _splash.style.transition = "opacity 0.3s ease";
-    _splash.style.opacity = "0";
-    setTimeout(() => { if (_splash) _splash.style.display = "none"; }, 320);
+    _splash.setAttribute("aria-busy", "false");
+    _splash.style.transition = "opacity 0.28s ease";
+    requestAnimationFrame(() => {
+      _splash.style.opacity = "0";
+      setTimeout(() => { if (_splash) _splash.style.display = "none"; document.body.classList.remove("pf-booting"); }, 300);
+    });
+  } else {
+    document.body.classList.remove("pf-booting");
   }
   // Deferred non-critical tasks
   setTimeout(() => {
     try { autoSnapshotIfNeeded(); } catch (e) { console.error("Falha no auto snapshot", e); }
     try { checkAndNotifyMaturities(); } catch (e) { console.error("Falha nas notificações de vencimento", e); }
-    // Auto-refresh de cotações já correu antes de mostrar o Dashboard.
   }, 600);
   window.openDividendBaseModal = openDividendBaseModal;
   window.setDividendYieldDisplayMode = setDividendYieldDisplayMode;
@@ -11401,18 +11230,12 @@ function exportPortfolioXLSX() {
 
 /* ─── AUTO-SNAPSHOT MENSAL ─────────────────────────────────── */
 function autoSnapshotIfNeeded() {
-  const today = isoToday();
-  // Daily snapshot — check if today already has an entry
-  const alreadyToday = state.history.some(h => String(h.dateISO || "").slice(0, 10) === today);
-  if (alreadyToday) return;
+  const thisMonth = isoToday().slice(0,7);
+  const last = state.history.slice().sort((a,b) => String(b.dateISO).localeCompare(String(a.dateISO)))[0];
+  if (last && String(last.dateISO||"").slice(0,7) === thisMonth) return;
   if (!state.assets.length) return;
   const t = calcTotals();
-  // Prune history beyond 3 years (1095 days) to keep storage bounded
-  if (state.history.length >= 1095) {
-    state.history.sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
-    state.history.splice(0, state.history.length - 1094);
-  }
-  state.history.push({ dateISO: today, net: t.net, assets: t.assetsTotal, liabilities: t.liabsTotal, passiveAnnual: t.passiveAnnual, auto: true });
+  state.history.push({ dateISO:isoToday(), net:t.net, assets:t.assetsTotal, liabilities:t.liabsTotal, passiveAnnual:t.passiveAnnual, auto:true });
   saveState();
 }
 
@@ -11552,30 +11375,6 @@ function renderIRSCard() {
 }
 
 /* ─── SNAPSHOT: APAGAR INDIVIDUALMENTE ─────────────────────── */
-function exportHistoryCSV() {
-  const h = state.history.slice().sort((a,b) => String(a.dateISO).localeCompare(String(b.dateISO)));
-  if (!h.length) { toast("Sem histórico para exportar."); return; }
-  const rows = [["Data","Patrimônio líquido","Ativos","Passivos","Rend. passivo anual"]];
-  for (const s of h) {
-    rows.push([
-      s.dateISO,
-      Math.round(parseNum(s.net)),
-      Math.round(parseNum(s.assets)),
-      Math.round(parseNum(s.liabilities||0)),
-      Math.round(parseNum(s.passiveAnnual||0))
-    ]);
-  }
-  const csv = rows.map(r => r.join(";")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `patrimonio-historico-${isoToday()}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-  toast("✅ Histórico exportado.");
-}
-
 function deleteSnapshot(dateISO) {
   if (!confirm(`Apagar snapshot de ${dateISO}?`)) return;
   state.history = state.history.filter(h => h.dateISO !== dateISO);

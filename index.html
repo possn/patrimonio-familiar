@@ -10,7 +10,7 @@
   <link rel="apple-touch-icon" href="icon192.png">
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
-  <link rel="stylesheet" href="styles.css?v=20260504audit1">
+  <link rel="stylesheet" href="styles.css?v=20260504v59audit">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
@@ -28,28 +28,16 @@
       document.head.appendChild(s);
     })();
   </script>
-  <script defer src="app.js?v=20260504audit2" fetchpriority="high"></script>
+  <script defer src="app.js?v=20260504v59audit" fetchpriority="high"></script>
 </head>
-<body>
-  <!-- App loading overlay — shown during boot, hidden after first render -->
-  <div id="appLoadingOverlay" style="
-    display:flex; position:fixed; inset:0; z-index:9999;
-    background:#eef1f6; flex-direction:column;
-    align-items:center; justify-content:center; gap:18px;
-  ">
-    <img src="icon192.png" alt="" width="72" height="72" style="border-radius:18px;box-shadow:0 4px 24px rgba(91,92,230,.18)">
-    <div style="font-size:1.15rem;font-weight:600;color:#5b5ce6;letter-spacing:.01em">Património Familiar</div>
-    <div id="appLoadingMsg" style="font-size:.85rem;color:#888;min-height:1.2em">A iniciar…</div>
-    <div class="pf-spinner" aria-hidden="true"></div>
+<body class="pf-booting">
+  <!-- App loading overlay — fica activo até dados + cotações + primeiro render estarem prontos -->
+  <div id="appLoadingOverlay" class="app-loading-overlay" aria-live="polite" aria-busy="true">
+    <img src="icon192.png" alt="" width="72" height="72" class="app-loading-icon">
+    <div class="app-loading-title">Património Familiar</div>
+    <div class="app-loading-spinner" role="status" aria-label="A carregar"></div>
+    <div id="appLoadingMsg" class="app-loading-msg">A iniciar…</div>
   </div>
-  <style>
-    .pf-spinner {
-      width:38px; height:38px; border-radius:50%;
-      border:4px solid #dfe3f3; border-top-color:#5b5ce6;
-      animation:pf-spin .85s linear infinite; margin-top:4px;
-    }
-    @keyframes pf-spin { to { transform: rotate(360deg); } }
-  </style>
 
 <header class="topbar">
   <div class="brand">
@@ -169,9 +157,6 @@
         <div><div class="card__title">Top ativos</div><div class="card__muted">Por valor · clica para editar</div></div>
         <button class="link" id="btnSummaryAll">Ver tudo</button>
       </div>
-      <div id="summaryCollapseTop" style="display:none;text-align:center;margin-bottom:8px">
-        <button class="btn btn--ghost btn--sm" onclick="summaryExpanded=false;renderDashboard();window.scrollTo({top:document.getElementById('viewDashboard').offsetTop,behavior:'smooth'})">▲ Ver menos</button>
-      </div>
       <div id="summaryList" class="list"></div>
       <div class="row row--center" style="margin-top:10px">
         <button class="btn btn--ghost" id="btnSummaryToggle" style="display:none">Ver o resto</button>
@@ -191,13 +176,10 @@
     <div class="card">
       <div class="card__head">
         <div><div class="card__title">Evolução do Património</div><div class="card__muted" id="trendSubtitle">Histórico de snapshots</div></div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <button class="link" onclick="exportHistoryCSV()">↓ CSV</button>
-          <button class="link" id="btnTrendClear">Limpar</button>
-        </div>
+        <button class="link" id="btnTrendClear">Limpar</button>
       </div>
       <div class="chartWrap"><canvas id="trendChart" height="240"></canvas></div>
-      <div class="hint" id="historyHint" style="display:none">Sem histórico ainda. O primeiro snapshot será registado automaticamente.</div>
+      <div class="hint" id="historyHint" style="display:none">Sem histórico. Usa "📸 Registar mês".</div>
       <!-- Mini tabela de snapshots recentes -->
       <div id="snapshotTable" style="margin-top:10px"></div>
     </div>
@@ -322,9 +304,6 @@
         <div class="quote-errors-inline__list" id="quoteErrorsInlineList"></div>
       </div>
     </div>
-    <div id="itemsCollapseTop" style="display:none;text-align:center;margin-bottom:8px">
-      <button class="btn btn--ghost btn--sm" onclick="itemsExpanded=false;renderItems();window.scrollTo({top:document.getElementById('viewAssets').offsetTop-60,behavior:'smooth'})">▲ Ver menos</button>
-    </div>
     <div id="itemsList" class="list"></div>
     <div style="text-align:center;margin-top:10px">
       <button class="btn btn--ghost btn--sm" id="btnItemsToggle" style="display:none"
@@ -347,9 +326,6 @@
 
   <!-- IMPORT -->
   <section class="view" data-view="import" id="viewImport" hidden>
-    <!-- Broker vs Manual conflict resolution panel -->
-    <div id="brokerConflictPanel" style="border:2px solid #f97316;border-radius:14px;padding:16px;display:none;margin-bottom:12px;background:#fff7ed"></div>
-
     <div class="card" id="dupWarningCard" style="border:2px solid #fbbf24;display:none">
       <div class="card__title" style="margin-bottom:6px">⚠️ Possíveis dados duplicados</div>
       <div class="card__muted" style="margin-bottom:10px">Detectámos movimentos possivelmente importados mais do que uma vez. Limpa e reimporta para corrigir.</div>
