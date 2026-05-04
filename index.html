@@ -170,6 +170,9 @@
         <div><div class="card__title">Top ativos</div><div class="card__muted">Por valor · clica para editar</div></div>
         <button class="link" id="btnSummaryAll">Ver tudo</button>
       </div>
+      <div id="summaryCollapseTop" style="display:none;text-align:center;margin-bottom:8px">
+        <button class="btn btn--ghost btn--sm" onclick="summaryExpanded=false;renderDashboard();window.scrollTo({top:document.getElementById('viewDashboard').offsetTop,behavior:'smooth'})">▲ Ver menos</button>
+      </div>
       <div id="summaryList" class="list"></div>
       <div class="row row--center" style="margin-top:10px">
         <button class="btn btn--ghost" id="btnSummaryToggle" style="display:none">Ver o resto</button>
@@ -189,10 +192,13 @@
     <div class="card">
       <div class="card__head">
         <div><div class="card__title">Evolução do Património</div><div class="card__muted" id="trendSubtitle">Histórico de snapshots</div></div>
-        <button class="link" id="btnTrendClear">Limpar</button>
+        <div style="display:flex;gap:10px;align-items:center">
+          <button class="link" onclick="exportHistoryCSV()">↓ CSV</button>
+          <button class="link" id="btnTrendClear">Limpar</button>
+        </div>
       </div>
       <div class="chartWrap"><canvas id="trendChart" height="240"></canvas></div>
-      <div class="hint" id="historyHint" style="display:none">Sem histórico. Usa "📸 Registar mês".</div>
+      <div class="hint" id="historyHint" style="display:none">Sem histórico ainda. O primeiro snapshot será registado automaticamente.</div>
       <!-- Mini tabela de snapshots recentes -->
       <div id="snapshotTable" style="margin-top:10px"></div>
     </div>
@@ -316,6 +322,9 @@
         </div>
         <div class="quote-errors-inline__list" id="quoteErrorsInlineList"></div>
       </div>
+    </div>
+    <div id="itemsCollapseTop" style="display:none;text-align:center;margin-bottom:8px">
+      <button class="btn btn--ghost btn--sm" onclick="itemsExpanded=false;renderItems();window.scrollTo({top:document.getElementById('viewAssets').offsetTop-60,behavior:'smooth'})">▲ Ver menos</button>
     </div>
     <div id="itemsList" class="list"></div>
     <div style="text-align:center;margin-top:10px">

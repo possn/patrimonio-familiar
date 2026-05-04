@@ -82,21 +82,16 @@ function parseNum(x) {
   return neg ? -(Number.isFinite(n) ? n : 0) : (Number.isFinite(n) ? n : 0);
 }
 
-function fmtEUR(n) {
+function fmtEUR(n, dec = 0) {
   const cur = (state.settings && state.settings.currency) || "EUR";
   const v = Number(n || 0);
   try {
-    return new Intl.NumberFormat("pt-PT", { style: "currency", currency: cur, maximumFractionDigits: 0 }).format(v);
-  } catch { return Math.round(v) + " " + cur; }
+    return new Intl.NumberFormat("pt-PT", { style: "currency", currency: cur, maximumFractionDigits: dec, minimumFractionDigits: dec }).format(v);
+  } catch { return (dec > 0 ? v.toFixed(dec) : Math.round(v)) + " " + cur; }
 }
 
-function fmtEUR2(n) {
-  const cur = (state.settings && state.settings.currency) || "EUR";
-  const v = Number(n || 0);
-  try {
-    return new Intl.NumberFormat("pt-PT", { style: "currency", currency: cur, maximumFractionDigits: 2 }).format(v);
-  } catch { return v.toFixed(2) + " " + cur; }
-}
+// fmtEUR2 kept as alias for backwards compatibility with any external references
+function fmtEUR2(n) { return fmtEUR(n, 2); }
 
 function fmt(n, maxFrac = 4) {
   const v = Number(n);
@@ -1982,6 +1977,9 @@ function renderSummary() {
       ? "▲ Ver menos"
       : `▼ Ver mais (${items.length - 10} de ${items.length} ativos)`;
   }
+  // Top collapse button — only visible when expanded
+  const togTop = document.getElementById("summaryCollapseTop");
+  if (togTop) togTop.style.display = (summaryExpanded && items.length > 10) ? "" : "none";
   // Update subtitle with total count
   const sub = document.getElementById("itemsSub") || document.querySelector("#viewDashboard .card__muted");
   const dashSub = document.querySelector("#summaryList")?.closest(".card")?.querySelector(".card__muted");
@@ -2038,12 +2036,27 @@ function renderTrendChart() {
     return;
   }
   if (hint) hint.style.display = "none";
-  if (trendSub) trendSub.textContent = `${h.length} snapshot${h.length!==1?"s":""} · ${h[0].dateISO.slice(0,7)} → ${h[h.length-1].dateISO.slice(0,7)}`;
+  if (trendSub) trendSub.textContent = `${h.length} snapshot${h.length!==1?"s":""} · ${h[0].dateISO} → ${h[h.length-1].dateISO}`;
 
-  const labels = h.map(x => x.dateISO.slice(0, 7));
-  const netData = h.map(x => parseNum(x.net));
-  const assetData = h.map(x => parseNum(x.assets));
-  const passData = h.map(x => parseNum(x.passiveAnnual||0));
+  // Smart downsampling: keep chart readable regardless of history size
+  // >365 points → keep 1 per week (most recent of each week)
+  // >90 points  → keep 1 per week
+  // ≤90 points  → show all
+  let displayed = h;
+  if (h.length > 90) {
+    const byWeek = new Map();
+    for (const s of h) {
+      const d = new Date(s.dateISO);
+      const week = `${d.getFullYear()}-W${String(Math.ceil((d - new Date(d.getFullYear(),0,1)) / 604800000)).padStart(2,"0")}`;
+      byWeek.set(week, s); // last entry per week wins
+    }
+    displayed = Array.from(byWeek.values()).sort((a,b) => String(a.dateISO).localeCompare(String(b.dateISO)));
+  }
+
+  const labels = displayed.map(x => h.length > 90 ? x.dateISO.slice(0,7) : x.dateISO);
+  const netData = displayed.map(x => parseNum(x.net));
+  const assetData = displayed.map(x => parseNum(x.assets));
+  const passData = displayed.map(x => parseNum(x.passiveAnnual||0));
 
   // v18: update em vez de destroy+recreate
   if (trendChart && trendChart.data) {
@@ -2184,18 +2197,21 @@ function renderItems() {
     list.appendChild(row);
   }
 
-  // Botão Ver todos / Ver menos
+  // Botão Ver todos / Ver menos (fundo da lista)
   const tog = document.getElementById("btnItemsToggle");
   if (tog) {
     if (src.length > LIMIT && !isSearching) {
       tog.style.display = "";
       tog.textContent = itemsExpanded
         ? "▲ Ver menos"
-        : `▼ Ver mais (${src.length})`;
+        : `▼ Ver mais (${src.length - LIMIT} de ${src.length} ativos)`;
     } else {
       tog.style.display = "none";
     }
   }
+  // Botão "Ver menos" no topo — só visível quando expandido
+  const togTop = document.getElementById("itemsCollapseTop");
+  if (togTop) togTop.style.display = (itemsExpanded && src.length > LIMIT && !isSearching) ? "" : "none";
 }
 
 function yieldBadge(it) {
@@ -11331,6 +11347,30 @@ function renderIRSCard() {
 }
 
 /* ─── SNAPSHOT: APAGAR INDIVIDUALMENTE ─────────────────────── */
+function exportHistoryCSV() {
+  const h = state.history.slice().sort((a,b) => String(a.dateISO).localeCompare(String(b.dateISO)));
+  if (!h.length) { toast("Sem histórico para exportar."); return; }
+  const rows = [["Data","Patrimônio líquido","Ativos","Passivos","Rend. passivo anual"]];
+  for (const s of h) {
+    rows.push([
+      s.dateISO,
+      Math.round(parseNum(s.net)),
+      Math.round(parseNum(s.assets)),
+      Math.round(parseNum(s.liabilities||0)),
+      Math.round(parseNum(s.passiveAnnual||0))
+    ]);
+  }
+  const csv = rows.map(r => r.join(";")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `patrimonio-historico-${isoToday()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast("✅ Histórico exportado.");
+}
+
 function deleteSnapshot(dateISO) {
   if (!confirm(`Apagar snapshot de ${dateISO}?`)) return;
   state.history = state.history.filter(h => h.dateISO !== dateISO);
