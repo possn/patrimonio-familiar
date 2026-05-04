@@ -25,7 +25,7 @@ try {
           }
         }
       } catch (_) {}
-      navigator.serviceWorker.register("sw.js?v=20260513v66").catch(() => {});
+      navigator.serviceWorker.register("sw.js?v=20260514v67").catch(() => {});
     });
   }
 } catch (_) {}
@@ -11187,6 +11187,7 @@ let _pinLocked = false;
 let _pinFailCount = 0;
 let _pinCooldownUntil = 0;
 let _pinInactivityTimer = null;
+let _appReady = false; // prevent PIN lock before app has fully booted
 const PIN_INACTIVITY_MS = () => {
   const mins = parseInt((state.settings && state.settings.pinTimeoutMins) || 5);
   return mins * 60 * 1000;
@@ -11244,7 +11245,7 @@ function pinUnlock() {
 
 function resetPinInactivity() {
   clearTimeout(_pinInactivityTimer);
-  if (!pinIsSet()) return;
+  if (!_appReady || !pinIsSet()) return;
   _pinInactivityTimer = setTimeout(() => {
     pinLock("Sessão expirada por inactividade.");
   }, PIN_INACTIVITY_MS());
@@ -11372,20 +11373,23 @@ async function _submitPin() {
   }
 }
 
-// Lock when app goes to background
+// Lock when app goes to background — only after app has fully booted
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
     saveStateAsync();
-    if (pinIsSet()) pinLock("Aplicação em segundo plano.");
+    // Guard: only lock if app has finished booting (avoid lock during loading overlay)
+    if (_appReady && pinIsSet()) pinLock("Aplicação em segundo plano.");
   }
-  if (document.visibilityState === "visible" && _pinLocked) {
+  if (document.visibilityState === "visible" && _appReady && _pinLocked) {
     showPinScreen("");
   }
 });
 
-// Reset inactivity timer on user interaction
+// Reset inactivity timer on user interaction — only after boot
 ["click","touchstart","keydown","pointerdown"].forEach(evt => {
-  document.addEventListener(evt, () => { if (!_pinLocked && pinIsSet()) resetPinInactivity(); }, { passive: true });
+  document.addEventListener(evt, () => {
+    if (_appReady && !_pinLocked && pinIsSet()) resetPinInactivity();
+  }, { passive: true });
 });
 
 
@@ -11550,7 +11554,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     _splash.style.opacity = "0";
     setTimeout(() => { if (_splash) _splash.style.display = "none"; }, 320);
   }
-  // Show PIN lock if set
+  // Mark app as fully booted — enables PIN lock on background
+  _appReady = true;
+  // Show PIN lock if set (after app is ready)
   if (pinIsSet()) {
     pinLock("");
   } else {
@@ -11572,11 +11578,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   window._allocPreset = _allocPreset;
 });
 
-// Guarantee state is saved when app goes to background or is closed
-// Critical for iOS PWA where the process can be killed without warning
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") saveStateAsync();
-});
+// State save on background handled by PIN visibilitychange handler above.
+// pagehide/beforeunload remain as safety nets for non-PIN scenarios.
 window.addEventListener("pagehide", () => saveStateAsync());
 window.addEventListener("beforeunload", () => saveStateAsync());
 
