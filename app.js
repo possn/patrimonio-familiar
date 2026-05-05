@@ -956,7 +956,7 @@ function getRealDividendRecords(opts = {}) {
   return all;
 }
 
- {
+function getDividendBaseAssetsForRecords(divRecords, opts = {}) {
   const records = Array.isArray(divRecords) ? divRecords.filter(Boolean) : [];
   const assets = Array.isArray(state.assets) ? state.assets : [];
   const brokerOnly = !!opts.brokerOnly;
