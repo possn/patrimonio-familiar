@@ -10,7 +10,7 @@
   <link rel="apple-touch-icon" href="icon192.png">
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
-  <link rel="stylesheet" href="styles.css?v=20260504v59audit2">
+  <link rel="stylesheet" href="styles.css?v=20260424v52">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
@@ -28,9 +28,9 @@
       document.head.appendChild(s);
     })();
   </script>
-  <script defer src="app.js?v=20260504v59audit2" fetchpriority="high"></script>
+  <script defer src="app.js?v=20260424v52" fetchpriority="high"></script>
 </head>
-<body class="pf-booting">
+<body>
   <!-- App loading overlay — shown during boot, hidden after first render -->
   <div id="appLoadingOverlay" style="
     display:flex; position:fixed; inset:0; z-index:9999;
@@ -40,21 +40,16 @@
     <img src="icon192.png" alt="" width="72" height="72" style="border-radius:18px;box-shadow:0 4px 24px rgba(91,92,230,.18)">
     <div style="font-size:1.15rem;font-weight:600;color:#5b5ce6;letter-spacing:.01em">Património Familiar</div>
     <div id="appLoadingMsg" style="font-size:.85rem;color:#888;min-height:1.2em">A iniciar…</div>
-    <div class="pf-boot-spinner" aria-hidden="true"></div>
+    <div style="width:48px;height:4px;border-radius:2px;background:#e0e0f0;overflow:hidden;margin-top:4px">
+      <div style="height:100%;width:40%;background:#5b5ce6;border-radius:2px;animation:pf-loading-bar 1.2s ease-in-out infinite"></div>
+    </div>
   </div>
   <style>
-    body.pf-booting .topbar,
-    body.pf-booting #searchBar,
-    body.pf-booting .main,
-    body.pf-booting .bottomnav,
-    body.pf-booting .fab { visibility: hidden !important; }
-    .pf-boot-spinner {
-      width: 42px; height: 42px; border-radius: 50%;
-      border: 4px solid rgba(91,92,230,.18);
-      border-top-color: #5b5ce6;
-      animation: pf-spin .85s linear infinite;
+    @keyframes pf-loading-bar {
+      0%   { transform: translateX(-100%); }
+      50%  { transform: translateX(150%); }
+      100% { transform: translateX(150%); }
     }
-    @keyframes pf-spin { to { transform: rotate(360deg); } }
   </style>
 
 <header class="topbar">
@@ -175,6 +170,9 @@
         <div><div class="card__title">Top ativos</div><div class="card__muted">Por valor · clica para editar</div></div>
         <button class="link" id="btnSummaryAll">Ver tudo</button>
       </div>
+      <div id="summaryCollapseTop" style="display:none;text-align:center;margin-bottom:8px">
+        <button class="btn btn--ghost btn--sm" onclick="summaryExpanded=false;renderDashboard();window.scrollTo({top:document.getElementById('viewDashboard').offsetTop,behavior:'smooth'})">▲ Ver menos</button>
+      </div>
       <div id="summaryList" class="list"></div>
       <div class="row row--center" style="margin-top:10px">
         <button class="btn btn--ghost" id="btnSummaryToggle" style="display:none">Ver o resto</button>
@@ -194,7 +192,10 @@
     <div class="card">
       <div class="card__head">
         <div><div class="card__title">Evolução do Património</div><div class="card__muted" id="trendSubtitle">Histórico de snapshots</div></div>
-        <button class="link" id="btnTrendClear">Limpar</button>
+        <div style="display:flex;gap:10px;align-items:center">
+          <button class="link" onclick="exportHistoryCSV()">↓ CSV</button>
+          <button class="link" id="btnTrendClear">Limpar</button>
+        </div>
       </div>
       <div class="chartWrap"><canvas id="trendChart" height="240"></canvas></div>
       <div class="hint" id="historyHint" style="display:none">Sem histórico. Usa "📸 Registar mês".</div>
@@ -321,6 +322,9 @@
         </div>
         <div class="quote-errors-inline__list" id="quoteErrorsInlineList"></div>
       </div>
+    </div>
+    <div id="itemsCollapseTop" style="display:none;text-align:center;margin-bottom:8px">
+      <button class="btn btn--ghost btn--sm" onclick="itemsExpanded=false;renderItems();window.scrollTo({top:document.getElementById('viewAssets').offsetTop-60,behavior:'smooth'})">▲ Ver menos</button>
     </div>
     <div id="itemsList" class="list"></div>
     <div style="text-align:center;margin-top:10px">

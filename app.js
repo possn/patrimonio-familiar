@@ -12,8 +12,16 @@
 /* ─── PWA ─────────────────────────────────────────────────── */
 try {
   if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260422v46").catch(() => {});
+    window.addEventListener("load", async () => {
+      // Unregister stale SWs before registering new one (fixes Android loading loop)
+      try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) {
+          const url = reg.active?.scriptURL || reg.installing?.scriptURL || reg.waiting?.scriptURL || "";
+          if (url && !url.includes("v60")) { await reg.unregister(); }
+        }
+      } catch (_) {}
+      navigator.serviceWorker.register("sw.js?v=20260512v60").catch(() => {});
     });
   }
 } catch (_) {}
@@ -341,8 +349,21 @@ async function storageGet() {
 }
 
 async function storageSet(raw) {
-  if (idbAvailable()) { try { await idbSet(DB_KEY, raw); return; } catch (_) {} }
-  try { localStorage.setItem(STORAGE_KEY, raw); } catch (_) {}
+  if (idbAvailable()) {
+    try { await idbSet(DB_KEY, raw); return; } catch (e) {
+      console.error("IndexedDB write failed:", e);
+    }
+  }
+  try {
+    if (raw && raw.length > 4_000_000 && !storageSet._warnedSize) {
+      storageSet._warnedSize = true;
+      toast("⚠️ Base de dados grande. Recomenda-se Chrome para suporte IndexedDB.");
+    }
+    localStorage.setItem(STORAGE_KEY, raw);
+  } catch (e) {
+    console.error("localStorage write failed (quota exceeded):", e);
+    toast("❌ Erro ao guardar dados: espaço insuficiente. Usa Chrome ou limpa dados antigos.");
+  }
 }
 
 async function storageClear() {
@@ -935,7 +956,7 @@ function getRealDividendRecords(opts = {}) {
   return all;
 }
 
-function getDividendBaseAssetsForRecords(divRecords, opts = {}) {
+ {
   const records = Array.isArray(divRecords) ? divRecords.filter(Boolean) : [];
   const assets = Array.isArray(state.assets) ? state.assets : [];
   const brokerOnly = !!opts.brokerOnly;
@@ -1975,6 +1996,8 @@ function renderSummary() {
     row.addEventListener("click", () => { setView("assets"); editItem(it.id); });
     list.appendChild(row);
   }
+  const sumColTop = document.getElementById("summaryCollapseTop");
+  if (sumColTop) sumColTop.style.display = (summaryExpanded && items.length > 10) ? "" : "none";
   const toggleBtn = $("btnSummaryToggle");
   if (toggleBtn) {
     toggleBtn.style.display = items.length > 10 ? "inline-flex" : "none";
@@ -2185,6 +2208,8 @@ function renderItems() {
   }
 
   // Botão Ver todos / Ver menos
+  const togTop = document.getElementById("itemsCollapseTop");
+  if (togTop) togTop.style.display = (itemsExpanded && src.length > LIMIT && !isSearching) ? "" : "none";
   const tog = document.getElementById("btnItemsToggle");
   if (tog) {
     if (src.length > LIMIT && !isSearching) {
@@ -7317,13 +7342,15 @@ function rebuildBrokerGeneratedData() {
         pos.snapshotDate = d;
         pos.snapshotQty = parseNum(p.qty);
         pos.marketValueEUR = Math.max(0, parseNum(p.marketValueEUR));
-        pos.costBasis = Math.max(0, parseNum(p.costBasisEUR));
+        pos.snapshotCostBasis = Math.max(0, parseNum(p.costBasisEUR));
+        pos.costBasis = pos.snapshotCostBasis;
         pos.hasSnapshot = pos.marketValueEUR > 0 || pos.snapshotQty > 0;
       } else if (d === pos.snapshotDate) {
         // SAME snapshot date → ACCUMULATE across lots (e.g. XTB has 1 row per open lot)
         pos.snapshotQty += parseNum(p.qty);
         pos.marketValueEUR += Math.max(0, parseNum(p.marketValueEUR));
-        pos.costBasis += Math.max(0, parseNum(p.costBasisEUR));
+        pos.snapshotCostBasis = (pos.snapshotCostBasis || 0) + Math.max(0, parseNum(p.costBasisEUR));
+        pos.costBasis = pos.snapshotCostBasis;
         pos.hasSnapshot = true;
       }
     } else {
@@ -7395,7 +7422,9 @@ function rebuildBrokerGeneratedData() {
     if (e.type === "BUY") {
       const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.localCurrency || e.totalCurrency || "EUR" });
       pos.qty += parseNum(e.qty);
-      pos.costBasis += Math.max(0, parseNum(e.totalEUR) + parseNum(e.feeEUR));
+      const buyCost = Math.max(0, parseNum(e.totalEUR) + parseNum(e.feeEUR));
+      pos.ledgerCostBasis = (pos.ledgerCostBasis || 0) + buyCost;
+      pos.costBasis += buyCost;
       continue;
     }
     if (e.type === "SELL") {
@@ -7503,8 +7532,17 @@ function rebuildBrokerGeneratedData() {
   }
 
   for (const p of posMap.values()) {
-    const finalQty = p.hasSnapshot && p.snapshotQty > 0 ? p.snapshotQty : p.qty;
-    const finalValue = p.hasSnapshot && p.marketValueEUR > 0 ? p.marketValueEUR : (p.marketValueEUR > 0 ? p.marketValueEUR : p.costBasis);
+    // Combine XTB snapshot qty + T212 ledger qty — both brokers may hold the same security
+    const snapshotQty     = p.hasSnapshot && p.snapshotQty > 0 ? p.snapshotQty : 0;
+    const ledgerQty       = p.qty > 0 ? p.qty : 0;
+    const finalQty        = snapshotQty + ledgerQty > 0 ? snapshotQty + ledgerQty : (snapshotQty || ledgerQty);
+    // Value: XTB market value + T212 cost basis (tracked separately to avoid double-counting)
+    const snapshotVal     = p.hasSnapshot && p.marketValueEUR > 0 ? p.marketValueEUR : 0;
+    const ledgerCostBasis = p.ledgerCostBasis || 0;
+    const ledgerVal       = ledgerQty > 0 && snapshotQty > 0 ? ledgerCostBasis
+                          : ledgerQty > 0 ? (p.costBasis || ledgerCostBasis) : 0;
+    const finalValue      = snapshotVal + ledgerVal > 0 ? snapshotVal + ledgerVal
+                          : (snapshotVal || p.costBasis || ledgerVal);
     if (!(finalQty > 0) || !(finalValue > 0 || p.costBasis > 0)) continue;
     // Use full name when available (e.g. "Corticeira Amorim" not just "COR")
     const displayName = p.name && p.name !== p.ticker ? p.name :
@@ -8217,7 +8255,9 @@ async function importBankFile(file) {
     if (!parsed.length && looksLikeSantanderPdf) {
       tryParser("Parser Santander regex", () => parseSantanderRegex(santanderText || ""));
     }
-    if (!parsed.length && !looksLikeSantanderPdf) {
+    // Last-resort: run dedicated PDF parser for any PDF that still has no results
+    // (previously blocked for Santander PDFs — now always tried as fallback)
+    if (!parsed.length) {
       try {
         const rawParsed = await parseSantanderPDFFromFile(file);
         if (Array.isArray(rawParsed) && rawParsed.length) {
@@ -8252,8 +8292,8 @@ async function importBankFile(file) {
   if (!parsed.length && (bankFmt === "montepio" || bankFmt === "bpi")) tryParser("Parser Montepio/BPI", () => parseMontepioBPI(text || ""));
 
   if (!parsed.length) tryParser("Parser Santander regex", () => parseSantanderRegex((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
-  if (!parsed.length) tryParser("Parser Santander tabular", () => parseSantanderTabular((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
-  if (!parsed.length) tryParser("Parser Santander PDF", () => parseSantanderPDF((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
+  if (!parsed.length) tryParser("Parser Santander tabular", () => parseSantanderStructured((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
+  if (!parsed.length) tryParser("Parser Santander PDF", () => parseSantanderStructured((bankFmt === "santander" || /movimentos da sua conta/i.test(text || "")) ? prepareSantanderTextForParse(text || "") : (text || "")));
   if (!parsed.length) tryParser("Parser Millennium", () => parseMillenniumCSV(text || ""));
   if (!parsed.length) tryParser("Parser CGD", () => parseCGDCSV(text || ""));
   if (!parsed.length) tryParser("Parser Novo Banco", () => parseNovoBancoCSV(text || ""));
@@ -8901,13 +8941,6 @@ function parseSantanderStructured(text) {
     jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
     jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
   };
-  function parseValueDate(s) {
-    const m = String(s || "").match(/D[\.\s]?\s*valor\s*:\s*(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})/i);
-    if (!m) return null;
-    const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
-    if (!mon) return null;
-    return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
-  }
 
   function isNoiseLine(line) {
     return /^(titular\b|conta\s+pt|saldo disponível|movimentos da sua conta|data da operação\b|documento com data:|página\s+\d+\s+de\s+\d+|para pesquisas genéricas)/i.test(line);
@@ -9083,6 +9116,13 @@ function parseSantanderStatementStrict(text) {
   const src = String(text || "");
   if (!src.trim()) return [];
 
+  const monthMap = {
+    jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
+    jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
+  };  function isNoise(line) {
+    return /^(titular\b|conta\s+pt|saldo dispon[ií]vel|movimentos da sua conta|data da opera[cç][aã]o\b|opera[cç][aã]o\b|valor\b|saldo\b|documento com data:|p[aá]gina\s+\d+\s+de\s+\d+|para pesquisas gen[eé]ricas)/i.test(String(line || "").trim());
+  }
+
   function normLine(line) {
     return String(line || "")
       .replace(/\r/g, "")
@@ -9094,29 +9134,13 @@ function parseSantanderStatementStrict(text) {
       .replace(/\s+/g, " ")
       .trim();
   }
-  function isNoise(line) {
-    return /^(titular\b|conta\s+pt|saldo dispon[ií]vel|movimentos da sua conta|data da opera[cç][aã]o\b|opera[cç][aã]o\b|valor\b|saldo\b|documento com data:|p[aá]gina\s+\d+\s+de\s+\d+|para pesquisas gen[eé]ricas)/i.test(String(line || "").trim());
-  }
+
   function parseMoneyToken(token) {
-    const v = parseNum(String(token || "").replace(/[€\s]/g, ""));
-    return Number.isFinite(v) ? v : null;
-  }
-  function parseSantanderValueDate(s) {
-    const monthMap = { jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12 };
-    const m = String(s || "").match(/D\. valor:\s*(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})/i);
-    if (!m) return null;
-    const mon = monthMap[String(m[2] || "").toLowerCase().slice(0,3)];
-    return mon ? `${m[3]}-${String(mon).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}` : null;
-  }
-  function cleanDesc(v) {
-    return String(v || "")
-      .replace(/^[-–—·\s]+/, "")
-      .replace(/\s+/g, " ")
-      .trim();
+    return Number.isFinite(parseNum(token)) ? parseNum(token) : null;
   }
 
-  const dateAtStartRe = /^(\d{1,2}\s+[A-Za-zÀ-ÿ]+\s+\d{4})(?:\s+(.+))?$/i;
-  const moneyTailRe = /^(.*?)([\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2})\s*€?\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s*€?$/;
+  const amountBalanceOnlyRe = /^([\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2})\s*€?\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s*€?$/;
+  const descAmountBalanceRe = /^(.*?)([\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2})\s*€?\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s*€?$/;
   const amountOnlyRe = /^([\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2})\s*€?$/;
 
   const lines = src
@@ -9126,78 +9150,79 @@ function parseSantanderStatementStrict(text) {
     .filter(l => !isNoise(l));
 
   const out = [];
-  let cur = null;
+  let i = 0;
 
-  function finishCur() {
-    if (!cur) return;
-    const desc = cleanDesc(cur.descParts.join(" "));
-    if (cur.date && desc && Number.isFinite(parseNum(cur.amount))) {
+  while (i < lines.length) {
+    const opDate = parseDateFlexible(lines[i]);
+    if (!opDate) { i++; continue; }
+
+    let valueDate = opDate;
+    i += 1;
+    if (i < lines.length) {
+      const maybeVD = parseValueDate(lines[i]);
+      if (maybeVD) {
+        valueDate = maybeVD || opDate;
+        i += 1;
+      }
+    }
+
+    const descParts = [];
+    let amount = null;
+    let balance = null;
+
+    while (i < lines.length) {
+      const ln = lines[i];
+      if (parseDateFlexible(ln) || parseValueDate(ln)) break;
+
+      let m = ln.match(amountBalanceOnlyRe);
+      if (m) {
+        amount = parseMoneyToken(m[1]);
+        balance = parseMoneyToken(m[2]);
+        i += 1;
+        break;
+      }
+
+      m = ln.match(descAmountBalanceRe);
+      if (m && String(m[1] || "").trim()) {
+        descParts.push(String(m[1] || "").trim());
+        amount = parseMoneyToken(m[2]);
+        balance = parseMoneyToken(m[3]);
+        i += 1;
+        break;
+      }
+
+      m = ln.match(amountOnlyRe);
+      if (m) {
+        amount = parseMoneyToken(m[1]);
+        if (i + 1 < lines.length) {
+          const nextLine = lines[i + 1];
+          const mb = nextLine.match(amountOnlyRe);
+          if (mb && !parseDateFlexible(nextLine) && !parseValueDate(nextLine)) {
+            balance = parseMoneyToken(mb[1]);
+            i += 2;
+            break;
+          }
+        }
+        i += 1;
+        break;
+      }
+
+      descParts.push(ln);
+      i += 1;
+    }
+
+    const desc = descParts.join(" ").replace(/\s+/g, " ").trim();
+    if (desc && Number.isFinite(parseNum(amount))) {
       out.push({
-        date: cur.date,
-        valueDate: cur.valueDate || cur.date,
+        date: opDate,
+        valueDate: valueDate || opDate,
         desc,
-        amount: parseNum(cur.amount),
-        balance: Number.isFinite(parseNum(cur.balance)) ? parseNum(cur.balance) : null
+        amount: parseNum(amount),
+        balance: Number.isFinite(parseNum(balance)) ? parseNum(balance) : null
       });
     }
-    cur = null;
   }
 
-  function consumeRemainder(rest) {
-    if (!cur) return false;
-    const r = cleanDesc(rest);
-    if (!r) return false;
-
-    const vd = parseSantanderValueDate(r);
-    if (vd) {
-      cur.valueDate = vd;
-      const trailing = cleanDesc(r.replace(/^D\. valor:\s*\d{1,2}\s+[A-Za-zÀ-ÿ]+\s+\d{4}/i, ""));
-      if (trailing) cur.descParts.push(trailing);
-      return true;
-    }
-
-    let m = r.match(moneyTailRe);
-    if (m) {
-      const d = cleanDesc(m[1]);
-      if (d) cur.descParts.push(d);
-      cur.amount = parseMoneyToken(m[2]);
-      cur.balance = parseMoneyToken(m[3]);
-      finishCur();
-      return true;
-    }
-
-    m = r.match(amountOnlyRe);
-    if (m) {
-      if (cur.amount === null || cur.amount === undefined) cur.amount = parseMoneyToken(m[1]);
-      else cur.balance = parseMoneyToken(m[1]);
-      if (cur.amount !== null && cur.balance !== null) finishCur();
-      return true;
-    }
-
-    cur.descParts.push(r);
-    return false;
-  }
-
-  for (const line of lines) {
-    const dm = line.match(dateAtStartRe);
-    const wholeDate = dm && !dm[2] ? parseDateFlexible(dm[1]) : null;
-    const datePrefix = dm ? parseDateFlexible(dm[1]) : null;
-
-    if (datePrefix) {
-      // New operation line. In Santander PDFs this may already contain description, amount and balance.
-      finishCur();
-      cur = { date: datePrefix, valueDate: datePrefix, descParts: [], amount: null, balance: null };
-      if (dm[2]) consumeRemainder(dm[2]);
-      continue;
-    }
-
-    if (!cur) continue;
-    consumeRemainder(line);
-  }
-  finishCur();
-
-  // Some pdf.js extractions place the value date immediately after the operation date;
-  // the parser above also tolerates the layout where it appears after the amount line.
   const seen = new Set();
   return out.filter(r => {
     const key = `${r.date}|${r.valueDate}|${normStr(r.desc)}|${Math.round(parseNum(r.amount) * 100)}|${Number.isFinite(parseNum(r.balance)) ? Math.round(parseNum(r.balance) * 100) : "na"}`;
@@ -9207,13 +9232,8 @@ function parseSantanderStatementStrict(text) {
   });
 }
 
-function parseSantanderPDF(text) {
-  return parseSantanderStructured(text);
-}
 
-function parseSantanderTabular(text) {
-  return parseSantanderStructured(text);
-}
+
 
 
 function reconcileBankStatementRows(rows, bankFmt = "generic") {
@@ -10205,9 +10225,20 @@ function wire() {
     if (btnCopy) btnCopy.addEventListener("click", () => {
       const text = document.getElementById("aiResultContent");
       if (!text) return;
-      navigator.clipboard.writeText(text.innerText || text.textContent || "")
-        .then(() => toast("✅ Copiado para a área de transferência."))
-        .catch(() => toast("Não foi possível copiar."));
+      const textToCopy = text.innerText || text.textContent || "";
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(textToCopy)
+          .then(() => toast("✅ Copiado para a área de transferência."))
+          .catch(() => toast("Não foi possível copiar."));
+      } else {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = textToCopy; ta.style.position = "fixed"; ta.style.opacity = "0";
+          document.body.appendChild(ta); ta.select();
+          document.execCommand("copy"); document.body.removeChild(ta);
+          toast("✅ Copiado.");
+        } catch (_) { toast("Não foi possível copiar."); }
+      }
     });
     const analysisTabEl = document.getElementById("analysisTab");
     if (analysisTabEl) analysisTabEl.addEventListener("change", () => {
@@ -10284,8 +10315,7 @@ async function fetchQuote(ticker, workerUrl) {
 }
 
 
-async function refreshLiveQuotes(options = {}) {
-  const quoteOpts = options && typeof options === "object" ? options : {};
+async function refreshLiveQuotes() {
   const btn = $("btnRefreshQuotes");
   const workerUrl = (state.settings && state.settings.workerUrl) || "";
 
@@ -10337,7 +10367,7 @@ async function refreshLiveQuotes(options = {}) {
     const el = document.getElementById("quoteRefreshProgress");
     if (el) { el.style.opacity = "0"; setTimeout(() => { if (el) el.style.display = "none"; }, 300); }
   };
-  if (!quoteOpts.silent) _showRefreshProgress("⟳ A actualizar cotações…");
+  _showRefreshProgress("⟳ A actualizar cotações…");
 
   // Convert local / broker tickers into Yahoo candidates.
   // Several imports keep a stale ISIN→Yahoo guess; try that first, then sensible fallbacks.
@@ -10803,42 +10833,40 @@ async function fetchQuoteWithFallback(ref) {
   if (!state.settings) state.settings = {};
   state.settings.lastQuoteRefresh = { updated, failed, errors, ts: new Date().toISOString() };
   // Hide progress indicator
-  try { if (!quoteOpts.silent) _hideRefreshProgress(); } catch (_) {}
+  try { _hideRefreshProgress(); } catch (_) {}
   // Record staleness timestamp for auto-refresh logic
   state.settings.lastQuoteRefreshDate = new Date().toISOString().slice(0, 10);
   state.settings.lastQuoteRefreshTs   = Date.now();
   await saveStateAsync();
   // renderAll() já marca todas as views como dirty e agenda o render da view actual.
   // As chamadas individuais anteriores eram redundantes — cada tab era renderizada 2x.
-  if (!quoteOpts.suppressRender) renderAll();
+  renderAll();
   // Disparar evento para outros listeners (P&L, price alerts)
   document.dispatchEvent(new CustomEvent("quotesUpdated"));
 
   if (btn) { btn.disabled = false; btn.textContent = "⟳ Cotações"; }
 
-  if (!quoteOpts.silent) {
-    if (updated > 0 && !failed) {
-      toast(`✅ ${updated} ativo${updated !== 1 ? "s" : ""} actualizado${updated !== 1 ? "s" : ""}`, 3000);
-    } else if (updated > 0) {
-      // Show clickable toast — tapping opens full error list modal
-      showQuoteErrors(updated, failed, errors, updated, failed);
-      quoteErrorsInlineOpen = true;
-      renderQuoteErrorsInline(true);
-      openModal("modalQuoteErrors");
-      toastClickable(
-        `✅ ${updated} actualizado${updated !== 1 ? "s" : ""} · ⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver`,
-        () => openModal("modalQuoteErrors"), 8000
-      );
-    } else {
-      showQuoteErrors(0, failed, errors, 0, failed);
-      quoteErrorsInlineOpen = true;
-      renderQuoteErrorsInline(true);
-      openModal("modalQuoteErrors");
-      toastClickable(
-        `⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver detalhes`,
-        () => openModal("modalQuoteErrors"), 8000
-      );
-    }
+  if (updated > 0 && !failed) {
+    toast(`✅ ${updated} ativo${updated !== 1 ? "s" : ""} actualizado${updated !== 1 ? "s" : ""}`, 3000);
+  } else if (updated > 0) {
+    // Show clickable toast — tapping opens full error list modal
+    showQuoteErrors(updated, failed, errors, updated, failed);
+    quoteErrorsInlineOpen = true;
+    renderQuoteErrorsInline(true);
+    openModal("modalQuoteErrors");
+    toastClickable(
+      `✅ ${updated} actualizado${updated !== 1 ? "s" : ""} · ⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver`,
+      () => openModal("modalQuoteErrors"), 8000
+    );
+  } else {
+    showQuoteErrors(0, failed, errors, 0, failed);
+    quoteErrorsInlineOpen = true;
+    renderQuoteErrorsInline(true);
+    openModal("modalQuoteErrors");
+    toastClickable(
+      `⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver detalhes`,
+      () => openModal("modalQuoteErrors"), 8000
+    );
   }
 }
 
@@ -11027,13 +11055,12 @@ function checkDuplicateWarning() {
    - Houver activos com ticker
    - A última actualização foi há mais de 30 minutos OU nunca foi hoje
    ────────────────────────────────────────────────────────────── */
-function autoRefreshQuotesIfStale(options = {}) {
-  const opts = options && typeof options === "object" ? options : {};
+function autoRefreshQuotesIfStale() {
   const workerUrl = (state.settings && state.settings.workerUrl) || "";
-  if (!workerUrl) return Promise.resolve(false); // Worker não configurado — não fazer nada
+  if (!workerUrl) return; // Worker não configurado — não fazer nada
 
   const candidates = (state.assets || []).filter(assetLooksQuoteEligible);
-  if (!candidates.length) return Promise.resolve(false);
+  if (!candidates.length) return;
 
   const todayISO = new Date().toISOString().slice(0, 10);
   const lastRefreshISO = (state.settings && state.settings.lastQuoteRefreshDate) || "";
@@ -11042,12 +11069,10 @@ function autoRefreshQuotesIfStale(options = {}) {
   const STALE_MS = 30 * 60 * 1000; // 30 minutos
 
   const needsRefresh = (lastRefreshISO !== todayISO) || (msSinceRefresh > STALE_MS);
-  if (!needsRefresh) return Promise.resolve(false);
+  if (!needsRefresh) return;
 
-  console.log("[AutoRefresh] Cotações desactualizadas — a actualizar antes do primeiro Dashboard…");
-  return refreshLiveQuotes({ silent: !!opts.silent, suppressRender: !!opts.suppressRender })
-    .then(() => true)
-    .catch(e => { console.warn("[AutoRefresh] Falha:", e); return false; });
+  console.log("[AutoRefresh] Cotações desactualizadas — a actualizar em background…");
+  refreshLiveQuotes().catch(e => console.warn("[AutoRefresh] Falha:", e));
 }
 
 /* ─── GUARD DE PREÇO ANTIGO ──────────────────────────────────────
@@ -11108,23 +11133,20 @@ document.addEventListener("DOMContentLoaded", async () => {
   try { if (syncBrokerAssetDividendYieldsFromRecords()) await saveStateAsync(); } catch (e) { console.error("Falha ao sincronizar dividendos das posições", e); }
   try { ensureAllChartCanvasesReady(); } catch (e) { console.error("Falha ao preparar gráficos", e); }
   try { wire(); } catch (e) { console.error("Falha no binding dos botões", e); }
-  _setMsg("A actualizar cotações…");
-  try { await autoRefreshQuotesIfStale({ silent: true, suppressRender: true }); } catch (e) { console.error("Falha no auto-refresh de cotações", e); }
-  _setMsg("A renderizar Dashboard…");
+  _setMsg("A renderizar…");
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
-  // Hide loading overlay only after data + optional quote refresh + first render are complete.
+  // Hide loading overlay with fade
   if (_splash) {
     _splash.style.transition = "opacity 0.3s ease";
     _splash.style.opacity = "0";
-    document.body.classList.remove("pf-booting");
     setTimeout(() => { if (_splash) _splash.style.display = "none"; }, 320);
-  } else {
-    document.body.classList.remove("pf-booting");
   }
-  // Deferred non-critical tasks — never show the full boot overlay again.
+  // Deferred non-critical tasks
   setTimeout(() => {
     try { autoSnapshotIfNeeded(); } catch (e) { console.error("Falha no auto snapshot", e); }
     try { checkAndNotifyMaturities(); } catch (e) { console.error("Falha nas notificações de vencimento", e); }
+    // Auto-refresh quotes if stale (>30min since last update or never updated today)
+    try { autoRefreshQuotesIfStale(); } catch (e) { console.error("Falha no auto-refresh de cotações", e); }
   }, 600);
   window.openDividendBaseModal = openDividendBaseModal;
   window.setDividendYieldDisplayMode = setDividendYieldDisplayMode;
@@ -11209,12 +11231,17 @@ function exportPortfolioXLSX() {
 
 /* ─── AUTO-SNAPSHOT MENSAL ─────────────────────────────────── */
 function autoSnapshotIfNeeded() {
-  const thisMonth = isoToday().slice(0,7);
-  const last = state.history.slice().sort((a,b) => String(b.dateISO).localeCompare(String(a.dateISO)))[0];
-  if (last && String(last.dateISO||"").slice(0,7) === thisMonth) return;
+  const today = isoToday();
+  const alreadyToday = state.history.some(h => String(h.dateISO || "").slice(0, 10) === today);
+  if (alreadyToday) return;
   if (!state.assets.length) return;
+  // Prune history beyond 3 years to keep storage bounded
+  if (state.history.length >= 1095) {
+    state.history.sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
+    state.history.splice(0, state.history.length - 1094);
+  }
   const t = calcTotals();
-  state.history.push({ dateISO:isoToday(), net:t.net, assets:t.assetsTotal, liabilities:t.liabsTotal, passiveAnnual:t.passiveAnnual, auto:true });
+  state.history.push({ dateISO: today, net: t.net, assets: t.assetsTotal, liabilities: t.liabsTotal, passiveAnnual: t.passiveAnnual, auto: true });
   saveState();
 }
 
@@ -11354,6 +11381,23 @@ function renderIRSCard() {
 }
 
 /* ─── SNAPSHOT: APAGAR INDIVIDUALMENTE ─────────────────────── */
+function exportHistoryCSV() {
+  const h = state.history.slice().sort((a,b) => String(a.dateISO).localeCompare(String(b.dateISO)));
+  if (!h.length) { toast("Sem histórico para exportar."); return; }
+  const rows = [["Data","Patrimônio líquido","Ativos","Passivos","Rend. passivo anual"]];
+  for (const s of h) {
+    rows.push([s.dateISO, Math.round(parseNum(s.net)), Math.round(parseNum(s.assets)),
+      Math.round(parseNum(s.liabilities||0)), Math.round(parseNum(s.passiveAnnual||0))]);
+  }
+  const csv = rows.map(r => r.join(";")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "patrimonio-historico-" + isoToday() + ".csv"; a.click();
+  URL.revokeObjectURL(url);
+  toast("✅ Histórico exportado.");
+}
+
 function deleteSnapshot(dateISO) {
   if (!confirm(`Apagar snapshot de ${dateISO}?`)) return;
   state.history = state.history.filter(h => h.dateISO !== dateISO);
