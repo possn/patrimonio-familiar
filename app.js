@@ -9083,13 +9083,6 @@ function parseSantanderStatementStrict(text) {
   const src = String(text || "");
   if (!src.trim()) return [];
 
-  const monthMap = {
-    jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
-    jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
-  };  function isNoise(line) {
-    return /^(titular\b|conta\s+pt|saldo dispon[ií]vel|movimentos da sua conta|data da opera[cç][aã]o\b|opera[cç][aã]o\b|valor\b|saldo\b|documento com data:|p[aá]gina\s+\d+\s+de\s+\d+|para pesquisas gen[eé]ricas)/i.test(String(line || "").trim());
-  }
-
   function normLine(line) {
     return String(line || "")
       .replace(/\r/g, "")
@@ -9101,13 +9094,29 @@ function parseSantanderStatementStrict(text) {
       .replace(/\s+/g, " ")
       .trim();
   }
-
+  function isNoise(line) {
+    return /^(titular\b|conta\s+pt|saldo dispon[ií]vel|movimentos da sua conta|data da opera[cç][aã]o\b|opera[cç][aã]o\b|valor\b|saldo\b|documento com data:|p[aá]gina\s+\d+\s+de\s+\d+|para pesquisas gen[eé]ricas)/i.test(String(line || "").trim());
+  }
   function parseMoneyToken(token) {
-    return Number.isFinite(parseNum(token)) ? parseNum(token) : null;
+    const v = parseNum(String(token || "").replace(/[€\s]/g, ""));
+    return Number.isFinite(v) ? v : null;
+  }
+  function parseSantanderValueDate(s) {
+    const monthMap = { jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12 };
+    const m = String(s || "").match(/D\. valor:\s*(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})/i);
+    if (!m) return null;
+    const mon = monthMap[String(m[2] || "").toLowerCase().slice(0,3)];
+    return mon ? `${m[3]}-${String(mon).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}` : null;
+  }
+  function cleanDesc(v) {
+    return String(v || "")
+      .replace(/^[-–—·\s]+/, "")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
-  const amountBalanceOnlyRe = /^([\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2})\s*€?\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s*€?$/;
-  const descAmountBalanceRe = /^(.*?)([\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2})\s*€?\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s*€?$/;
+  const dateAtStartRe = /^(\d{1,2}\s+[A-Za-zÀ-ÿ]+\s+\d{4})(?:\s+(.+))?$/i;
+  const moneyTailRe = /^(.*?)([\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2})\s*€?\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s*€?$/;
   const amountOnlyRe = /^([\u2212−-]?\d{1,3}(?:\.\d{3})*,\d{2})\s*€?$/;
 
   const lines = src
@@ -9117,79 +9126,78 @@ function parseSantanderStatementStrict(text) {
     .filter(l => !isNoise(l));
 
   const out = [];
-  let i = 0;
+  let cur = null;
 
-  while (i < lines.length) {
-    const opDate = parseDateFlexible(lines[i]);
-    if (!opDate) { i++; continue; }
-
-    let valueDate = opDate;
-    i += 1;
-    if (i < lines.length) {
-      const maybeVD = parseValueDate(lines[i]);
-      if (maybeVD) {
-        valueDate = maybeVD || opDate;
-        i += 1;
-      }
-    }
-
-    const descParts = [];
-    let amount = null;
-    let balance = null;
-
-    while (i < lines.length) {
-      const ln = lines[i];
-      if (parseDateFlexible(ln) || parseValueDate(ln)) break;
-
-      let m = ln.match(amountBalanceOnlyRe);
-      if (m) {
-        amount = parseMoneyToken(m[1]);
-        balance = parseMoneyToken(m[2]);
-        i += 1;
-        break;
-      }
-
-      m = ln.match(descAmountBalanceRe);
-      if (m && String(m[1] || "").trim()) {
-        descParts.push(String(m[1] || "").trim());
-        amount = parseMoneyToken(m[2]);
-        balance = parseMoneyToken(m[3]);
-        i += 1;
-        break;
-      }
-
-      m = ln.match(amountOnlyRe);
-      if (m) {
-        amount = parseMoneyToken(m[1]);
-        if (i + 1 < lines.length) {
-          const nextLine = lines[i + 1];
-          const mb = nextLine.match(amountOnlyRe);
-          if (mb && !parseDateFlexible(nextLine) && !parseValueDate(nextLine)) {
-            balance = parseMoneyToken(mb[1]);
-            i += 2;
-            break;
-          }
-        }
-        i += 1;
-        break;
-      }
-
-      descParts.push(ln);
-      i += 1;
-    }
-
-    const desc = descParts.join(" ").replace(/\s+/g, " ").trim();
-    if (desc && Number.isFinite(parseNum(amount))) {
+  function finishCur() {
+    if (!cur) return;
+    const desc = cleanDesc(cur.descParts.join(" "));
+    if (cur.date && desc && Number.isFinite(parseNum(cur.amount))) {
       out.push({
-        date: opDate,
-        valueDate: valueDate || opDate,
+        date: cur.date,
+        valueDate: cur.valueDate || cur.date,
         desc,
-        amount: parseNum(amount),
-        balance: Number.isFinite(parseNum(balance)) ? parseNum(balance) : null
+        amount: parseNum(cur.amount),
+        balance: Number.isFinite(parseNum(cur.balance)) ? parseNum(cur.balance) : null
       });
     }
+    cur = null;
   }
 
+  function consumeRemainder(rest) {
+    if (!cur) return false;
+    const r = cleanDesc(rest);
+    if (!r) return false;
+
+    const vd = parseSantanderValueDate(r);
+    if (vd) {
+      cur.valueDate = vd;
+      const trailing = cleanDesc(r.replace(/^D\. valor:\s*\d{1,2}\s+[A-Za-zÀ-ÿ]+\s+\d{4}/i, ""));
+      if (trailing) cur.descParts.push(trailing);
+      return true;
+    }
+
+    let m = r.match(moneyTailRe);
+    if (m) {
+      const d = cleanDesc(m[1]);
+      if (d) cur.descParts.push(d);
+      cur.amount = parseMoneyToken(m[2]);
+      cur.balance = parseMoneyToken(m[3]);
+      finishCur();
+      return true;
+    }
+
+    m = r.match(amountOnlyRe);
+    if (m) {
+      if (cur.amount === null || cur.amount === undefined) cur.amount = parseMoneyToken(m[1]);
+      else cur.balance = parseMoneyToken(m[1]);
+      if (cur.amount !== null && cur.balance !== null) finishCur();
+      return true;
+    }
+
+    cur.descParts.push(r);
+    return false;
+  }
+
+  for (const line of lines) {
+    const dm = line.match(dateAtStartRe);
+    const wholeDate = dm && !dm[2] ? parseDateFlexible(dm[1]) : null;
+    const datePrefix = dm ? parseDateFlexible(dm[1]) : null;
+
+    if (datePrefix) {
+      // New operation line. In Santander PDFs this may already contain description, amount and balance.
+      finishCur();
+      cur = { date: datePrefix, valueDate: datePrefix, descParts: [], amount: null, balance: null };
+      if (dm[2]) consumeRemainder(dm[2]);
+      continue;
+    }
+
+    if (!cur) continue;
+    consumeRemainder(line);
+  }
+  finishCur();
+
+  // Some pdf.js extractions place the value date immediately after the operation date;
+  // the parser above also tolerates the layout where it appears after the amount line.
   const seen = new Set();
   return out.filter(r => {
     const key = `${r.date}|${r.valueDate}|${normStr(r.desc)}|${Math.round(parseNum(r.amount) * 100)}|${Number.isFinite(parseNum(r.balance)) ? Math.round(parseNum(r.balance) * 100) : "na"}`;
@@ -9198,7 +9206,6 @@ function parseSantanderStatementStrict(text) {
     return true;
   });
 }
-
 
 function parseSantanderPDF(text) {
   return parseSantanderStructured(text);
@@ -10278,18 +10285,12 @@ async function fetchQuote(ticker, workerUrl) {
 
 
 async function refreshLiveQuotes(options = {}) {
+  const quoteOpts = options && typeof options === "object" ? options : {};
   const btn = $("btnRefreshQuotes");
   const workerUrl = (state.settings && state.settings.workerUrl) || "";
-  const silent = !!options.silent;
-  const suppressPrompt = !!options.suppressPrompt;
-  const suppressToasts = !!options.suppressToasts;
-  const suppressErrorsModal = !!options.suppressErrorsModal;
-  const suppressRender = !!options.suppressRender;
-  const progressCb = typeof options.onProgress === "function" ? options.onProgress : null;
 
   if (!workerUrl) {
     // Sem Worker configurado — mostrar modal de configuração
-    if (silent || suppressPrompt) return { updated:0, failed:0, skipped:true, reason:"worker-missing" };
     const url = prompt(
       "⚙️ Cloudflare Worker URL\n\nIntroduz o URL do teu Worker para actualizar cotações automaticamente.\nEx: https://patrimonio-quotes.SEU-NOME.workers.dev\n\n(Deixa em branco para configurar mais tarde)"
     );
@@ -10309,8 +10310,8 @@ async function refreshLiveQuotes(options = {}) {
   const candidates = state.assets.filter(assetLooksQuoteEligible);
 
   if (!candidates.length) {
-    if (!suppressToasts) toast("Sem ativos com ticker detectado em Ações/ETFs/Cripto.", 3000);
-    return { updated:0, failed:0, skipped:true, reason:"no-candidates" };
+    toast("Sem ativos com ticker detectado em Ações/ETFs/Cripto.", 3000);
+    return;
   }
 
   // UI: spinning button
@@ -10336,8 +10337,7 @@ async function refreshLiveQuotes(options = {}) {
     const el = document.getElementById("quoteRefreshProgress");
     if (el) { el.style.opacity = "0"; setTimeout(() => { if (el) el.style.display = "none"; }, 300); }
   };
-  if (progressCb) progressCb("A actualizar cotações…");
-  if (!silent) _showRefreshProgress("⟳ A actualizar cotações…");
+  if (!quoteOpts.silent) _showRefreshProgress("⟳ A actualizar cotações…");
 
   // Convert local / broker tickers into Yahoo candidates.
   // Several imports keep a stale ISIN→Yahoo guess; try that first, then sensible fallbacks.
@@ -10803,41 +10803,43 @@ async function fetchQuoteWithFallback(ref) {
   if (!state.settings) state.settings = {};
   state.settings.lastQuoteRefresh = { updated, failed, errors, ts: new Date().toISOString() };
   // Hide progress indicator
-  if (!silent) { try { _hideRefreshProgress(); } catch (_) {} }
+  try { if (!quoteOpts.silent) _hideRefreshProgress(); } catch (_) {}
   // Record staleness timestamp for auto-refresh logic
   state.settings.lastQuoteRefreshDate = new Date().toISOString().slice(0, 10);
   state.settings.lastQuoteRefreshTs   = Date.now();
   await saveStateAsync();
   // renderAll() já marca todas as views como dirty e agenda o render da view actual.
   // As chamadas individuais anteriores eram redundantes — cada tab era renderizada 2x.
-  if (!suppressRender) renderAll();
+  if (!quoteOpts.suppressRender) renderAll();
   // Disparar evento para outros listeners (P&L, price alerts)
   document.dispatchEvent(new CustomEvent("quotesUpdated"));
 
   if (btn) { btn.disabled = false; btn.textContent = "⟳ Cotações"; }
 
-  if (!suppressToasts && updated > 0 && !failed) {
-    toast(`✅ ${updated} ativo${updated !== 1 ? "s" : ""} actualizado${updated !== 1 ? "s" : ""}`, 3000);
-  } else if (updated > 0 && failed) {
-    showQuoteErrors(updated, failed, errors, updated, failed);
-    quoteErrorsInlineOpen = true;
-    renderQuoteErrorsInline(true);
-    if (!suppressErrorsModal) openModal("modalQuoteErrors");
-    if (!suppressToasts) toastClickable(
-      `✅ ${updated} actualizado${updated !== 1 ? "s" : ""} · ⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver`,
-      () => openModal("modalQuoteErrors"), 8000
-    );
-  } else if (failed) {
-    showQuoteErrors(0, failed, errors, 0, failed);
-    quoteErrorsInlineOpen = true;
-    renderQuoteErrorsInline(true);
-    if (!suppressErrorsModal) openModal("modalQuoteErrors");
-    if (!suppressToasts) toastClickable(
-      `⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver detalhes`,
-      () => openModal("modalQuoteErrors"), 8000
-    );
+  if (!quoteOpts.silent) {
+    if (updated > 0 && !failed) {
+      toast(`✅ ${updated} ativo${updated !== 1 ? "s" : ""} actualizado${updated !== 1 ? "s" : ""}`, 3000);
+    } else if (updated > 0) {
+      // Show clickable toast — tapping opens full error list modal
+      showQuoteErrors(updated, failed, errors, updated, failed);
+      quoteErrorsInlineOpen = true;
+      renderQuoteErrorsInline(true);
+      openModal("modalQuoteErrors");
+      toastClickable(
+        `✅ ${updated} actualizado${updated !== 1 ? "s" : ""} · ⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver`,
+        () => openModal("modalQuoteErrors"), 8000
+      );
+    } else {
+      showQuoteErrors(0, failed, errors, 0, failed);
+      quoteErrorsInlineOpen = true;
+      renderQuoteErrorsInline(true);
+      openModal("modalQuoteErrors");
+      toastClickable(
+        `⚠️ ${failed} erro${failed !== 1 ? "s" : ""} — toca para ver detalhes`,
+        () => openModal("modalQuoteErrors"), 8000
+      );
+    }
   }
-  return { updated, failed, errors };
 }
 
 
@@ -11025,12 +11027,13 @@ function checkDuplicateWarning() {
    - Houver activos com ticker
    - A última actualização foi há mais de 30 minutos OU nunca foi hoje
    ────────────────────────────────────────────────────────────── */
-async function autoRefreshQuotesIfStale(options = {}) {
+function autoRefreshQuotesIfStale(options = {}) {
+  const opts = options && typeof options === "object" ? options : {};
   const workerUrl = (state.settings && state.settings.workerUrl) || "";
-  if (!workerUrl) return false; // Worker não configurado — não fazer nada
+  if (!workerUrl) return Promise.resolve(false); // Worker não configurado — não fazer nada
 
   const candidates = (state.assets || []).filter(assetLooksQuoteEligible);
-  if (!candidates.length) return false;
+  if (!candidates.length) return Promise.resolve(false);
 
   const todayISO = new Date().toISOString().slice(0, 10);
   const lastRefreshISO = (state.settings && state.settings.lastQuoteRefreshDate) || "";
@@ -11039,25 +11042,12 @@ async function autoRefreshQuotesIfStale(options = {}) {
   const STALE_MS = 30 * 60 * 1000; // 30 minutos
 
   const needsRefresh = (lastRefreshISO !== todayISO) || (msSinceRefresh > STALE_MS);
-  if (!needsRefresh) return false;
+  if (!needsRefresh) return Promise.resolve(false);
 
-  console.log("[AutoRefresh] Cotações desactualizadas — a actualizar…");
-  if (typeof options.onProgress === "function") options.onProgress("A actualizar cotações…");
-  try {
-    await refreshLiveQuotes({
-      silent: !!options.silent,
-      boot: !!options.boot,
-      suppressPrompt: true,
-      suppressToasts: !!options.suppressToasts,
-      suppressErrorsModal: !!options.suppressErrorsModal,
-      suppressRender: !!options.suppressRender,
-      onProgress: options.onProgress
-    });
-    return true;
-  } catch (e) {
-    console.warn("[AutoRefresh] Falha:", e);
-    return false;
-  }
+  console.log("[AutoRefresh] Cotações desactualizadas — a actualizar antes do primeiro Dashboard…");
+  return refreshLiveQuotes({ silent: !!opts.silent, suppressRender: !!opts.suppressRender })
+    .then(() => true)
+    .catch(e => { console.warn("[AutoRefresh] Falha:", e); return false; });
 }
 
 /* ─── GUARD DE PREÇO ANTIGO ──────────────────────────────────────
@@ -11118,31 +11108,20 @@ document.addEventListener("DOMContentLoaded", async () => {
   try { if (syncBrokerAssetDividendYieldsFromRecords()) await saveStateAsync(); } catch (e) { console.error("Falha ao sincronizar dividendos das posições", e); }
   try { ensureAllChartCanvasesReady(); } catch (e) { console.error("Falha ao preparar gráficos", e); }
   try { wire(); } catch (e) { console.error("Falha no binding dos botões", e); }
-  _setMsg("A verificar cotações…");
-  try {
-    await autoRefreshQuotesIfStale({
-      boot: true,
-      silent: true,
-      suppressToasts: true,
-      suppressErrorsModal: true,
-      suppressRender: true,
-      onProgress: _setMsg
-    });
-  } catch (e) { console.error("Falha no auto-refresh inicial de cotações", e); }
-  _setMsg("A renderizar dashboard…");
+  _setMsg("A actualizar cotações…");
+  try { await autoRefreshQuotesIfStale({ silent: true, suppressRender: true }); } catch (e) { console.error("Falha no auto-refresh de cotações", e); }
+  _setMsg("A renderizar Dashboard…");
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
-  // Hide loading overlay only after boot + quote refresh + first render.
+  // Hide loading overlay only after data + optional quote refresh + first render are complete.
   if (_splash) {
-    _splash.setAttribute("aria-busy", "false");
-    _splash.style.transition = "opacity 0.28s ease";
-    requestAnimationFrame(() => {
-      _splash.style.opacity = "0";
-      setTimeout(() => { if (_splash) _splash.style.display = "none"; document.body.classList.remove("pf-booting"); }, 300);
-    });
+    _splash.style.transition = "opacity 0.3s ease";
+    _splash.style.opacity = "0";
+    document.body.classList.remove("pf-booting");
+    setTimeout(() => { if (_splash) _splash.style.display = "none"; }, 320);
   } else {
     document.body.classList.remove("pf-booting");
   }
-  // Deferred non-critical tasks
+  // Deferred non-critical tasks — never show the full boot overlay again.
   setTimeout(() => {
     try { autoSnapshotIfNeeded(); } catch (e) { console.error("Falha no auto snapshot", e); }
     try { checkAndNotifyMaturities(); } catch (e) { console.error("Falha nas notificações de vencimento", e); }
