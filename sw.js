@@ -12,7 +12,7 @@ const ASSETS = [
 ];
 
 self.addEventListener("install", event => {
-  self.skipWaiting();
+  // Do NOT skipWaiting — avoids forced reload loop during boot
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)).catch(() => {})
   );
@@ -22,7 +22,7 @@ self.addEventListener("activate", event => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
     await Promise.all(keys.map(k => k !== CACHE_NAME ? caches.delete(k) : Promise.resolve()));
-    await self.clients.claim();
+    // Do NOT clients.claim() — avoids forced reload of active pages
   })());
 });
 
