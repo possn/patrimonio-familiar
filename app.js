@@ -8935,12 +8935,22 @@ function parseSantanderRegex(text) {
   return out;
 }
 
+function parseSantanderValueDateHelper(s) {
+  const monthMap = { jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12 };
+  const m = String(s || "").match(/D[\.\s]?\s*valor\s*:\s*(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})/i);
+  if (!m) return null;
+  const mon = monthMap[m[2].toLowerCase().slice(0, 3)];
+  if (!mon) return null;
+  return `${m[3]}-${String(mon).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+}
+
 function parseSantanderStructured(text) {
   const out = [];
   const monthMap = {
     jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
     jun:6,jul:7,ago:8,aug:8,set:9,sep:9,out:10,oct:10,nov:11,dez:12,dec:12
   };
+  const parseValueDate = parseSantanderValueDateHelper;
 
   function isNoiseLine(line) {
     return /^(titular\b|conta\s+pt|saldo disponível|movimentos da sua conta|data da operação\b|documento com data:|página\s+\d+\s+de\s+\d+|para pesquisas genéricas)/i.test(line);
@@ -9115,6 +9125,7 @@ function prepareSantanderTextForParse(text) {
 function parseSantanderStatementStrict(text) {
   const src = String(text || "");
   if (!src.trim()) return [];
+  const parseValueDate = parseSantanderValueDateHelper;
 
   const monthMap = {
     jan:1,fev:2,feb:2,mar:3,abr:4,apr:4,mai:5,may:5,
