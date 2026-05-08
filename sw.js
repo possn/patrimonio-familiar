@@ -1,5 +1,5 @@
-/* Património Familiar — Service Worker v60 */
-const CACHE_NAME = "pf-cache-v60";
+/* Património Familiar — Service Worker v61 */
+const CACHE_NAME = "pf-cache-v61";
 const ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest",
   "./icon192.png", "./icon512.png",
@@ -12,7 +12,7 @@ const ASSETS = [
 ];
 
 self.addEventListener("install", event => {
-  // Do NOT skipWaiting — avoids forced reload loop during boot
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)).catch(() => {})
   );
@@ -22,7 +22,7 @@ self.addEventListener("activate", event => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
     await Promise.all(keys.map(k => k !== CACHE_NAME ? caches.delete(k) : Promise.resolve()));
-    // Do NOT clients.claim() — avoids forced reload of active pages
+    await self.clients.claim();
   })());
 });
 
