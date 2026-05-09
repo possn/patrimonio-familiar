@@ -12,16 +12,8 @@
 /* ─── PWA ─────────────────────────────────────────────────── */
 try {
   if ("serviceWorker" in navigator) {
-    window.addEventListener("load", async () => {
-      // Unregister stale SWs before registering new one (fixes Android loading loop)
-      try {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        for (const reg of regs) {
-          const url = reg.active?.scriptURL || reg.installing?.scriptURL || reg.waiting?.scriptURL || "";
-          if (url && !url.includes("v60")) { await reg.unregister(); }
-        }
-      } catch (_) {}
-      navigator.serviceWorker.register("sw.js?v=20260512v60").catch(() => {});
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js?v=20260509v61").catch(() => {});
     });
   }
 } catch (_) {}
@@ -349,21 +341,8 @@ async function storageGet() {
 }
 
 async function storageSet(raw) {
-  if (idbAvailable()) {
-    try { await idbSet(DB_KEY, raw); return; } catch (e) {
-      console.error("IndexedDB write failed:", e);
-    }
-  }
-  try {
-    if (raw && raw.length > 4_000_000 && !storageSet._warnedSize) {
-      storageSet._warnedSize = true;
-      toast("⚠️ Base de dados grande. Recomenda-se Chrome para suporte IndexedDB.");
-    }
-    localStorage.setItem(STORAGE_KEY, raw);
-  } catch (e) {
-    console.error("localStorage write failed (quota exceeded):", e);
-    toast("❌ Erro ao guardar dados: espaço insuficiente. Usa Chrome ou limpa dados antigos.");
-  }
+  if (idbAvailable()) { try { await idbSet(DB_KEY, raw); return; } catch (_) {} }
+  try { localStorage.setItem(STORAGE_KEY, raw); } catch (_) {}
 }
 
 async function storageClear() {
@@ -956,20 +935,6 @@ function getRealDividendRecords(opts = {}) {
   return all;
 }
 
-function getDividendBaseAssetsForRecords(divRecords, opts = {}) {
-  const records = Array.isArray(divRecords) ? divRecords.filter(Boolean) : [];
-  const assets = Array.isArray(state.assets) ? state.assets : [];
-  const brokerOnly = !!opts.brokerOnly;
-  const allowConfigured = opts.allowConfigured !== false;
-  return assets.filter(a => {
-    if (!isDividendAsset(a) || parseNum(a.value) <= 0) return false;
-    if (brokerOnly && !a.generatedFromBroker) return false;
-    const hasRecord = records.some(d => assetMatchesDividend(a, d));
-    const yt = a.yieldType || 'none';
-    const hasConfiguredDividend = allowConfigured && (yt === 'yield_eur_year') && parseNum(a.yieldValue) > 0;
-    return hasRecord || hasConfiguredDividend;
-  });
-}
 
 function pruneGeneratedDividendSummaries() {
   if (!Array.isArray(state.divSummaries)) state.divSummaries = [];
@@ -1996,8 +1961,6 @@ function renderSummary() {
     row.addEventListener("click", () => { setView("assets"); editItem(it.id); });
     list.appendChild(row);
   }
-  const sumColTop = document.getElementById("summaryCollapseTop");
-  if (sumColTop) sumColTop.style.display = (summaryExpanded && items.length > 10) ? "" : "none";
   const toggleBtn = $("btnSummaryToggle");
   if (toggleBtn) {
     toggleBtn.style.display = items.length > 10 ? "inline-flex" : "none";
@@ -2208,8 +2171,6 @@ function renderItems() {
   }
 
   // Botão Ver todos / Ver menos
-  const togTop = document.getElementById("itemsCollapseTop");
-  if (togTop) togTop.style.display = (itemsExpanded && src.length > LIMIT && !isSearching) ? "" : "none";
   const tog = document.getElementById("btnItemsToggle");
   if (tog) {
     if (src.length > LIMIT && !isSearching) {
@@ -2425,11 +2386,11 @@ function editItem(id) {
   buildClassSelect(kind);
   $("mClass").value = it.class || (kind === "liab" ? CLASSES_LIABS[0] : CLASSES_ASSETS[0]);
     $("mName").value = it.name || "";
-  $("mValue").value = String(parseNum(it.value) || "");
+  $("mValue").value = String(Math.round(parseNum(it.value) * 100) / 100 || "");
   const curSel2 = document.getElementById("mCurrency");
   if (curSel2) curSel2.value = it.currency || "EUR";
   const vlEl2 = document.getElementById("mValueLocal");
-  if (vlEl2) vlEl2.value = it.valueLocal ? String(it.valueLocal) : "";
+  if (vlEl2) vlEl2.value = it.valueLocal ? String(Math.round(parseNum(it.valueLocal) * 100) / 100) : "";
   $("mNotes").value = it.notes || "";
   toggleYieldFields(kind);
   wireCurrencyModal();
@@ -6588,7 +6549,7 @@ function inferYahooTickerFromIdentity({ isin = "", ticker = "", yahooTicker = ""
 
   if (/\bCORTICEIRA\b/.test(n) || /\bAMORIM\b/.test(n)) return "COR.LS";
   if (/\bSONAE\b/.test(n)) return "SON.LS";
-  if (/\bREALTY\b/.test(n) && /\bINCOME\b/.test(n)) return "O";
+  if (/\bREALTY\b/.test(n)) return "O"; // "Realty Income" (T212) or "Realty" (XTB short name)
   if (/\bAIRBUS\b/.test(n)) return "AIR.PA";
   if (/\bARCELORMITTAL\b/.test(n)) return "MT.AS";
 
@@ -6887,10 +6848,11 @@ function parseXTBNormalizeAction(type, comment) {
   if ((t.includes("interest") && t.includes("tax")) || c.includes("interest tax")) return "CASH_INTEREST_TAX";
   // Commission as separate cash op
   if (t.includes("commission") || t.includes("comissao") || t === "taxa") return "OTHER";
-  // XTB Cash Operations can be the only source of currently open positions.
-  // Parse these rows as ledger BUY/SELL; closed lots are offset separately from the Closed Positions sheet.
-  if (t.includes("stock purchase")) return "BUY";
-  if (t.includes("stock sale")) return "SELL";
+  // "Stock purchase" / "Stock sale" in XTB cash ledger
+  // New XTB export format has no OPEN POSITION sheet — Cash Operations IS the position source
+  // Map to BUY/SELL so rebuildBrokerGeneratedData can reconstruct open positions
+  if (t.includes("stock purchase")) return "XTB_STOCK_PURCHASE";
+  if (t.includes("stock sale") || t.includes("stock sell")) return "XTB_STOCK_SALE";
   // "close trade" = closed CFD/position record → skip (P&L from CLOSED sheet)
   if (t.includes("close trade") || t.includes("fechar") || t.includes("closing")) return "OTHER";
   // "fractional shares" = fractional DRS credit → skip
@@ -7022,24 +6984,6 @@ function parseXTBTradesRows(rows, meta) {
       notes: comment, key: ""
     };
     evt.key = brokerEventKey(evt);
-
-    // Also emit a SELL offset for the closed quantity so positions reconstructed
-    // from XTB Cash Operations do not keep historical closed/reverse-split lots as open.
-    const closeEvt = {
-      id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
-      type: "SELL", actionRaw: "Closed position offset",
-      date: dateStr, dateTime: closeTime || dateStr,
-      ticker, isin: "", name: symbol,
-      qty: vol,
-      pricePerShare: Number.isFinite(closePx) && closePx > 0 ? closePx : 0,
-      totalEUR: proceedsEUR, totalCurrency: "EUR",
-      grossLocal: Number.isFinite(closePx) && closePx > 0 ? vol * closePx : proceedsEUR,
-      localCurrency: ccy, taxEUR: 0, feeEUR: 0,
-      resultEUR: 0,
-      notes: `Offset from Closed Positions · ${comment || ""}`.trim(), key: ""
-    };
-    closeEvt.key = brokerEventKey(closeEvt);
-    events.push(closeEvt);
     events.push(evt);
   }
   return events;
@@ -7100,19 +7044,6 @@ function parseXTBPositionsRows(rows, meta) {
   return positions;
 }
 
-/** Extract quantity and native execution price from XTB comments like:
- *  "OPEN BUY 2/4 @ 63.38", "OPEN BUY 0.75/1.75 @ 6.5600".
- *  The numerator is the executed quantity for that cash row; the denominator is only the order total.
- */
-function parseXTBCashTradeComment(comment) {
-  const c = String(comment || "").trim();
-  const m = c.match(/\bOPEN\s+(BUY|SELL)\s+([0-9]+(?:[.,][0-9]+)?)(?:\/([0-9]+(?:[.,][0-9]+)?))?\s*@\s*([0-9]+(?:[.,][0-9]+)?)/i);
-  if (!m) return { side: "", qty: 0, price: 0 };
-  const qty = parseNumberSmart(m[2]);
-  const price = parseNumberSmart(m[4]);
-  return { side: String(m[1] || "").toUpperCase(), qty: Number.isFinite(qty) ? qty : 0, price: Number.isFinite(price) ? price : 0 };
-}
-
 /** XTB Cash Operations CSV (deposits, dividends, interest) */
 function parseXTBCashRows(rows, meta) {
   const events = [];
@@ -7129,20 +7060,38 @@ function parseXTBCashRows(rows, meta) {
     if (type === "OTHER") continue;
     const dateStr = normalizeDate(dateRaw.slice(0, 10)) || normalizeDate(dateRaw) || isoToday();
     const ticker  = symbol ? xtbTickerToYahoo(symbol) : "";
-    const trade = (type === "BUY" || type === "SELL") ? parseXTBCashTradeComment(comment) : { side:"", qty:0, price:0 };
-    const nativeCcy = symbol ? xtbSymbolCurrency(symbol) : "EUR";
-    const grossNative = (trade.qty > 0 && trade.price > 0) ? trade.qty * trade.price : Math.abs(amount);
     const evt = {
       id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
       type, actionRaw: typeRaw,
       date: dateStr, dateTime: dateRaw || dateStr,
       ticker, isin: "", name: symbol || typeRaw,
-      qty: trade.qty || 0, pricePerShare: trade.price || 0,
+      qty: 0, pricePerShare: 0,
       totalEUR: Math.abs(amount), totalCurrency: "EUR",
-      grossLocal: grossNative, localCurrency: nativeCcy,
+      grossLocal: Math.abs(amount), localCurrency: "EUR",
       taxEUR: 0, feeEUR: 0, resultEUR: amount,
       notes: comment, key: ""
     };
+    // Handle Stock purchase / Stock sale with qty from comment
+    if (type === "XTB_STOCK_PURCHASE" || type === "XTB_STOCK_SALE") {
+      // Extract qty from comment: "OPEN BUY 2/4 @ 63.38" or "CLOSE BUY 1 @ 13.00"
+      const qtyMatch = comment.match(/(?:OPEN|CLOSE)\s+(?:BUY|SELL)\s+(\d+(?:\.\d+)?)(?:\/\d+)?\s*@\s*([\d.]+)/i);
+      const qty  = qtyMatch ? parseFloat(qtyMatch[1]) : 0;
+      const price = qtyMatch ? parseFloat(qtyMatch[2]) : 0;
+      evt.qty = qty;
+      evt.pricePerShare = price;
+      evt.totalEUR = Math.abs(amount);
+      evt.type = type === "XTB_STOCK_PURCHASE" ? "BUY" : "SELL";
+      if (type === "XTB_STOCK_SALE") {
+        evt.resultEUR = amount;
+      }
+      if (symbol && (symbol.toUpperCase() === "O.US" || symbol.toUpperCase() === "LAND.US")) {
+        console.log("[XTB DEBUG]", symbol, type, "→", evt.type, "qty="+qty, "comment="+comment, "qtyMatch="+!!qtyMatch);
+      }
+      if (!qty || qty <= 0) continue;
+      // NGAS.UK had a 5000:3 reverse split — pre-split lots (price > 1 GBP) are
+      // recalculated by XTB Correction rows; skip originals to avoid inflated qty
+      if (symbol && symbol.toUpperCase() === "NGAS.UK" && price > 1.0) continue;
+    }
     if (type === "DIVIDEND_TAX") {
       evt.type = "DIVIDEND_ADJ";
       evt.totalEUR = 0;
@@ -7316,9 +7265,9 @@ function rebuildBrokerGeneratedData() {
     if (!posMap.has(key)) {
       for (const [k, existing] of posMap.entries()) {
         if (!sameBrokerSecurityIdentity(existing, { isin: isinNorm, ticker: tickerNorm, yahooTicker: inferredYahoo, name: nameNorm })) continue;
-        // Exact identity (ISIN/Yahoo) must merge across brokers even if the broker
-        // exports different cash/quote currencies (e.g. T212 O in USD vs XTB O.US in EUR ledger).
-        key = k; break;
+        const existingCurrency = String(existing.currency || '').trim().toUpperCase();
+        const sameCurrency = !currencyNorm || !existingCurrency || existingCurrency === currencyNorm;
+        if (sameCurrency) { key = k; break; }
       }
     }
 
@@ -7377,15 +7326,13 @@ function rebuildBrokerGeneratedData() {
         pos.snapshotDate = d;
         pos.snapshotQty = parseNum(p.qty);
         pos.marketValueEUR = Math.max(0, parseNum(p.marketValueEUR));
-        pos.snapshotCostBasis = Math.max(0, parseNum(p.costBasisEUR));
-        pos.costBasis = pos.snapshotCostBasis;
+        pos.costBasis = Math.max(0, parseNum(p.costBasisEUR));
         pos.hasSnapshot = pos.marketValueEUR > 0 || pos.snapshotQty > 0;
       } else if (d === pos.snapshotDate) {
         // SAME snapshot date → ACCUMULATE across lots (e.g. XTB has 1 row per open lot)
         pos.snapshotQty += parseNum(p.qty);
         pos.marketValueEUR += Math.max(0, parseNum(p.marketValueEUR));
-        pos.snapshotCostBasis = (pos.snapshotCostBasis || 0) + Math.max(0, parseNum(p.costBasisEUR));
-        pos.costBasis = pos.snapshotCostBasis;
+        pos.costBasis += Math.max(0, parseNum(p.costBasisEUR));
         pos.hasSnapshot = true;
       }
     } else {
@@ -7458,8 +7405,11 @@ function rebuildBrokerGeneratedData() {
       const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.localCurrency || e.totalCurrency || "EUR" });
       pos.qty += parseNum(e.qty);
       const buyCost = Math.max(0, parseNum(e.totalEUR) + parseNum(e.feeEUR));
-      pos.ledgerCostBasis = (pos.ledgerCostBasis || 0) + buyCost;
       pos.costBasis += buyCost;
+      pos.ledgerCostBasis = (pos.ledgerCostBasis || 0) + buyCost;
+      if (e.ticker === "O" || e.ticker === "LAND") {
+        console.log("[POSMAP BUY DEBUG]", e.ticker, "qty+="+parseNum(e.qty), "totalQty="+pos.qty, "broker="+e.broker, "src="+e.sourceName);
+      }
       continue;
     }
     if (e.type === "SELL") {
@@ -7567,17 +7517,29 @@ function rebuildBrokerGeneratedData() {
   }
 
   for (const p of posMap.values()) {
-    // Combine XTB snapshot qty + T212 ledger qty — both brokers may hold the same security
+    // Combine XTB snapshot qty + T212/XTB-ledger qty
+    if (p.ticker === "O" || p.ticker === "LAND" || (p.yahooTicker || "").includes("LAND")) {
+      console.log("[FINAL DEBUG]", p.ticker, "hasSnapshot="+p.hasSnapshot, "snapshotQty="+p.snapshotQty, "qty="+p.qty, "ledgerCostBasis="+p.ledgerCostBasis, "marketVal="+p.marketValueEUR);
+    }
     const snapshotQty     = p.hasSnapshot && p.snapshotQty > 0 ? p.snapshotQty : 0;
     const ledgerQty       = p.qty > 0 ? p.qty : 0;
     const finalQty        = snapshotQty + ledgerQty > 0 ? snapshotQty + ledgerQty : (snapshotQty || ledgerQty);
-    // Value: XTB market value + T212 cost basis (tracked separately to avoid double-counting)
+    // Value: snapshot market value (XTB) + ledger cost basis (T212 / XTB-cash-ops)
     const snapshotVal     = p.hasSnapshot && p.marketValueEUR > 0 ? p.marketValueEUR : 0;
     const ledgerCostBasis = p.ledgerCostBasis || 0;
     const ledgerVal       = ledgerQty > 0 && snapshotQty > 0 ? ledgerCostBasis
                           : ledgerQty > 0 ? (p.costBasis || ledgerCostBasis) : 0;
-    const finalValue      = snapshotVal + ledgerVal > 0 ? snapshotVal + ledgerVal
+    let finalValue        = snapshotVal + ledgerVal > 0 ? snapshotVal + ledgerVal
                           : (snapshotVal || p.costBasis || ledgerVal);
+    // Sanity check: if implied price/share > 200× cost/share, Yahoo has a stale pre-split price
+    // Use costBasis as fallback to prevent "valor brutal" from corporate actions
+    if (finalQty > 0 && p.costBasis > 0 && finalValue > 0) {
+      const impliedPPU = finalValue / finalQty;
+      const costPPU    = p.costBasis / finalQty;
+      if (costPPU > 0 && impliedPPU > costPPU * 200) {
+        finalValue = p.costBasis; // stale Yahoo price — use cost basis
+      }
+    }
     if (!(finalQty > 0) || !(finalValue > 0 || p.costBasis > 0)) continue;
     // Use full name when available (e.g. "Corticeira Amorim" not just "COR")
     const displayName = p.name && p.name !== p.ticker ? p.name :
@@ -8290,9 +8252,7 @@ async function importBankFile(file) {
     if (!parsed.length && looksLikeSantanderPdf) {
       tryParser("Parser Santander regex", () => parseSantanderRegex(santanderText || ""));
     }
-    // Last-resort: run dedicated PDF parser for any PDF that still has no results
-    // (previously blocked for Santander PDFs — now always tried as fallback)
-    if (!parsed.length) {
+    if (!parsed.length && !looksLikeSantanderPdf) {
       try {
         const rawParsed = await parseSantanderPDFFromFile(file);
         if (Array.isArray(rawParsed) && rawParsed.length) {
@@ -10271,20 +10231,9 @@ function wire() {
     if (btnCopy) btnCopy.addEventListener("click", () => {
       const text = document.getElementById("aiResultContent");
       if (!text) return;
-      const textToCopy = text.innerText || text.textContent || "";
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(textToCopy)
-          .then(() => toast("✅ Copiado para a área de transferência."))
-          .catch(() => toast("Não foi possível copiar."));
-      } else {
-        try {
-          const ta = document.createElement("textarea");
-          ta.value = textToCopy; ta.style.position = "fixed"; ta.style.opacity = "0";
-          document.body.appendChild(ta); ta.select();
-          document.execCommand("copy"); document.body.removeChild(ta);
-          toast("✅ Copiado.");
-        } catch (_) { toast("Não foi possível copiar."); }
-      }
+      navigator.clipboard.writeText(text.innerText || text.textContent || "")
+        .then(() => toast("✅ Copiado para a área de transferência."))
+        .catch(() => toast("Não foi possível copiar."));
     });
     const analysisTabEl = document.getElementById("analysisTab");
     if (analysisTabEl) analysisTabEl.addEventListener("change", () => {
@@ -11278,15 +11227,16 @@ function exportPortfolioXLSX() {
 /* ─── AUTO-SNAPSHOT MENSAL ─────────────────────────────────── */
 function autoSnapshotIfNeeded() {
   const today = isoToday();
+  // Daily snapshot — check if today already has an entry
   const alreadyToday = state.history.some(h => String(h.dateISO || "").slice(0, 10) === today);
   if (alreadyToday) return;
   if (!state.assets.length) return;
-  // Prune history beyond 3 years to keep storage bounded
+  const t = calcTotals();
+  // Prune history beyond 3 years (1095 days) to keep storage bounded
   if (state.history.length >= 1095) {
     state.history.sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
     state.history.splice(0, state.history.length - 1094);
   }
-  const t = calcTotals();
   state.history.push({ dateISO: today, net: t.net, assets: t.assetsTotal, liabilities: t.liabsTotal, passiveAnnual: t.passiveAnnual, auto: true });
   saveState();
 }
@@ -11427,23 +11377,6 @@ function renderIRSCard() {
 }
 
 /* ─── SNAPSHOT: APAGAR INDIVIDUALMENTE ─────────────────────── */
-function exportHistoryCSV() {
-  const h = state.history.slice().sort((a,b) => String(a.dateISO).localeCompare(String(b.dateISO)));
-  if (!h.length) { toast("Sem histórico para exportar."); return; }
-  const rows = [["Data","Patrimônio líquido","Ativos","Passivos","Rend. passivo anual"]];
-  for (const s of h) {
-    rows.push([s.dateISO, Math.round(parseNum(s.net)), Math.round(parseNum(s.assets)),
-      Math.round(parseNum(s.liabilities||0)), Math.round(parseNum(s.passiveAnnual||0))]);
-  }
-  const csv = rows.map(r => r.join(";")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = "patrimonio-historico-" + isoToday() + ".csv"; a.click();
-  URL.revokeObjectURL(url);
-  toast("✅ Histórico exportado.");
-}
-
 function deleteSnapshot(dateISO) {
   if (!confirm(`Apagar snapshot de ${dateISO}?`)) return;
   state.history = state.history.filter(h => h.dateISO !== dateISO);
