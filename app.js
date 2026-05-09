@@ -7088,9 +7088,10 @@ function parseXTBCashRows(rows, meta) {
         console.log("[XTB DEBUG]", symbol, type, "→", evt.type, "qty="+qty, "comment="+comment, "qtyMatch="+!!qtyMatch);
       }
       if (!qty || qty <= 0) continue;
-      // NGAS.UK had a 5000:3 reverse split — pre-split lots (price > 1 GBP) are
-      // recalculated by XTB Correction rows; skip originals to avoid inflated qty
-      if (symbol && symbol.toUpperCase() === "NGAS.UK" && price > 1.0) continue;
+      // NGAS.UK is a leveraged ETC where XTB's internal lot units are incompatible
+      // with Yahoo Finance's price units — skip entirely from Cash Ops reconstruction.
+      // The correct position comes from the OPEN POSITION sheet (parseXTBPositionRows).
+      if (symbol && symbol.toUpperCase() === "NGAS.UK") continue;
     }
     if (type === "DIVIDEND_TAX") {
       evt.type = "DIVIDEND_ADJ";
@@ -7536,7 +7537,7 @@ function rebuildBrokerGeneratedData() {
     if (finalQty > 0 && p.costBasis > 0 && finalValue > 0) {
       const impliedPPU = finalValue / finalQty;
       const costPPU    = p.costBasis / finalQty;
-      if (costPPU > 0 && impliedPPU > costPPU * 200) {
+      if (costPPU > 0 && impliedPPU > costPPU * 50) {
         finalValue = p.costBasis; // stale Yahoo price — use cost basis
       }
     }
@@ -10366,7 +10367,7 @@ async function refreshLiveQuotes() {
 
   // Convert local / broker tickers into Yahoo candidates.
   // Several imports keep a stale ISIN→Yahoo guess; try that first, then sensible fallbacks.
-  const SKIP_TICKERS = new Set(["WBA","14","DN3.DE","OD7F.DE","U9UA.DE"]);
+  const SKIP_TICKERS = new Set(["WBA","14","DN3.DE","OD7F.DE","U9UA.DE","NGAS.UK","NGAS.L","NGAS"]);
   // v21: Reduzido para evitar cascata absurda. Ordem por prevalência para equities dual-listed.
   const ALT_EXCHANGE_SUFFIXES = [".DE", ".L", ".PA", ".TO"];
   const YAHOO_TICKER_OVERRIDES = {
@@ -10780,7 +10781,15 @@ async function fetchQuoteWithFallback(ref) {
     const noteBase = (asset.notes||"")
       .replace(/\s*·?\s*Preço:[^·]*/g,"")
       .replace(/\s*·?\s*⚠️ Custo histórico[^·]*/g,"").trim();
-    asset.value = newValue;
+    // Sanity check: if new price implies value > 50× cost basis, Yahoo has stale pre-split price
+    // e.g. NGAS.UK after 5000:3 reverse split has 48k shares but Yahoo returns pre-split price
+    let safeNewValue = newValue;
+    const _assetCostBasis = parseNum(asset.costBasis || 0);
+    if (_assetCostBasis > 100 && safeNewValue > _assetCostBasis * 50) {
+      safeNewValue = _assetCostBasis; // reject stale Yahoo price, keep cost basis
+      console.warn("[Quote sanity]", asset.name || asset.ticker, "rejected:", newValue.toFixed(0), "→ costBasis:", _assetCostBasis.toFixed(0));
+    }
+    asset.value = safeNewValue;
     // Keep valueLocal in sync for multi-currency display and clear stale FX badges when asset returns to EUR.
     if (ccy !== "EUR") {
       asset.currency   = ccy;
@@ -11097,6 +11106,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
   try {
     let changed = false;
+    // One-time fix: reset any broker asset with value > 50× costBasis (stale Yahoo price)
+    if (Array.isArray(state.assets)) {
+      state.assets.forEach(a => {
+        if (!a.generatedFromBroker) return;
+        const v = parseNum(a.value); const cb = parseNum(a.costBasis);
+        if (cb > 50 && v > cb * 50) { a.value = cb; changed = true; }
+      });
+    }
     if (migrateDividendRecords()) changed = true;
     const bd = ensureBrokerData();
     if ((bd.files||[]).length || (bd.events||[]).length || (bd.positions||[]).length) {
