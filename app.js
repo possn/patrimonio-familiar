@@ -6887,9 +6887,10 @@ function parseXTBNormalizeAction(type, comment) {
   if ((t.includes("interest") && t.includes("tax")) || c.includes("interest tax")) return "CASH_INTEREST_TAX";
   // Commission as separate cash op
   if (t.includes("commission") || t.includes("comissao") || t === "taxa") return "OTHER";
-  // "Stock purchase" / "Stock sale" in XTB cash ledger = accounting records for positions
-  // already tracked in OPEN/CLOSED sheets → skip to avoid duplicates
-  if (t.includes("stock purchase") || t.includes("stock sale")) return "OTHER";
+  // XTB Cash Operations can be the only source of currently open positions.
+  // Parse these rows as ledger BUY/SELL; closed lots are offset separately from the Closed Positions sheet.
+  if (t.includes("stock purchase")) return "BUY";
+  if (t.includes("stock sale")) return "SELL";
   // "close trade" = closed CFD/position record → skip (P&L from CLOSED sheet)
   if (t.includes("close trade") || t.includes("fechar") || t.includes("closing")) return "OTHER";
   // "fractional shares" = fractional DRS credit → skip
@@ -7021,6 +7022,24 @@ function parseXTBTradesRows(rows, meta) {
       notes: comment, key: ""
     };
     evt.key = brokerEventKey(evt);
+
+    // Also emit a SELL offset for the closed quantity so positions reconstructed
+    // from XTB Cash Operations do not keep historical closed/reverse-split lots as open.
+    const closeEvt = {
+      id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
+      type: "SELL", actionRaw: "Closed position offset",
+      date: dateStr, dateTime: closeTime || dateStr,
+      ticker, isin: "", name: symbol,
+      qty: vol,
+      pricePerShare: Number.isFinite(closePx) && closePx > 0 ? closePx : 0,
+      totalEUR: proceedsEUR, totalCurrency: "EUR",
+      grossLocal: Number.isFinite(closePx) && closePx > 0 ? vol * closePx : proceedsEUR,
+      localCurrency: ccy, taxEUR: 0, feeEUR: 0,
+      resultEUR: 0,
+      notes: `Offset from Closed Positions · ${comment || ""}`.trim(), key: ""
+    };
+    closeEvt.key = brokerEventKey(closeEvt);
+    events.push(closeEvt);
     events.push(evt);
   }
   return events;
@@ -7081,6 +7100,19 @@ function parseXTBPositionsRows(rows, meta) {
   return positions;
 }
 
+/** Extract quantity and native execution price from XTB comments like:
+ *  "OPEN BUY 2/4 @ 63.38", "OPEN BUY 0.75/1.75 @ 6.5600".
+ *  The numerator is the executed quantity for that cash row; the denominator is only the order total.
+ */
+function parseXTBCashTradeComment(comment) {
+  const c = String(comment || "").trim();
+  const m = c.match(/\bOPEN\s+(BUY|SELL)\s+([0-9]+(?:[.,][0-9]+)?)(?:\/([0-9]+(?:[.,][0-9]+)?))?\s*@\s*([0-9]+(?:[.,][0-9]+)?)/i);
+  if (!m) return { side: "", qty: 0, price: 0 };
+  const qty = parseNumberSmart(m[2]);
+  const price = parseNumberSmart(m[4]);
+  return { side: String(m[1] || "").toUpperCase(), qty: Number.isFinite(qty) ? qty : 0, price: Number.isFinite(price) ? price : 0 };
+}
+
 /** XTB Cash Operations CSV (deposits, dividends, interest) */
 function parseXTBCashRows(rows, meta) {
   const events = [];
@@ -7097,14 +7129,17 @@ function parseXTBCashRows(rows, meta) {
     if (type === "OTHER") continue;
     const dateStr = normalizeDate(dateRaw.slice(0, 10)) || normalizeDate(dateRaw) || isoToday();
     const ticker  = symbol ? xtbTickerToYahoo(symbol) : "";
+    const trade = (type === "BUY" || type === "SELL") ? parseXTBCashTradeComment(comment) : { side:"", qty:0, price:0 };
+    const nativeCcy = symbol ? xtbSymbolCurrency(symbol) : "EUR";
+    const grossNative = (trade.qty > 0 && trade.price > 0) ? trade.qty * trade.price : Math.abs(amount);
     const evt = {
       id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
       type, actionRaw: typeRaw,
       date: dateStr, dateTime: dateRaw || dateStr,
       ticker, isin: "", name: symbol || typeRaw,
-      qty: 0, pricePerShare: 0,
+      qty: trade.qty || 0, pricePerShare: trade.price || 0,
       totalEUR: Math.abs(amount), totalCurrency: "EUR",
-      grossLocal: Math.abs(amount), localCurrency: "EUR",
+      grossLocal: grossNative, localCurrency: nativeCcy,
       taxEUR: 0, feeEUR: 0, resultEUR: amount,
       notes: comment, key: ""
     };
@@ -7281,9 +7316,9 @@ function rebuildBrokerGeneratedData() {
     if (!posMap.has(key)) {
       for (const [k, existing] of posMap.entries()) {
         if (!sameBrokerSecurityIdentity(existing, { isin: isinNorm, ticker: tickerNorm, yahooTicker: inferredYahoo, name: nameNorm })) continue;
-        const existingCurrency = String(existing.currency || '').trim().toUpperCase();
-        const sameCurrency = !currencyNorm || !existingCurrency || existingCurrency === currencyNorm;
-        if (sameCurrency) { key = k; break; }
+        // Exact identity (ISIN/Yahoo) must merge across brokers even if the broker
+        // exports different cash/quote currencies (e.g. T212 O in USD vs XTB O.US in EUR ledger).
+        key = k; break;
       }
     }
 
