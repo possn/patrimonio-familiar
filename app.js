@@ -12,8 +12,16 @@
 /* ─── PWA ─────────────────────────────────────────────────── */
 try {
   if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js?v=20260509v61").catch(() => {});
+    window.addEventListener("load", async () => {
+      // Unregister stale SWs before registering new one (fixes Android loading loop)
+      try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) {
+          const url = reg.active?.scriptURL || reg.installing?.scriptURL || reg.waiting?.scriptURL || "";
+          if (url && !url.includes("v60")) { await reg.unregister(); }
+        }
+      } catch (_) {}
+      navigator.serviceWorker.register("sw.js?v=20260512v60").catch(() => {});
     });
   }
 } catch (_) {}
@@ -341,8 +349,21 @@ async function storageGet() {
 }
 
 async function storageSet(raw) {
-  if (idbAvailable()) { try { await idbSet(DB_KEY, raw); return; } catch (_) {} }
-  try { localStorage.setItem(STORAGE_KEY, raw); } catch (_) {}
+  if (idbAvailable()) {
+    try { await idbSet(DB_KEY, raw); return; } catch (e) {
+      console.error("IndexedDB write failed:", e);
+    }
+  }
+  try {
+    if (raw && raw.length > 4_000_000 && !storageSet._warnedSize) {
+      storageSet._warnedSize = true;
+      toast("⚠️ Base de dados grande. Recomenda-se Chrome para suporte IndexedDB.");
+    }
+    localStorage.setItem(STORAGE_KEY, raw);
+  } catch (e) {
+    console.error("localStorage write failed (quota exceeded):", e);
+    toast("❌ Erro ao guardar dados: espaço insuficiente. Usa Chrome ou limpa dados antigos.");
+  }
 }
 
 async function storageClear() {
@@ -935,6 +956,20 @@ function getRealDividendRecords(opts = {}) {
   return all;
 }
 
+function getDividendBaseAssetsForRecords(divRecords, opts = {}) {
+  const records = Array.isArray(divRecords) ? divRecords.filter(Boolean) : [];
+  const assets = Array.isArray(state.assets) ? state.assets : [];
+  const brokerOnly = !!opts.brokerOnly;
+  const allowConfigured = opts.allowConfigured !== false;
+  return assets.filter(a => {
+    if (!isDividendAsset(a) || parseNum(a.value) <= 0) return false;
+    if (brokerOnly && !a.generatedFromBroker) return false;
+    const hasRecord = records.some(d => assetMatchesDividend(a, d));
+    const yt = a.yieldType || 'none';
+    const hasConfiguredDividend = allowConfigured && (yt === 'yield_eur_year') && parseNum(a.yieldValue) > 0;
+    return hasRecord || hasConfiguredDividend;
+  });
+}
 
 function pruneGeneratedDividendSummaries() {
   if (!Array.isArray(state.divSummaries)) state.divSummaries = [];
@@ -1961,6 +1996,8 @@ function renderSummary() {
     row.addEventListener("click", () => { setView("assets"); editItem(it.id); });
     list.appendChild(row);
   }
+  const sumColTop = document.getElementById("summaryCollapseTop");
+  if (sumColTop) sumColTop.style.display = (summaryExpanded && items.length > 10) ? "" : "none";
   const toggleBtn = $("btnSummaryToggle");
   if (toggleBtn) {
     toggleBtn.style.display = items.length > 10 ? "inline-flex" : "none";
@@ -2171,6 +2208,8 @@ function renderItems() {
   }
 
   // Botão Ver todos / Ver menos
+  const togTop = document.getElementById("itemsCollapseTop");
+  if (togTop) togTop.style.display = (itemsExpanded && src.length > LIMIT && !isSearching) ? "" : "none";
   const tog = document.getElementById("btnItemsToggle");
   if (tog) {
     if (src.length > LIMIT && !isSearching) {
@@ -2386,11 +2425,11 @@ function editItem(id) {
   buildClassSelect(kind);
   $("mClass").value = it.class || (kind === "liab" ? CLASSES_LIABS[0] : CLASSES_ASSETS[0]);
     $("mName").value = it.name || "";
-  $("mValue").value = String(Math.round(parseNum(it.value) * 100) / 100 || "");
+  $("mValue").value = String(parseNum(it.value) || "");
   const curSel2 = document.getElementById("mCurrency");
   if (curSel2) curSel2.value = it.currency || "EUR";
   const vlEl2 = document.getElementById("mValueLocal");
-  if (vlEl2) vlEl2.value = it.valueLocal ? String(Math.round(parseNum(it.valueLocal) * 100) / 100) : "";
+  if (vlEl2) vlEl2.value = it.valueLocal ? String(it.valueLocal) : "";
   $("mNotes").value = it.notes || "";
   toggleYieldFields(kind);
   wireCurrencyModal();
@@ -6848,11 +6887,9 @@ function parseXTBNormalizeAction(type, comment) {
   if ((t.includes("interest") && t.includes("tax")) || c.includes("interest tax")) return "CASH_INTEREST_TAX";
   // Commission as separate cash op
   if (t.includes("commission") || t.includes("comissao") || t === "taxa") return "OTHER";
-  // "Stock purchase" / "Stock sale" in XTB cash ledger
-  // New XTB export format has no OPEN POSITION sheet — Cash Operations IS the position source
-  // Map to BUY/SELL so rebuildBrokerGeneratedData can reconstruct open positions
-  if (t.includes("stock purchase")) return "XTB_STOCK_PURCHASE";
-  if (t.includes("stock sale") || t.includes("stock sell")) return "XTB_STOCK_SALE";
+  // "Stock purchase" / "Stock sale" in XTB cash ledger = accounting records for positions
+  // already tracked in OPEN/CLOSED sheets → skip to avoid duplicates
+  if (t.includes("stock purchase") || t.includes("stock sale")) return "OTHER";
   // "close trade" = closed CFD/position record → skip (P&L from CLOSED sheet)
   if (t.includes("close trade") || t.includes("fechar") || t.includes("closing")) return "OTHER";
   // "fractional shares" = fractional DRS credit → skip
@@ -7071,21 +7108,6 @@ function parseXTBCashRows(rows, meta) {
       taxEUR: 0, feeEUR: 0, resultEUR: amount,
       notes: comment, key: ""
     };
-    // Handle Stock purchase / Stock sale with qty from comment
-    if (type === "XTB_STOCK_PURCHASE" || type === "XTB_STOCK_SALE") {
-      // Extract qty from comment: "OPEN BUY 2/4 @ 63.38" or "CLOSE BUY 1 @ 13.00"
-      const qtyMatch = comment.match(/(?:OPEN|CLOSE)\s+(?:BUY|SELL)\s+(\d+(?:\.\d+)?)(?:\/\d+)?\s*@\s*([\d.]+)/i);
-      const qty  = qtyMatch ? parseFloat(qtyMatch[1]) : 0;
-      const price = qtyMatch ? parseFloat(qtyMatch[2]) : 0;
-      evt.qty = qty;
-      evt.pricePerShare = price;
-      evt.totalEUR = Math.abs(amount);
-      evt.type = type === "XTB_STOCK_PURCHASE" ? "BUY" : "SELL";
-      if (type === "XTB_STOCK_SALE") {
-        evt.resultEUR = amount; // positive = gain, negative = loss
-      }
-      if (!qty || qty <= 0) continue; // skip if can't parse qty
-    }
     if (type === "DIVIDEND_TAX") {
       evt.type = "DIVIDEND_ADJ";
       evt.totalEUR = 0;
@@ -7320,13 +7342,15 @@ function rebuildBrokerGeneratedData() {
         pos.snapshotDate = d;
         pos.snapshotQty = parseNum(p.qty);
         pos.marketValueEUR = Math.max(0, parseNum(p.marketValueEUR));
-        pos.costBasis = Math.max(0, parseNum(p.costBasisEUR));
+        pos.snapshotCostBasis = Math.max(0, parseNum(p.costBasisEUR));
+        pos.costBasis = pos.snapshotCostBasis;
         pos.hasSnapshot = pos.marketValueEUR > 0 || pos.snapshotQty > 0;
       } else if (d === pos.snapshotDate) {
         // SAME snapshot date → ACCUMULATE across lots (e.g. XTB has 1 row per open lot)
         pos.snapshotQty += parseNum(p.qty);
         pos.marketValueEUR += Math.max(0, parseNum(p.marketValueEUR));
-        pos.costBasis += Math.max(0, parseNum(p.costBasisEUR));
+        pos.snapshotCostBasis = (pos.snapshotCostBasis || 0) + Math.max(0, parseNum(p.costBasisEUR));
+        pos.costBasis = pos.snapshotCostBasis;
         pos.hasSnapshot = true;
       }
     } else {
@@ -7399,8 +7423,8 @@ function rebuildBrokerGeneratedData() {
       const pos = touchPos({ ticker: e.ticker, isin: e.isin, name: e.name, cls, sourceName: e.sourceName, currency: e.localCurrency || e.totalCurrency || "EUR" });
       pos.qty += parseNum(e.qty);
       const buyCost = Math.max(0, parseNum(e.totalEUR) + parseNum(e.feeEUR));
-      pos.costBasis += buyCost;
       pos.ledgerCostBasis = (pos.ledgerCostBasis || 0) + buyCost;
+      pos.costBasis += buyCost;
       continue;
     }
     if (e.type === "SELL") {
@@ -7508,11 +7532,11 @@ function rebuildBrokerGeneratedData() {
   }
 
   for (const p of posMap.values()) {
-    // Combine XTB snapshot qty + T212/XTB-ledger qty
+    // Combine XTB snapshot qty + T212 ledger qty — both brokers may hold the same security
     const snapshotQty     = p.hasSnapshot && p.snapshotQty > 0 ? p.snapshotQty : 0;
     const ledgerQty       = p.qty > 0 ? p.qty : 0;
     const finalQty        = snapshotQty + ledgerQty > 0 ? snapshotQty + ledgerQty : (snapshotQty || ledgerQty);
-    // Value: snapshot market value (XTB) + ledger cost basis (T212 / XTB-cash-ops)
+    // Value: XTB market value + T212 cost basis (tracked separately to avoid double-counting)
     const snapshotVal     = p.hasSnapshot && p.marketValueEUR > 0 ? p.marketValueEUR : 0;
     const ledgerCostBasis = p.ledgerCostBasis || 0;
     const ledgerVal       = ledgerQty > 0 && snapshotQty > 0 ? ledgerCostBasis
@@ -8231,7 +8255,9 @@ async function importBankFile(file) {
     if (!parsed.length && looksLikeSantanderPdf) {
       tryParser("Parser Santander regex", () => parseSantanderRegex(santanderText || ""));
     }
-    if (!parsed.length && !looksLikeSantanderPdf) {
+    // Last-resort: run dedicated PDF parser for any PDF that still has no results
+    // (previously blocked for Santander PDFs — now always tried as fallback)
+    if (!parsed.length) {
       try {
         const rawParsed = await parseSantanderPDFFromFile(file);
         if (Array.isArray(rawParsed) && rawParsed.length) {
@@ -10210,9 +10236,20 @@ function wire() {
     if (btnCopy) btnCopy.addEventListener("click", () => {
       const text = document.getElementById("aiResultContent");
       if (!text) return;
-      navigator.clipboard.writeText(text.innerText || text.textContent || "")
-        .then(() => toast("✅ Copiado para a área de transferência."))
-        .catch(() => toast("Não foi possível copiar."));
+      const textToCopy = text.innerText || text.textContent || "";
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(textToCopy)
+          .then(() => toast("✅ Copiado para a área de transferência."))
+          .catch(() => toast("Não foi possível copiar."));
+      } else {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = textToCopy; ta.style.position = "fixed"; ta.style.opacity = "0";
+          document.body.appendChild(ta); ta.select();
+          document.execCommand("copy"); document.body.removeChild(ta);
+          toast("✅ Copiado.");
+        } catch (_) { toast("Não foi possível copiar."); }
+      }
     });
     const analysisTabEl = document.getElementById("analysisTab");
     if (analysisTabEl) analysisTabEl.addEventListener("change", () => {
@@ -11206,16 +11243,15 @@ function exportPortfolioXLSX() {
 /* ─── AUTO-SNAPSHOT MENSAL ─────────────────────────────────── */
 function autoSnapshotIfNeeded() {
   const today = isoToday();
-  // Daily snapshot — check if today already has an entry
   const alreadyToday = state.history.some(h => String(h.dateISO || "").slice(0, 10) === today);
   if (alreadyToday) return;
   if (!state.assets.length) return;
-  const t = calcTotals();
-  // Prune history beyond 3 years (1095 days) to keep storage bounded
+  // Prune history beyond 3 years to keep storage bounded
   if (state.history.length >= 1095) {
     state.history.sort((a, b) => String(a.dateISO).localeCompare(String(b.dateISO)));
     state.history.splice(0, state.history.length - 1094);
   }
+  const t = calcTotals();
   state.history.push({ dateISO: today, net: t.net, assets: t.assetsTotal, liabilities: t.liabsTotal, passiveAnnual: t.passiveAnnual, auto: true });
   saveState();
 }
@@ -11356,6 +11392,23 @@ function renderIRSCard() {
 }
 
 /* ─── SNAPSHOT: APAGAR INDIVIDUALMENTE ─────────────────────── */
+function exportHistoryCSV() {
+  const h = state.history.slice().sort((a,b) => String(a.dateISO).localeCompare(String(b.dateISO)));
+  if (!h.length) { toast("Sem histórico para exportar."); return; }
+  const rows = [["Data","Patrimônio líquido","Ativos","Passivos","Rend. passivo anual"]];
+  for (const s of h) {
+    rows.push([s.dateISO, Math.round(parseNum(s.net)), Math.round(parseNum(s.assets)),
+      Math.round(parseNum(s.liabilities||0)), Math.round(parseNum(s.passiveAnnual||0))]);
+  }
+  const csv = rows.map(r => r.join(";")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "patrimonio-historico-" + isoToday() + ".csv"; a.click();
+  URL.revokeObjectURL(url);
+  toast("✅ Histórico exportado.");
+}
+
 function deleteSnapshot(dateISO) {
   if (!confirm(`Apagar snapshot de ${dateISO}?`)) return;
   state.history = state.history.filter(h => h.dateISO !== dateISO);
