@@ -4701,16 +4701,16 @@ function renderRankingsPanel() {
   if (!el) return;
 
   const allAssets = (state.assets || []).filter(a => parseNum(a.value) > 0);
+  const divs = (typeof getRealDividendRecords === "function") ? getRealDividendRecords() : (state.dividends || []);
 
   // Dividends per ticker
   const divByTicker = {};
-  const divs = (typeof getRealDividendRecords === "function") ? getRealDividendRecords() : (state.dividends || []);
   for (const d of divs) {
     const tk = (d.ticker || d.name || "?").toUpperCase();
     if (!divByTicker[tk]) divByTicker[tk] = { gross:0, net:0, count:0, name: d.name || tk };
-    divByTicker[tk].gross  += parseNum(getDividendGross(d));
-    divByTicker[tk].net    += parseNum(getDividendNet(d));
-    divByTicker[tk].count  += 1;
+    divByTicker[tk].gross += parseNum(getDividendGross(d));
+    divByTicker[tk].net   += parseNum(getDividendNet(d));
+    divByTicker[tk].count += 1;
   }
 
   function gainAbs(a)  { const v=parseNum(a.value),cb=parseNum(a.costBasis); return cb>0?v-cb:0; }
@@ -4718,117 +4718,92 @@ function renderRankingsPanel() {
   function fmtE(n)     { return new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(n); }
   function fmtP(n)     { return (n>=0?"+":"")+n.toFixed(1)+"%"; }
   function clr(n)      { return n>=0?"var(--green)":"var(--red)"; }
-  function esc(s)      { return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+  function esc(s)      { return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
 
-  function rankSection(title, items, valFn, labelFn, colorFn, icon, limit=10) {
-    if (!items.length) return "";
-    const sorted = items.slice().sort((a,b)=>Math.abs(valFn(b))-Math.abs(valFn(a)));
-    const top = sorted.slice(0,limit);
-    const max = Math.abs(valFn(top[0]))||1;
-    const rows = top.map((item,i) => {
-      const val=valFn(item);
-      const color=colorFn?colorFn(item,val):"var(--purple)";
-      const barW=Math.round(Math.abs(val)/max*100);
-      const rank=i+1;
-      const medal=rank===1?"🥇":rank===2?"🥈":rank===3?"🥉":`<span style="font-size:11px;color:var(--muted);font-weight:800">${rank}</span>`;
-      return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)">
-        <div style="width:24px;text-align:center;flex-shrink:0">${medal}</div>
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:800;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(item.name||item.ticker||"—")}</div>
-          <div style="margin-top:3px;background:var(--line);border-radius:999px;height:4px;overflow:hidden">
-            <div style="height:100%;width:${barW}%;background:${color};border-radius:999px"></div>
-          </div>
-        </div>
-        <div style="text-align:right;flex-shrink:0;font-weight:900;font-size:15px;color:${color}">${labelFn(item,val)}</div>
-      </div>`;
-    }).join("");
-    return `<div class="card" style="margin-bottom:12px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-        <span style="font-size:22px">${icon}</span>
-        <div class="card__title" style="margin:0">${title}</div>
-      </div>${rows}</div>`;
+  function rankSection(title, items, valFn, labelFn, colorFn, icon, limit) {
+    limit = limit || 10;
+    if (!items || !items.length) return "";
+    var sorted = items.slice().sort(function(a,b){ return Math.abs(valFn(b))-Math.abs(valFn(a)); });
+    var top = sorted.slice(0,limit);
+    var max = Math.abs(valFn(top[0])) || 1;
+    var rows = "";
+    for (var i=0; i<top.length; i++) {
+      var item = top[i];
+      var val = valFn(item);
+      var color = colorFn ? colorFn(item,val) : "var(--purple)";
+      var barW = Math.round(Math.abs(val)/max*100);
+      var rank = i+1;
+      var medal = rank===1?"🥇":rank===2?"🥈":rank===3?"🥉":"<span style='font-size:11px;color:var(--muted);font-weight:800'>"+rank+"</span>";
+      rows += "<div style='display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)'>"
+        + "<div style='width:24px;text-align:center;flex-shrink:0'>"+medal+"</div>"
+        + "<div style='flex:1;min-width:0'>"
+        + "<div style='font-weight:800;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>"+esc(item.name||item.ticker||"—")+"</div>"
+        + "<div style='margin-top:3px;background:var(--line);border-radius:999px;height:4px;overflow:hidden'>"
+        + "<div style='height:100%;width:"+barW+"%;background:"+color+";border-radius:999px'></div></div></div>"
+        + "<div style='text-align:right;flex-shrink:0;font-weight:900;font-size:15px;color:"+color+"'>"+labelFn(item,val)+"</div>"
+        + "</div>";
+    }
+    return "<div class='card' style='margin-bottom:12px'>"
+      + "<div style='display:flex;align-items:center;gap:8px;margin-bottom:12px'>"
+      + "<span style='font-size:22px'>"+icon+"</span>"
+      + "<div class='card__title' style='margin:0'>"+title+"</div></div>"
+      + rows + "</div>";
   }
 
-  // Sections
-  const secValue = rankSection("Maiores posições", allAssets,
-    a=>parseNum(a.value), (a,v)=>fmtE(v), ()=>"var(--purple)", "💼");
+  // Rankings data
+  var secValue = rankSection("Maiores posições", allAssets, function(a){return parseNum(a.value);}, function(a,v){return fmtE(v);}, function(){return "var(--purple)";}, "💼");
+  var gainers = allAssets.filter(function(a){return parseNum(a.costBasis)>50;});
+  var secGainAbs = rankSection("Maiores ganhos (€)", gainers, gainAbs, function(a,v){return fmtE(v);}, function(a,v){return clr(v);}, "📈");
+  var gainersReal = gainers.filter(function(a){return parseNum(a.value)>=parseNum(a.costBasis)*0.1 && parseNum(a.value)>20;});
+  var secGainPct = rankSection("Maiores ganhos (%)", gainersReal, gainPct, function(a,v){return fmtP(v);}, function(a,v){return clr(v);}, "🚀");
+  var losers = gainersReal.filter(function(a){return gainPct(a)<0;});
+  var secLoss = losers.length>=3 ? rankSection("Maiores perdas (%)", losers, function(a){return -gainPct(a);}, function(a){return fmtP(gainPct(a));}, function(){return "var(--red)";}, "📉") : "";
+  var divItems = Object.entries(divByTicker).map(function(e){return {name:e[1].name||e[0],ticker:e[0],_gross:e[1].gross,_count:e[1].count};}).filter(function(x){return x._gross>0;});
+  var secDiv = rankSection("Maiores dividendos recebidos", divItems, function(x){return x._gross;}, function(x,v){return fmtE(v);}, function(){return "var(--green)";}, "💰");
+  var yieldItems = allAssets.filter(function(a){return getAssetPassiveRatePct(a)>0 && parseNum(a.value)>100;});
+  var secYield = rankSection("Maior yield anual", yieldItems, getAssetPassiveRatePct, function(a,v){return v.toFixed(2)+"%/ano";}, function(){return "var(--green)";}, "🎯");
 
-  const gainers = allAssets.filter(a=>parseNum(a.costBasis)>50);
-  const secGainAbs = rankSection("Maiores ganhos (€)", gainers,
-    a=>gainAbs(a), (a,v)=>fmtE(v), (a,v)=>clr(v), "📈");
+  // Totals
+  var totalInvested = gainers.reduce(function(s,a){return s+parseNum(a.costBasis);},0);
+  var totalValue    = allAssets.reduce(function(s,a){return s+parseNum(a.value);},0);
+  var totalGain     = totalValue - totalInvested;
+  var totalGainPct  = totalInvested>0?totalGain/totalInvested*100:0;
+  var totalDivGross = Object.values(divByTicker).reduce(function(s,d){return s+d.gross;},0);
 
-  // Exclude mostly-sold positions from % rankings (distorted cost basis)
-  const gainersReal = gainers.filter(a => parseNum(a.value) >= parseNum(a.costBasis) * 0.1 && parseNum(a.value) > 20);
-  const secGainPct = rankSection("Maiores ganhos (%)", gainersReal,
-    a=>gainPct(a), (a,v)=>fmtP(v), (a,v)=>clr(v), "🚀");
+  // Year selector for chart
+  var divYears = [];
+  divs.forEach(function(d){ var y=String(d.date||"").slice(0,4); if(y.length===4 && divYears.indexOf(y)<0) divYears.push(y); });
+  divYears.sort();
+  var cY = new Date().getFullYear();
+  [String(cY), String(cY+1)].forEach(function(y){ if(divYears.indexOf(y)<0) divYears.push(y); });
+  divYears = divYears.slice(-4);
+  var defaultYear = String(cY);
 
-  // Only include real losses — exclude mostly-sold positions (value < 10% of costBasis)
-  const losers = gainers.filter(a => {
-    const v = parseNum(a.value), cb = parseNum(a.costBasis);
-    return gainPct(a) < 0 && v >= cb * 0.1 && v > 20;
-  });
-  const secLoss = losers.length>=3 ? rankSection("Maiores perdas (%)", losers,
-    a=>-gainPct(a), (a,v)=>fmtP(gainPct(a)), ()=>"var(--red)", "📉") : "";
+  var yearBtns = divYears.map(function(y){
+    return "<button onclick=\"renderRankingsDivChart('"+y+"')\" id=\"rankDivBtn_"+y+"\" class='btn btn--sm' style='font-size:12px;padding:5px 10px;font-weight:700'>"+y+(parseInt(y)>cY?" 📈":"")+"</button>";
+  }).join("");
 
-  const divItems = Object.entries(divByTicker)
-    .map(([tk,d])=>({name:d.name||tk,ticker:tk,_gross:d.gross,_count:d.count}))
-    .filter(x=>x._gross>0);
-  const secDiv = rankSection("Maiores dividendos recebidos", divItems,
-    x=>x._gross, (x,v)=>fmtE(v), ()=>"var(--green)", "💰");
+  // Build HTML
+  var html = "<div class='card' style='background:linear-gradient(135deg,#ede9fe,var(--card));margin-bottom:12px'>"
+    + "<div style='display:grid;grid-template-columns:1fr 1fr;gap:14px'>"
+    + "<div><div style='font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px'>CARTEIRA TOTAL</div><div style='font-size:22px;font-weight:900;margin-top:2px'>"+fmtE(totalValue)+"</div></div>"
+    + "<div><div style='font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px'>GANHO TOTAL</div><div style='font-size:22px;font-weight:900;margin-top:2px;color:"+clr(totalGain)+"'>"+fmtE(totalGain)+"</div><div style='font-size:12px;font-weight:700;color:"+clr(totalGainPct)+"'>"+fmtP(totalGainPct)+"</div></div>"
+    + "<div><div style='font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px'>Nº POSIÇÕES</div><div style='font-size:22px;font-weight:900;margin-top:2px'>"+allAssets.length+"</div></div>"
+    + "<div><div style='font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px'>DIVIDENDOS TOTAIS</div><div style='font-size:22px;font-weight:900;margin-top:2px;color:var(--green)'>"+fmtE(totalDivGross)+"</div></div>"
+    + "</div></div>"
+    + "<div class='card' style='margin-bottom:12px'>"
+    + "<div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px'>"
+    + "<div style='display:flex;align-items:center;gap:8px'><span style='font-size:22px'>📅</span><div class='card__title' style='margin:0'>Dividendos mensais</div></div>"
+    + "<div style='display:flex;gap:6px;flex-wrap:wrap'>"+yearBtns+"</div></div>"
+    + "<div style='position:relative;height:220px;width:100%'><canvas id='rankingsDivChart'></canvas></div>"
+    + "<div id='rankingsDivChartTotal' style='text-align:center;font-size:13px;font-weight:700;color:var(--muted);margin-top:8px'></div>"
+    + "</div>"
+    + secValue + secGainAbs + secGainPct + secLoss + secDiv + secYield;
 
-  const yieldItems = allAssets.filter(a=>getAssetPassiveRatePct(a)>0&&parseNum(a.value)>100);
-  const secYield = rankSection("Maior yield anual", yieldItems,
-    a=>getAssetPassiveRatePct(a), (a,v)=>v.toFixed(2)+"%/ano", ()=>"var(--green)", "🎯");
-
-  // Summary header
-  const totalInvested = gainers.reduce((s,a)=>s+parseNum(a.costBasis),0);
-  const totalValue    = allAssets.reduce((s,a)=>s+parseNum(a.value),0);
-  const totalGain     = totalValue - totalInvested;
-  const totalGainPct  = totalInvested>0?totalGain/totalInvested*100:0;
-  const totalDivGross = Object.values(divByTicker).reduce((s,d)=>s+d.gross,0);
-
-  // Available years for chart
-  const divYears = [...new Set(divs.map(d => String(d.date||"").slice(0,4)).filter(y=>y.length===4))].sort();
-  const currentYear = new Date().getFullYear();
-  const chartYears = [...divYears, String(currentYear), String(currentYear+1)].filter((y,i,a)=>a.indexOf(y)===i).sort().slice(-4);
-  const defaultYear = String(currentYear);
-
-  el.innerHTML = `
-    <div class="card" style="background:linear-gradient(135deg,var(--vio-glow,#ede9fe),var(--card));margin-bottom:12px">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
-        <div><div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px">CARTEIRA TOTAL</div>
-          <div style="font-size:22px;font-weight:900;margin-top:2px">${fmtE(totalValue)}</div></div>
-        <div><div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px">GANHO TOTAL</div>
-          <div style="font-size:22px;font-weight:900;margin-top:2px;color:${clr(totalGain)}">${fmtE(totalGain)}</div>
-          <div style="font-size:12px;font-weight:700;color:${clr(totalGainPct)}">${fmtP(totalGainPct)}</div></div>
-        <div><div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px">Nº POSIÇÕES</div>
-          <div style="font-size:22px;font-weight:900;margin-top:2px">${allAssets.length}</div></div>
-        <div><div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px">DIVIDENDOS TOTAIS</div>
-          <div style="font-size:22px;font-weight:900;margin-top:2px;color:var(--green)">${fmtE(totalDivGross)}</div></div>
-      </div>
-    </div>
-
-    <!-- Monthly dividend chart -->
-    <div class="card" style="margin-bottom:12px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="font-size:22px">📅</span>
-          <div class="card__title" style="margin:0">Dividendos mensais</div>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${chartYears.map(y=>`<button onclick="renderRankingsDivChart('${y}')" id="rankDivBtn_${y}"
-            class="btn btn--sm" style="font-size:12px;padding:5px 10px;font-weight:700">${y}${parseInt(y)>currentYear?" 📈":""}</button>`).join("")}
-        </div>
-      </div>
-      <canvas id="rankingsDivChart" height="200"></canvas>
-      <div id="rankingsDivChartTotal" style="text-align:center;font-size:13px;font-weight:700;color:var(--muted);margin-top:8px"></div>
-    </div>
-
-    ${secValue}${secGainAbs}${secGainPct}${secLoss}${secDiv}${secYield}`;
-
-  // Render chart for default year
-  setTimeout(() => renderRankingsDivChart(defaultYear), 50);
+  el.innerHTML = html;
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){ renderRankingsDivChart(defaultYear); }); });
 }
+
 
 let _rankingsDivChart = null;
 function renderRankingsDivChart(year) {
