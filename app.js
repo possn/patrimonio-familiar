@@ -4828,20 +4828,49 @@ function renderRankingsDivChart(year) {
     if (m>=0 && m<12) monthly[m] += parseNum(getDividendNet(d));
   }
 
-  // Projection: use last 12 months average per month (for future year)
+  // Smart projection for future/empty years
   const projMonthly = new Array(12).fill(0);
   if (isFuture || monthly.every(v=>v===0)) {
-    const lastYear = String(parseInt(year)-1);
+    // Step 1: Get the annual dividend target
+    // Use configured passive income (yield × portfolio value) as the base
+    const yieldData = (typeof calcDividendYield === "function") ? calcDividendYield() : {};
+    const ttmNet = parseNum(yieldData.net12m || yieldData.ttmNet || 0);
+    
+    // Also get the projected passive income from settings/assets
+    const projectedAnnual = (function() {
+      // Sum configured yield from all dividend assets
+      const assets = (state.assets || []).filter(a => parseNum(a.value) > 0);
+      let total = 0;
+      assets.forEach(a => {
+        const rate = (typeof getAssetPassiveRatePct === "function") ? getAssetPassiveRatePct(a) : 0;
+        if (rate > 0) total += parseNum(a.value) * rate / 100;
+      });
+      return total > 0 ? total : ttmNet;
+    })();
+
+    // Step 2: Build monthly distribution pattern from last 2 years of actual data
+    const pattern = new Array(12).fill(0);
+    let patternTotal = 0;
     for (const d of divs) {
-      if (!d.date || String(d.date).slice(0,4) !== lastYear) continue;
-      const m = parseInt(String(d.date).slice(5,7))-1;
-      if (m>=0 && m<12) projMonthly[m] += parseNum(getDividendNet(d));
+      const yr = parseInt(String(d.date||"").slice(0,4));
+      if (yr >= currentYear - 2 && yr <= currentYear) {
+        const m = parseInt(String(d.date).slice(5,7)) - 1;
+        if (m>=0 && m<12) { pattern[m] += parseNum(getDividendNet(d)); patternTotal += parseNum(getDividendNet(d)); }
+      }
     }
-    // If no last year data, use TTM average
-    if (projMonthly.every(v=>v===0)) {
-      const annualRate = (typeof calcDividendYield === "function") ? calcDividendYield().net12m||0 : 0;
-      projMonthly.fill(annualRate/12);
+
+    // Step 3: Apply pattern proportions to projected annual total
+    // Convert from gross to net: use ~85% (15% WHT typical for PT investor)
+    const projNetAnnual = projectedAnnual * 0.85;
+    if (patternTotal > 0) {
+      for (let i=0; i<12; i++) projMonthly[i] = projNetAnnual * (pattern[i] / patternTotal);
+    } else {
+      // No pattern data: flat monthly distribution
+      projMonthly.fill(projNetAnnual / 12);
     }
+
+    // Fallback: if projection is 0, use TTM/12 flat
+    if (projMonthly.every(v=>v===0) && ttmNet > 0) projMonthly.fill(ttmNet/12);
   }
 
   const isCurrentYear = parseInt(year) === currentYear;
@@ -4851,11 +4880,11 @@ function renderRankingsDivChart(year) {
 
   const datasets = [];
   if (isFuture) {
-    datasets.push({ label:"Projecção (líquido)", data:projMonthly, backgroundColor:"rgba(16,185,129,.5)", borderColor:"#10b981", borderWidth:2 });
+    datasets.push({ label:"Projecção líquida", data:projMonthly, backgroundColor:"rgba(99,102,241,.45)", borderColor:"#6366f1", borderWidth:2, borderRadius:4 });
   } else {
-    datasets.push({ label:"Líquido", data:monthly.map((v,i)=>isCurrentYear&&i>currentMonth?null:v), backgroundColor:"#10b981" });
+    datasets.push({ label:"Líquido real", data:monthly.map((v,i)=>isCurrentYear&&i>currentMonth?null:v), backgroundColor:"#10b981", borderRadius:4 });
     if (isCurrentYear) {
-      datasets.push({ label:"Projecção", data:monthly.map((v,i)=>i>currentMonth?projMonthly[i]:null), backgroundColor:"rgba(16,185,129,.3)", borderColor:"#10b981", borderWidth:1, borderDash:[4,4] });
+      datasets.push({ label:"Projecção", data:monthly.map((v,i)=>i>currentMonth?projMonthly[i]:null), backgroundColor:"rgba(99,102,241,.35)", borderColor:"#6366f1", borderWidth:1, borderRadius:4 });
     }
   }
 
@@ -4878,8 +4907,9 @@ function renderRankingsDivChart(year) {
   const projTotal = projMonthly.reduce((s,v)=>s+v,0);
   const totalEl = document.getElementById("rankingsDivChartTotal");
   if (totalEl) {
-    if (isFuture) totalEl.textContent = `Projecção ${year}: ${new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(projTotal)} líquido/ano`;
-    else totalEl.textContent = `Total ${year}: ${new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(total)} líquido`;
+    const fmt = v => new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(v);
+    if (isFuture) totalEl.innerHTML = "Projecção "+year+": <b>"+fmt(projTotal)+"</b> líquido/ano &nbsp;·&nbsp; <span style='font-size:11px;color:var(--muted)'>baseado em yield actual × carteira</span>";
+    else totalEl.innerHTML = "Total "+year+": <b>"+fmt(total)+"</b> líquido"+(isCurrentYear?" (até agora)":"");
   }
 }
 
