@@ -1244,6 +1244,19 @@ function _initViewCache() {
   if (!_navEls) _navEls = Array.from(document.querySelectorAll(".navbtn"));
 }
 
+function switchCashflowPane(pane) {
+  const balBtn = document.getElementById("segBalanco");
+  const impBtn = document.getElementById("segImportar");
+  const balPane = document.getElementById("paneCashflowBalanco");
+  const impPane = document.getElementById("paneCashflowImportar");
+  if (!balPane || !impPane) return;
+  const showBalanco = pane !== "importar";
+  balPane.style.display = showBalanco ? "" : "none";
+  impPane.style.display = showBalanco ? "none" : "";
+  if (balBtn) balBtn.classList.toggle("seg__btn--active", showBalanco);
+  if (impBtn) impBtn.classList.toggle("seg__btn--active", !showBalanco);
+}
+
 function setView(view) {
   const prevView = currentView;
   currentView = view;
@@ -1255,7 +1268,9 @@ function setView(view) {
   _initViewCache();
   // Phase 1 (sync): switch visible section immediately — user sees tab change at once
   for (const s of _viewEls) s.hidden = s.dataset.view !== view;
-  for (const b of _navEls) b.classList.toggle("navbtn--active", b.dataset.view === view);
+  // "import" merged into cashflow — highlight cashflow when on import pane
+  const _navView = view === "import" ? "cashflow" : view;
+  for (const b of _navEls) b.classList.toggle("navbtn--active", b.dataset.view === _navView);
   try { window.scrollTo(0, 0); } catch (_) {}
   // Phase 2 (deferred): render content after browser has painted the new tab frame.
   // Using double-RAF ensures one paint cycle completes before heavy DOM work starts,
@@ -4680,24 +4695,35 @@ function renderPortfolioCharts() {
 
 
 /* ─── ANALYSIS VIEW ───────────────────────────────────────── */
+// Tab groups: which panels to show + render for each nav tab
+const ANALYSIS_TAB_GROUPS = {
+  portfolio: { panels: ["portfolio","performance","compare","allocation","drawdown"],
+               render: () => { renderPortfolioCharts(); renderRealPerformancePanel(); renderBenchmarkComparison(); renderRebalancing(); renderComparePanel(); renderAllocationPanel(); renderDrawdownPanel(); } },
+  fire:      { panels: ["fire","compound"],
+               render: () => { renderFire(); renderCompoundPanel(); } },
+  forecast:  { panels: ["forecast","pricehistory"],
+               render: () => { renderForecastPanel(); renderPriceHistoryPanel(); renderFXHistoryPanel(); } },
+  fiscal:    { panels: ["fiscal"],    render: () => renderFiscalPanel() },
+  ai:        { panels: ["ai"],        render: () => renderAIHistory() },
+};
+
 function renderAnalysis() {
   const activeBtn = document.querySelector(".analysis-tab.analysis-tab--active");
-  const selectVal = ($("analysisTab") && $("analysisTab").value) || "";
-  const tab = (activeBtn && activeBtn.dataset && activeBtn.dataset.tab) || selectVal || "compound";
+  const tab = (activeBtn && activeBtn.dataset && activeBtn.dataset.tab) || "portfolio";
+  // Hide all panels first
   document.querySelectorAll(".analysisPanelTab").forEach(p => { p.style.display = "none"; });
-  const panel = document.getElementById("analysisPanelTab_" + tab);
-  if (panel) panel.style.display = "";
-  if (tab === "portfolio") renderPortfolioCharts();
-  if (tab === "compound") renderCompoundPanel();
-  if (tab === "forecast") renderForecastPanel();
-  if (tab === "compare") renderComparePanel();
-  if (tab === "pricehistory") { renderPriceHistoryPanel(); renderFXHistoryPanel(); }
-  if (tab === "allocation") renderAllocationPanel();
-  if (tab === "fire") renderFire();
-  if (tab === "fiscal") renderFiscalPanel();
-  if (tab === "performance") { renderRealPerformancePanel(); renderBenchmarkComparison(); renderRebalancing(); }
-  if (tab === "drawdown") renderDrawdownPanel();
-  if (tab === "ai") renderAIHistory();
+  // Show panels for this group
+  const group = ANALYSIS_TAB_GROUPS[tab] || ANALYSIS_TAB_GROUPS.portfolio;
+  group.panels.forEach(id => {
+    const p = document.getElementById("analysisPanelTab_" + id);
+    if (p) p.style.display = "";
+    // Show section divider if it precedes this panel
+    const divider = p && p.previousElementSibling;
+    if (divider && divider.classList.contains("analysis-section-divider")) {
+      divider.style.display = "";
+    }
+  });
+  group.render();
 }
 
 let _analysisRenderRaf = 0;
@@ -9599,6 +9625,33 @@ function downloadTemplate() {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+
+function handleUnifiedImport(files) {
+  if (!files || files.length === 0) return;
+  const brokerExts = [".xlsx", ".xls", ".pdf"];
+  const brokerFiles = [], csvFiles = [];
+  for (const f of files) {
+    const ext = f.name.toLowerCase().slice(f.name.lastIndexOf("."));
+    if (brokerExts.includes(ext)) brokerFiles.push(f);
+    else if (ext === ".csv") {
+      // Check if it looks like a broker CSV (T212, XTB) vs bank CSV
+      csvFiles.push(f);
+    }
+  }
+  // All files go through broker import (it handles T212 CSV, XTB xlsx, bank PDF, etc)
+  if (brokerFiles.length + csvFiles.length > 0) {
+    const allFiles = [...brokerFiles, ...csvFiles];
+    const dt = new DataTransfer();
+    allFiles.forEach(f => dt.items.add(f));
+    const brokerInput = document.getElementById("brokerFiles");
+    if (brokerInput) {
+      brokerInput.files = dt.files;
+      const btn = document.getElementById("btnImportBrokerFiles");
+      if (btn && !btn.disabled) btn.click();
+    }
+  }
+}
+
 function exportJSON() {
   const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
@@ -10109,7 +10162,7 @@ function wire() {
     saveState(); renderAll();
   });
   const btnGoImport = document.getElementById("btnGoImport");
-  if (btnGoImport) btnGoImport.addEventListener("click", () => setView("import"));
+  if (btnGoImport) btnGoImport.addEventListener("click", () => { setView("cashflow"); switchCashflowPane("importar"); });
   renderReturnSettingsCard();
 
   // Worker URL para cotações

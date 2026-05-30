@@ -61,6 +61,7 @@
     </div>
   </div>
   <button class="btn btn--ghost" id="btnSearchToggle" style="padding:10px 14px;border-radius:14px;font-size:18px" aria-label="Pesquisar">🔍</button>
+  <button class="btn btn--ghost" id="btnSettingsNav" onclick="setView('settings')" style="padding:10px 14px;border-radius:14px;font-size:18px" aria-label="Definições">⚙️</button>
   <button class="fab" id="btnFab" aria-label="Adicionar">+</button>
 </header>
 
@@ -338,7 +339,97 @@
   </section>
 
   <!-- IMPORT -->
-  <section class="view" data-view="import" id="viewImport" hidden>
+  <section class="view" data-view="cashflow" id="viewCashflow" hidden>
+    <div class="seg" style="margin-bottom:12px">
+      <button class="seg__btn seg__btn--active" id="segBalanco" onclick="switchCashflowPane('balanco')">€ Balanço</button>
+      <button class="seg__btn" id="segImportar" onclick="switchCashflowPane('importar')">⇅ Importar</button>
+    </div>
+    <div id="paneCashflowBalanco">
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">Balanço</div><div class="card__muted">Entradas, saídas e saldo.</div></div>
+        <button class="btn btn--primary" id="btnAddTx">+ Movimento</button>
+      </div>
+      <div class="filters" style="grid-template-columns:1fr 1fr 1fr">
+        <select class="input" id="cfMonth"></select>
+        <select class="input" id="cfYear"></select>
+        <select class="input" id="cfGranularity">
+          <option value="day">Diário</option>
+          <option value="week">Semanal</option>
+          <option value="month" selected>Mensal</option>
+          <option value="year">Anual</option>
+          <option value="all">Todo o período</option>
+        </select>
+      </div>
+      <div class="kpiRow">
+        <div class="kpi kpi--in"><div class="kpi__k">Entradas</div><div class="kpi__v" id="cfIn">0 €</div></div>
+        <div class="kpi kpi--out"><div class="kpi__k">Saídas</div><div class="kpi__v" id="cfOut">0 €</div></div>
+        <div class="kpi kpi--net"><div class="kpi__k">Saldo</div><div class="kpi__v" id="cfNet">0 €</div><div class="kpi__s" id="cfRate">0%</div></div>
+      </div>
+      <!-- Taxa de poupança -->
+      <div id="savingsRateWrap" style="margin-top:12px;display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:5px">
+          <span class="card__muted">Taxa de poupança <button class="info-btn" onclick="openTip('savingsRate')" title="Saber mais">ℹ️</button></span>
+          <span style="font-weight:900;color:#059669" id="savingsRatePct">0%</span>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill progress-bar-fill--green" id="savingsRateFill"></div></div>
+      </div>
+    </div>
+
+    <!-- Categorias de despesa -->
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">Categorias de despesa</div><div class="card__muted" id="catSubtitle">Saídas por categoria</div></div>
+      </div>
+      <div class="chartWrap"><canvas id="catChart" height="180"></canvas></div>
+      <div id="catList" class="list" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="card__head"><div><div class="card__title">Fluxo</div><div class="card__muted">Entradas vs. Saídas</div></div></div>
+      <div class="chartWrap"><canvas id="cfChart" height="200"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">Movimentos</div><div class="card__muted">Clica para editar ou apagar</div></div>
+        <button class="link" id="btnTxToggle" style="display:none">Ver todos</button>
+      </div>
+      <div id="txList" class="list"></div>
+    </div>
+
+    <!-- v15: Exportar balanço -->
+    <div class="card">
+      <div class="card__head">
+        <div><div class="card__title">📤 Exportar</div><div class="card__muted">Descarrega os teus dados</div></div>
+      </div>
+      <div class="row row--wrap" style="gap:8px">
+        <button class="btn btn--ghost" id="btnExportCashflowCSV">📥 Balanço CSV</button>
+        <button class="btn btn--ghost" id="btnExportPortfolioCSV">📥 Portfólio CSV</button>
+        <button class="btn btn--ghost" id="btnExportPortfolioXLSX">📊 Excel completo</button>
+      </div>
+    </div>
+
+    </div><!-- end paneCashflowBalanco -->
+    <div id="paneCashflowImportar" style="display:none">
+
+      <!-- Unified import card -->
+      <div class="card" style="border:2px solid var(--purple);border-radius:20px">
+        <div class="card__title" style="margin-bottom:4px">⇅ Importar ficheiros</div>
+        <div class="card__muted" style="margin-bottom:12px">T212, XTB, Santander, outros bancos · CSV, Excel, PDF · Detecção automática</div>
+        <input id="unifiedFileInput" type="file" class="input" 
+          accept=".csv,.xls,.xlsx,.pdf,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          multiple
+          onchange="if(this.files.length){document.getElementById('btnUnifiedImport').disabled=false}">
+        <button class="btn btn--primary" id="btnUnifiedImport" disabled style="width:100%;margin-top:10px;font-size:16px;padding:14px"
+          onclick="handleUnifiedImport(document.getElementById('unifiedFileInput').files)">
+          Importar
+        </button>
+      </div>
+      <details style="margin-top:4px">
+        <summary style="font-size:13px;color:var(--muted);padding:8px 4px;cursor:pointer">Opções avançadas...</summary>
+        <div style="margin-top:8px">
+
     <div class="card" id="dupWarningCard" style="border:2px solid #fbbf24;display:none">
       <div class="card__title" style="margin-bottom:6px">⚠️ Possíveis dados duplicados</div>
       <div class="card__muted" style="margin-bottom:10px">Detectámos movimentos possivelmente importados mais do que uma vez. Limpa e reimporta para corrigir.</div>
@@ -411,83 +502,11 @@
       <button class="btn btn--outline" id="btnClearTransactions" style="width:100%;margin-bottom:8px;font-weight:700">🗑️ Limpar movimentos (mantém ativos)</button>
       <button class="btn btn--danger" id="btnReset" style="width:100%">🗑️ Reset total — apaga TUDO incluindo ativos</button>
     </div>
-  </section>
 
-  <!-- CASHFLOW -->
-  <section class="view" data-view="cashflow" id="viewCashflow" hidden>
-    <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Balanço</div><div class="card__muted">Entradas, saídas e saldo.</div></div>
-        <button class="btn btn--primary" id="btnAddTx">+ Movimento</button>
-      </div>
-      <div class="filters" style="grid-template-columns:1fr 1fr 1fr">
-        <select class="input" id="cfMonth"></select>
-        <select class="input" id="cfYear"></select>
-        <select class="input" id="cfGranularity">
-          <option value="day">Diário</option>
-          <option value="week">Semanal</option>
-          <option value="month" selected>Mensal</option>
-          <option value="year">Anual</option>
-          <option value="all">Todo o período</option>
-        </select>
-      </div>
-      <div class="kpiRow">
-        <div class="kpi kpi--in"><div class="kpi__k">Entradas</div><div class="kpi__v" id="cfIn">0 €</div></div>
-        <div class="kpi kpi--out"><div class="kpi__k">Saídas</div><div class="kpi__v" id="cfOut">0 €</div></div>
-        <div class="kpi kpi--net"><div class="kpi__k">Saldo</div><div class="kpi__v" id="cfNet">0 €</div><div class="kpi__s" id="cfRate">0%</div></div>
-      </div>
-      <!-- Taxa de poupança -->
-      <div id="savingsRateWrap" style="margin-top:12px;display:none">
-        <div class="row" style="justify-content:space-between;margin-bottom:5px">
-          <span class="card__muted">Taxa de poupança <button class="info-btn" onclick="openTip('savingsRate')" title="Saber mais">ℹ️</button></span>
-          <span style="font-weight:900;color:#059669" id="savingsRatePct">0%</span>
+    
         </div>
-        <div class="progress-bar-bg"><div class="progress-bar-fill progress-bar-fill--green" id="savingsRateFill"></div></div>
-      </div>
-    </div>
-
-    <!-- Categorias de despesa -->
-    <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Categorias de despesa</div><div class="card__muted" id="catSubtitle">Saídas por categoria</div></div>
-      </div>
-      <div class="chartWrap"><canvas id="catChart" height="180"></canvas></div>
-      <div id="catList" class="list" style="margin-top:10px"></div>
-    </div>
-
-    <div class="card">
-      <div class="card__head"><div><div class="card__title">Fluxo</div><div class="card__muted">Entradas vs. Saídas</div></div></div>
-      <div class="chartWrap"><canvas id="cfChart" height="200"></canvas></div>
-    </div>
-
-    <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Movimentos</div><div class="card__muted">Clica para editar ou apagar</div></div>
-        <button class="link" id="btnTxToggle" style="display:none">Ver todos</button>
-      </div>
-      <div id="txList" class="list"></div>
-    </div>
-
-    <!-- v15: Exportar balanço -->
-    <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">📤 Exportar</div><div class="card__muted">Descarrega os teus dados</div></div>
-      </div>
-      <div class="row row--wrap" style="gap:8px">
-        <button class="btn btn--ghost" id="btnExportCashflowCSV">📥 Balanço CSV</button>
-        <button class="btn btn--ghost" id="btnExportPortfolioCSV">📥 Portfólio CSV</button>
-        <button class="btn btn--ghost" id="btnExportPortfolioXLSX">📊 Excel completo</button>
-      </div>
-    </div>
-
-    <!-- Importar extracto: disponível na tab Importar -->
-    <div class="card" style="border-style:dashed;opacity:.7">
-      <div class="card__head">
-        <div><div class="card__title">📥 Importar extracto do banco</div>
-        <div class="card__muted">Disponível na tab Importar</div></div>
-        <button class="btn btn--outline btn--sm" onclick="setView('import')">Ir para Importar →</button>
-      </div>
-    </div>
+      </details>
+    </div><!-- end paneCashflowImportar -->
   </section>
 
   <!-- DIVIDENDOS -->
@@ -713,7 +732,7 @@
       <div class="card">
         <div class="card__head">
           <div><div class="card__title">Dividendos individuais</div><div class="card__muted">Registo detalhado por pagamento</div></div>
-          <button class="btn btn--primary" id="btnAddDiv2">+ Dividendo</button>
+          
         </div>
       </div>
       <div id="divKPIs"></div>
@@ -738,17 +757,11 @@
     <!-- Tabs de análise — scroll horizontal -->
     <div class="analysis-tabs-wrap">
       <div class="analysis-tabs" id="analysisTabs">
-        <button class="analysis-tab analysis-tab--active" data-tab="compound">📐 Juro Composto</button>
-        <button class="analysis-tab" data-tab="forecast">📈 Previsão</button>
+        <button class="analysis-tab analysis-tab--active" data-tab="portfolio">📊 Portfólio</button>
         <button class="analysis-tab" data-tab="fire">🔥 FIRE</button>
-        <button class="analysis-tab analysis-tab--ai" data-tab="ai">🤖 Análise IA</button>
-        <button class="analysis-tab" data-tab="performance">⚖️ Performance</button>
-        <button class="analysis-tab" data-tab="drawdown">📉 Reforma</button>
-        <button class="analysis-tab" data-tab="compare">📊 Comparar</button>
-        <button class="analysis-tab" data-tab="portfolio">🌍 Sector</button>
+        <button class="analysis-tab" data-tab="forecast">📈 Previsão</button>
         <button class="analysis-tab" data-tab="fiscal">🧾 Fiscal</button>
-        <button class="analysis-tab" data-tab="pricehistory">📉 Cotações</button>
-        <button class="analysis-tab" data-tab="allocation">🎯 Alocação</button>
+        <button class="analysis-tab analysis-tab--ai" data-tab="ai">🤖 IA</button>
       </div>
     </div>
     <!-- Hidden select kept for JS compatibility -->
@@ -804,6 +817,7 @@
       </div>
     </div>
 
+    <div class="analysis-section-divider" style="display:none;margin:16px 0 8px;font-size:13px;font-weight:700;color:var(--muted);letter-spacing:.5px;padding:0 4px">📐 JURO COMPOSTO</div>
     <div class="analysisPanelTab" id="analysisPanelTab_compound" style="">
       <div class="card">
         <div class="card__title" style="margin-bottom:12px">Simulador de Juro Composto <button class="info-btn" onclick="openTip('compound')" title="O que é o juro composto?">ℹ️</button></div>
@@ -856,6 +870,7 @@
       <div class="card"><div class="card__title" style="margin-bottom:10px">Por ativo</div><div id="forecastTable" class="list"></div></div>
       <div class="card"><div class="card__title" style="margin-bottom:10px">Portfólio projetado</div><div class="chartWrap"><canvas id="forecastChart" height="240"></canvas></div></div>
     </div>
+    <div class="analysis-section-divider" style="display:none;margin:16px 0 8px;font-size:13px;font-weight:700;color:var(--muted);letter-spacing:.5px;padding:0 4px">📊 COMPARAR ATIVOS</div>
     <div class="analysisPanelTab" id="analysisPanelTab_compare" style="display:none">
       <div class="card">
         <div class="card__title" style="margin-bottom:12px">Comparação YoY / MoM</div>
@@ -976,6 +991,7 @@
       </div>
     </div>
     <!-- v16: Painel Performance (TWR + Benchmark + Rebalancing) -->
+    <div class="analysis-section-divider" style="display:none;margin:16px 0 8px;font-size:13px;font-weight:700;color:var(--muted);letter-spacing:.5px;padding:0 4px">⚖️ PERFORMANCE &amp; REBALANCING</div>
     <div class="analysisPanelTab" id="analysisPanelTab_performance" style="display:none">
       <div class="card">
         <div class="card__head">
@@ -1074,6 +1090,7 @@
     </div>
 
     <!-- 🎯 Alocação Alvo FIRE -->
+    <div class="analysis-section-divider" style="display:none;margin:16px 0 8px;font-size:13px;font-weight:700;color:var(--muted);letter-spacing:.5px;padding:0 4px">🎯 ALOCAÇÃO ALVO</div>
     <div class="analysisPanelTab" id="analysisPanelTab_allocation" style="display:none">
       <div class="card">
         <div class="card__head">
@@ -1337,9 +1354,7 @@
   <button class="navbtn" data-view="assets" id="navAssets"><span class="navico">≡</span><span class="navlbl">Ativos</span></button>
   <button class="navbtn" data-view="dividends" id="navDividends"><span class="navico">💰</span><span class="navlbl">Divid.</span></button>
   <button class="navbtn" data-view="cashflow" id="navCashflow"><span class="navico">€</span><span class="navlbl">Balanço</span></button>
-  <button class="navbtn" data-view="import" id="navImport"><span class="navico">⇅</span><span class="navlbl">Importar</span></button>
   <button class="navbtn" data-view="analysis" id="navAnalysis"><span class="navico">📈</span><span class="navlbl">Análise</span></button>
-  <button class="navbtn" data-view="settings" id="navSettings"><span class="navico">⚙️</span><span class="navlbl">Def.</span></button>
 </nav>
 
 <!-- MODAL: Item -->
