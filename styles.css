@@ -496,30 +496,39 @@ select.input   { cursor: pointer; }
   background: var(--nav-bg);
   border-top: 1px solid var(--line);
   box-shadow: 0 -2px 20px rgba(15,23,42,.06);
-  padding: 8px 8px 20px;
-  display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;
+  padding: 6px 8px 22px;
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px;
   will-change: transform;
   contain: layout style;
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
 }
 .navbtn {
-  border: 0; background: transparent; border-radius: 12px;
-  padding: 7px 2px 6px;
-  display: flex; align-items: center; justify-content: center; gap: 2px;
+  border: 0; background: transparent; border-radius: 14px;
+  padding: 10px 2px 8px;
+  display: flex; align-items: center; justify-content: center; gap: 4px;
   font-weight: 800; color: var(--muted); cursor: pointer;
   font-family: inherit; flex-direction: column;
-  transition: background .1s, color .1s;
+  transition: background .15s, color .15s, transform .1s;
   will-change: background, color;
   -webkit-tap-highlight-color: transparent;
+  min-height: 60px;
 }
 .navbtn:active { transform: scale(.92); transition: transform .08s; }
 .navbtn--active {
   background: var(--vio-glow);
   color: var(--vio);
 }
-.navico { font-size: 18px; line-height: 1; }
-.navlbl { font-size: 9px; font-weight: 800; letter-spacing: .2px; }
+.navbtn--active .navico { display: inline-block; transform: scale(1.12); }
+.navbtn:active:not(.navbtn--active) { opacity: .7; transform: scale(0.93); }
+.navico { font-size: 22px; line-height: 1; }
+.navlbl { font-size: 11px; font-weight: 800; letter-spacing: .3px; }
+
+.analysis-section-divider {
+  font-size: 11px; font-weight: 800; color: var(--muted);
+  letter-spacing: .8px; text-transform: uppercase;
+  padding: 16px 4px 4px; opacity: .7;
+}
 
 /* ─── SEGMENTED CONTROL ─── */
 .seg {
@@ -531,8 +540,8 @@ select.input   { cursor: pointer; }
 .seg--3 { grid-template-columns: 1fr 1fr 1fr; }
 .seg__btn {
   border: 0; background: transparent; border-radius: 11px;
-  padding: 10px 8px; font-weight: 800; color: var(--muted);
-  cursor: pointer; font-family: inherit; font-size: 13px;
+  padding: 12px 10px; font-weight: 800; color: var(--muted);
+  cursor: pointer; font-family: inherit; font-size: 14px;
   transition: background .15s, color .15s, box-shadow .15s;
 }
 .seg__btn--active {
@@ -922,8 +931,8 @@ select.input   { cursor: pointer; }
   background: var(--card);
   color: var(--muted);
   border-radius: 999px;
-  padding: 8px 14px;
-  font-size: 13px;
+  padding: 11px 20px;
+  font-size: 14px;
   font-weight: 700;
   cursor: pointer;
   font-family: inherit;

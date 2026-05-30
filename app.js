@@ -9823,16 +9823,8 @@ function renderReturnSettingsCard() {
 }
 
 function setSettingsPane(which) {
-  const ps = document.getElementById("paneSettings"), pf = document.getElementById("paneFire");
-  const bs = $("segSettings"), bf = $("segFire");
-  if (!ps || !pf) return;
-  const isFire = which === "fire";
-  ps.style.display = isFire ? "none" : "";
-  pf.style.display = isFire ? "" : "none";
-  bs.classList.toggle("seg__btn--active", !isFire);
-  bf.classList.toggle("seg__btn--active", isFire);
-  if (isFire) renderFire();
-  else renderReturnSettingsCard();
+  // paneFire merged into Analysis > FIRE tab — no longer in settings
+  renderReturnSettingsCard();
 }
 
 /* ─── WIRING ──────────────────────────────────────────────── */
@@ -9944,12 +9936,7 @@ function wire() {
   const cmode = document.getElementById("compareMode");
   if (cmode) cmode.addEventListener("change", renderComparePanel);
 
-  // FIRE
-  const segS = document.getElementById("segSettings"), segF = document.getElementById("segFire");
-  if (segS && segF) {
-    segS.addEventListener("click", () => setSettingsPane("settings"));
-    segF.addEventListener("click", () => setSettingsPane("fire"));
-  }
+  // segFire removed — FIRE is in Analysis tab
   const recalc = document.getElementById("btnRecalcFire");
   if (recalc) recalc.addEventListener("click", renderFire);
   ["fireWindow","fireHorizon","fireCustomReturn","fireCustomInflation","fireMonthlyInvest"].forEach(id => {
@@ -10030,8 +10017,8 @@ function wire() {
   if (btnClearBrokerImports) btnClearBrokerImports.addEventListener("click", clearBrokerImports);
 
   // Importar extracto do banco (universal: CSV, XLSX, PDF)
-  const bankFileInput = document.getElementById("bankFile");
-  const btnImportBank = document.getElementById("btnImportBank");
+  const bankFileInput = document.getElementById("bankImportFile") || document.getElementById("bankFile");
+  const btnImportBank = document.getElementById("btnImportBankCsv") || document.getElementById("btnImportBank");
   if (bankFileInput && btnImportBank) {
     bankFileInput.addEventListener("change", () => {
       btnImportBank.disabled = !bankFileInput.files?.length;
@@ -10058,7 +10045,7 @@ function wire() {
 
   // Bank CSV import (legacy - kept for Import tab)
   (function bindBankCsvImport() {
-    const input = $("bankCsvFile"), btn = $("btnImportBankCsv"), nameEl = $("bankCsvName");
+    const input = $("bankImportFile") || $("bankCsvFile"), btn = $("btnImportBankCsv"), nameEl = $("bankCsvName");
     if (!input || !btn) return;
     if (nameEl && nameEl.textContent !== undefined) nameEl.textContent = "";
     btn.disabled = true;
@@ -10236,8 +10223,7 @@ function wire() {
   // Dividendos individuais
   const btnAddDiv = document.getElementById("btnAddDiv");
   if (btnAddDiv) btnAddDiv.addEventListener("click", () => openDivModal(null));
-  const btnAddDiv2 = document.getElementById("btnAddDiv2");
-  if (btnAddDiv2) btnAddDiv2.addEventListener("click", () => openDivModal(null));
+  // btnAddDiv2 removed (was duplicate)
   const btnSaveDiv = document.getElementById("btnSaveDiv");
   if (btnSaveDiv) btnSaveDiv.addEventListener("click", saveDivFromModal);
   const btnDeleteDiv = document.getElementById("btnDeleteDiv");

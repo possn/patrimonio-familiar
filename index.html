@@ -413,100 +413,76 @@
     </div><!-- end paneCashflowBalanco -->
     <div id="paneCashflowImportar" style="display:none">
 
-      <!-- Unified import card -->
+      <!-- CORRETORAS -->
       <div class="card" style="border:2px solid var(--purple);border-radius:20px">
-        <div class="card__title" style="margin-bottom:4px">⇅ Importar ficheiros</div>
-        <div class="card__muted" style="margin-bottom:12px">T212, XTB, Santander, outros bancos · CSV, Excel, PDF · Detecção automática</div>
-        <input id="unifiedFileInput" type="file" class="input" 
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <span style="font-size:28px">📂</span>
+          <div>
+            <div class="card__title" style="margin-bottom:2px">Corretoras</div>
+            <div class="card__muted" style="font-size:12px">Trading 212 · XTB · CSV, Excel, PDF</div>
+          </div>
+        </div>
+        <input id="brokerFiles" type="file" class="input"
           accept=".csv,.xls,.xlsx,.pdf,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           multiple
-          onchange="if(this.files.length){document.getElementById('btnUnifiedImport').disabled=false}">
-        <button class="btn btn--primary" id="btnUnifiedImport" disabled style="width:100%;margin-top:10px;font-size:16px;padding:14px"
-          onclick="handleUnifiedImport(document.getElementById('unifiedFileInput').files)">
-          Importar
+          onchange="document.getElementById('btnImportBrokerFiles').disabled=!this.files.length">
+        <button class="btn btn--primary" id="btnImportBrokerFiles" disabled
+          style="width:100%;margin-top:10px;padding:16px;font-size:17px;font-weight:800;border-radius:14px">
+          Importar ficheiros de corretora
         </button>
-      </div>
-      <details style="margin-top:4px">
-        <summary style="font-size:13px;color:var(--muted);padding:8px 4px;cursor:pointer">Opções avançadas...</summary>
-        <div style="margin-top:8px">
-
-    <div class="card" id="dupWarningCard" style="border:2px solid #fbbf24;display:none">
-      <div class="card__title" style="margin-bottom:6px">⚠️ Possíveis dados duplicados</div>
-      <div class="card__muted" style="margin-bottom:10px">Detectámos movimentos possivelmente importados mais do que uma vez. Limpa e reimporta para corrigir.</div>
-      <button class="btn btn--outline" id="btnClearTransactions2" style="width:100%;font-weight:700">🗑️ Limpar movimentos e reimportar</button>
-    </div>
-    <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Importar CSV</div><div class="card__muted">Ativos, passivos e movimentos. Lê localmente.</div></div>
-      </div>
-      <div class="row row--wrap" style="gap:10px">
-        <input id="fileInput" type="file" class="input" accept=".csv,text/csv">
-        <button class="btn btn--primary" id="btnImport" disabled>Importar</button>
-        <button class="btn" id="btnTemplate">Template CSV</button>
-      </div>
-      <div class="note">
-        Formato: <b>tipo</b> (ativo/passivo/movimento), <b>classe</b>, <b>nome</b>, <b>valor</b>, <b>yield_tipo</b>, <b>yield_valor</b>, <b>data</b>.<br>
-        Também reconhece exports de corretoras (ticker, shares, market value, yield).
-      </div>
-      <div class="hint" id="importHint">Nenhum ficheiro importado nesta sessão.</div>
-    </div>
-    <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Importar corretoras</div><div class="card__muted">CSV, Excel ou PDF · múltiplos anos · múltiplas corretoras</div></div>
-      </div>
-      <div class="row row--wrap" style="gap:10px">
-        <input id="brokerFiles" type="file" class="input" accept=".csv,.xls,.xlsx,.pdf,text/csv,application/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf" multiple>
-        <button class="btn btn--primary" id="btnImportBrokerFiles" disabled>Importar ficheiros</button>
-      </div>
-      <div id="brokerImportDiag" style="display:none"></div>
-      <div class="note">
-        Junta vários ficheiros de anos diferentes e corretoras. <b>Formatos suportados:</b><br>
-        • <b>Trading 212</b> — CSV "Activity" + PDF "Confirmation of Holdings"<br>
-        • <b>XTB</b> — CSV "Historial de negociações" + CSV "Posições abertas" + CSV "Operações de caixa" + PDF<br>
-        • <b>Genérico</b> — CSV com Ticker/Quantity/Cost_per_share ou Symbol/Action/Total<br>
-        Deduplicação automática: reimportar o mesmo ficheiro substitui, não duplica.
-      </div>
-      <div id="brokerImportResult" style="display:none;margin-top:10px"></div>
-      <div id="brokerImportAudit" style="display:none;margin-top:10px"></div>
-      <div id="brokerImportList" class="list" style="margin-top:10px"></div>
-      <div class="row row--wrap" style="gap:10px;margin-top:10px">
-        <button class="btn btn--outline" id="btnClearBrokerImports">🗑️ Limpar imports de corretoras</button>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Importar movimentos do banco</div><div class="card__muted">CSV, Excel (.xls/.xlsx) ou PDF do banco. Duplicados ignorados automaticamente.</div></div>
-      </div>
-      <div class="row" style="gap:10px; flex-wrap:wrap">
-        <input class="input" id="bankCsvFile" type="file" accept=".csv,.xls,.xlsx,.pdf,text/csv,application/csv">
-        <button class="btn btn--primary" id="btnImportBankCsv" disabled>Importar</button>
-      </div>
-      <div id="bankCsvName" class="card__muted" style="margin-top:6px;font-size:12px"></div>
-      <div id="bankImportDebug" class="card__muted" style="margin-top:10px;display:none"></div>
-      <div id="bankImportResult" style="display:none;margin-top:10px"></div>
-    </div>
-    <div class="card">
-      <div class="card__head">
-        <div><div class="card__title">Backup JSON</div><div class="card__muted">Exporta/importa todos os dados (iCloud, Drive…).</div></div>
-      </div>
-      <div class="row row--wrap" style="gap:10px">
-        <button class="btn btn--primary" id="btnExportJSON">Exportar JSON</button>
-        <input id="jsonInput" type="file" class="input" accept=".json,application/json">
-        <button class="btn" id="btnImportJSON" disabled>Importar JSON</button>
-      </div>
-    </div>
-    <div class="card" style="border:2px solid #fbbf24">
-      <div class="card__title" style="margin-bottom:6px">⚠️ Dados duplicados?</div>
-      <div class="card__muted" style="margin-bottom:10px">Se os valores do Balanço estiverem errados (ex: importaste o mesmo ficheiro várias vezes), usa este botão para limpar e reimportar.</div>
-      <button class="btn btn--outline" id="btnClearEquities" style="width:100%;margin-bottom:8px;font-weight:700">🗑️ Limpar Ações / ETFs / Cripto</button>
-      <button class="btn btn--outline" id="btnClearTransactions" style="width:100%;margin-bottom:8px;font-weight:700">🗑️ Limpar movimentos (mantém ativos)</button>
-      <button class="btn btn--danger" id="btnReset" style="width:100%">🗑️ Reset total — apaga TUDO incluindo ativos</button>
-    </div>
-
-    
+        <div id="brokerImportDiag" style="display:none;margin-top:8px"></div>
+        <div id="brokerImportResult" style="display:none;margin-top:10px"></div>
+        <div id="brokerImportAudit" style="display:none;margin-top:10px"></div>
+        <div id="brokerImportList" class="list" style="margin-top:10px"></div>
+        <div style="margin-top:10px">
+          <button class="btn btn--outline" id="btnClearBrokerImports">🗑️ Limpar imports de corretoras</button>
         </div>
-      </details>
-    </div><!-- end paneCashflowImportar -->
+      </div>
+
+      <!-- EXTRACTOS BANCO -->
+      <div class="card" style="margin-top:12px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <span style="font-size:28px">🏦</span>
+          <div>
+            <div class="card__title" style="margin-bottom:2px">Extracto do banco</div>
+            <div class="card__muted" style="font-size:12px">Santander · BPI · Millennium · CGD · PDF ou CSV</div>
+          </div>
+        </div>
+        <input id="bankImportFile" type="file" class="input"
+          accept=".csv,.pdf,text/csv,application/pdf"
+          onchange="document.getElementById('btnImportBankCsv').disabled=!this.files.length">
+        <button class="btn btn--primary" id="btnImportBankCsv" disabled
+          style="width:100%;margin-top:10px;padding:16px;font-size:17px;font-weight:800;border-radius:14px">
+          Importar extracto
+        </button>
+        <div id="bankImportDebug" style="display:none;margin-top:8px"></div>
+        <div id="bankImportResult" style="display:none;margin-top:10px"></div>
+      </div>
+
+      <!-- AVISO DUPLICADOS -->
+      <div class="card" id="dupWarningCard" style="border:2px solid #fbbf24;display:none;margin-top:12px">
+        <div class="card__title" style="margin-bottom:6px">⚠️ Possíveis dados duplicados</div>
+        <div class="card__muted" style="margin-bottom:10px">Detectámos movimentos possivelmente importados mais do que uma vez.</div>
+        <button class="btn btn--outline" id="btnClearTransactions2" style="width:100%;font-weight:700">🗑️ Limpar e reimportar</button>
+      </div>
+
+      <!-- ACÇÕES -->
+      <div class="card" style="margin-top:12px">
+        <div class="card__title" style="margin-bottom:10px">Outras acções</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <button class="btn btn--outline" id="btnExportJSON" style="font-size:13px">📤 Exportar JSON</button>
+          <button class="btn btn--outline" id="btnImportJSON" style="font-size:13px">📥 Importar JSON</button>
+          <button class="btn btn--outline" id="btnExportPortfolioCSV" style="font-size:13px">📊 CSV Portfólio</button>
+          <button class="btn btn--outline" id="btnExportPortfolioXLSX" style="font-size:13px">📊 Excel completo</button>
+        </div>
+        <div style="margin-top:8px">
+          <button class="btn btn--outline" id="btnClearTransactions" style="width:100%;margin-bottom:6px">🗑️ Limpar movimentos</button>
+          <button class="btn btn--danger" id="btnReset" style="width:100%">🗑️ Reset total</button>
+        </div>
+      </div>
+
+      <input type="file" id="fileInputJSON" accept=".json" style="display:none">
+</div><!-- end paneCashflowImportar -->
   </section>
 
   <!-- DIVIDENDOS -->
@@ -1208,10 +1184,6 @@
 
   <!-- SETTINGS -->
   <section class="view" data-view="settings" id="viewSettings" hidden>
-    <div class="seg">
-      <button class="seg__btn seg__btn--active" id="segSettings">Definições</button>
-      <button class="seg__btn" id="segFire">FIRE</button>
-    </div>
     <div id="paneSettings">
       <div class="card">
         <div class="card__title" style="margin-bottom:12px">Preferências</div>
@@ -1243,7 +1215,7 @@
       </div>
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">Importar / Exportar</div>
-        <button class="btn btn--primary" id="btnGoImport">⇅ Ir para Importar</button>
+        <button class="btn btn--primary" id="btnGoImport">⇅ Balanço → Importar</button>
       </div>
       <div class="card">
         <div class="card__title" style="margin-bottom:8px">🤖 Análise por IA</div>
@@ -1283,9 +1255,6 @@
         <div class="card__title" style="margin-bottom:8px">Sobre</div>
         <div class="card__muted">Património Familiar <b>v16.18</b> · PWA · Dados guardados apenas neste dispositivo (IndexedDB).<br><br>Safari (iOS) e Chrome (Android/Desktop). Adiciona ao Ecrã Principal para usar offline.<br><br><b>Novidades v16.18:</b> Rebuild forçado dos dados de corretora para voltar a juntar posições equivalentes (ex: O e O.US / Realty Income) · resolução de cotações endurecida para ignorar mapeamentos stale e priorizar identidade/ISIN/nome (corrige colisões como COR/COR.LS e SON/SON.LS) · dividendos importados voltam a entrar no rendimento passivo mesmo quando os registos detalhados falham ou vêm incompletos · modal de erros de cotações abre automaticamente quando há falhas<br><br><b>Novidades v16.17:</b> Correção do mapeamento de cotações para activos importados de corretoras (prioriza Yahoo/ISIN correctos, evitando colisões como COR/SON/CNYA) · dividendos manuais + importados passam a entrar no cálculo automático do rendimento passivo · lista de erros de cotações fica sempre preparada e visível quando existem falhas · listas principais voltam a abrir por defeito limitadas aos 10 primeiros itens<br><br><b>Novidades v16.16:</b> Correção do yield de dividendos na projeção para usar a mesma base da tab Dividendos · botões "Yield bruto/líquido" e "Usar na projeção" ligados por event listeners explícitos (mais robustos no Safari/iPhone) · seletor de fase da Alocação volta a responder e fica guardado · atualização de cotações com fallback por múltiplos tickers Yahoo para reduzir falhas de mapeamento<br><br><b>Novidades v16.14:</b> CRÍTICO: ISIN_YAHOO_MAP movido para topo do ficheiro (resolvia erro "Can't find variable" no import) · Duplicações removidas: pill card de KPIs duplicado no dashboard, importar banco duplicado no Cashflow, IRS card colapsado para teaser de 1 linha · Dashboard kpi-quick 4 métricas únicas: rend. mensal, dividendos YTD, yield real (distribuidores), P&L realizado<br><br><b>Novidades v16.13:</b> Yield calculado só sobre activos distribuidores (não dilui com acumuladores como VWCE) · Painel Performance Real: retorno total = latente+realizado+dividendos · Mais-valias por venda com top 5 ganhos/perdas · Dividendos por ano com retenção · Alocação FIRE com rationale detalhado por classe, exemplos (VWCE/VHYL/PHAU…), risco/retorno, expandível · Performance real integrada em Compound, FIRE e Projecção de dividendos<br><br><b>Novidades v16.12:</b> Colisões de ticker corrigidas com 448 mapeamentos ISIN→Yahoo (COR→COR.LS, SON→SON.LS, AI→AI.PA, GSK→GSK.L, AIR→AIR.AS, ALUM→ALUM.L, MBG→MBG.DE…) · Sanity check: valores >20x custo sem cotação do dia mostram P&L=0 em vez de valores absurdos · P&L painel mostra ticker + nome completo · P&L realizado das vendas incluído (valor T212 directo)<br><br><b>Novidades v16.11:</b> Tab Dividendos totalmente automático: hero card TTM, tabela por ano com bruto/líquido/yield/YoY, Top 10 pagadores — tudo calculado dos imports T212/XTB sem formulário manual · calcDividendYield usa dados reais em primeiro lugar · Formulário manual colapsado (secundário) · Limpar imports remove resumos auto-gerados<br><br><b>Novidades v16.10:</b> P&L total real = latente + realizado (vendas) + dividendos recebidos · Yield verdadeiro por ativo (dividendos 12m ÷ custo) · Decomposição visual por posição · Ordenação por retorno total/realizado/dividendos/yield · Relatório anual actualizado · Todos os tipos T212 verificados com ficheiros reais<br><br><b>Novidades v16.9:</b> XTB: detecção colunas PT (Símbolo/Tipo/Lucro/Montante/Data de abertura…) · Swap overhead → custo, não rendimento · Yield automático por ativo calculado dos dividendos reais importados · importJSON preserva histórico de preços e FX · Alocação FIRE com class matching corrigido<br><br><b>Novidades v16.8:</b> Parser XTB (CSV trades, posições, operações de caixa) · Histórico de cotações por ticker (tab Análise → 📉 Cotações) · Multi-moeda real com conversão automática no modal · Alocação Alvo FIRE com 3 fases (tab 🎯 Alocação) · FX taxas em tempo real guardadas localmente<br><br><b>Novidades v16.7:</b> Saúde Financeira com explicações detalhadas e sugestões contextuais por métrica · Barra de cobertura passiva · 6 indicadores com dicas de melhoria<br><br><b>Novidades v16.6:</b> Todas as listas com "▼ Ver mais / ▲ Ver menos" limitadas a 10 itens · Bug crítico na edição de resumos de dividendos corrigido · Limite de movimentos aumentado (5→10)<br><br><b>Novidades v16.5:</b> Motor de retorno unificado · valorização esperada por activo · pressupostos editáveis por classe · FIRE/Compound/Previsão coerentes<br><br><b>Novidades v15:</b> Exportação CSV/Excel · Auto-snapshot mensal · Parsers CGD/Millennium/Novo Banco/Montepio/BPI · Notificações push de vencimentos · Mais-valias latentes · IRS estimado · Custo de aquisição por ativo</div>
       </div>
-    </div>
-    <div id="paneFire" style="display:none">
-      <div class="note">A projeção FIRE está em <b>Análise → FIRE</b>.</div>
     </div>
   </section>
 
