@@ -10864,7 +10864,12 @@ async function refreshLiveQuotes() {
     "DN3.DE","OD7F.DE",   // delisted/no Yahoo data
     "U9UA.DE",            // no Yahoo data
     "NGAS.UK","NGAS.L","NGAS",  // post-split price incompatible
-    "GVOLT.LS","GVOLT.PT","GVOLT"  // Greenvolt delisted (acquired by Galp)
+    "GVOLT.LS","GVOLT.PT","GVOLT",  // Greenvolt delisted (acquired by Galp)
+    // Add all exchange variants of delisted tickers to prevent suffix cascade
+    "WBA.DE","WBA.PA","WBA.AS","WBA.MC","WBA.MI","WBA.L","WBA.TO",
+    "PARA.DE","PARA.PA","PARA.AS","PARA.MC","PARA.MI","PARA.L","PARA.TO",
+    "KOM1.L","KOM1.PA","KOM1.AS","KOM1.MC","KOM1.MI","KOM1.TO",
+    "MPW","MPW.US"  // Medical Properties Trust - Yahoo Finance 404 (use manual value)
   ]);
   // v21: Reduzido para evitar cascata absurda. Ordem por prevalência para equities dual-listed.
   const ALT_EXCHANGE_SUFFIXES = [".DE", ".L", ".PA", ".TO"];
@@ -11076,7 +11081,8 @@ async function refreshLiveQuotes() {
     if (normRaw && normRaw !== raw) push(normRaw);
     if (!directMapped && raw) push(raw);
 
-    if (rawBase && !/[.=\-]/.test(rawBase)) {
+    // Don't try exchange suffixes if the base ticker is in SKIP_TICKERS
+    if (rawBase && !/[.=\-]/.test(rawBase) && !SKIP_TICKERS.has(rawBase)) {
       const alts = getAltExchangeSuffixes(asset);
       alts.forEach(suf => push(rawBase + suf));
     }
