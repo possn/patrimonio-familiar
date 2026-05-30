@@ -160,6 +160,7 @@
       <div class="row row--wrap" style="gap:8px">
         <button class="btn btn--primary btn--sm" id="btnSnapshot">📸 Registar snapshot</button>
         <button class="btn btn--primary btn--sm" id="btnAddDiv">💰 + Dividendo</button>
+        <button class="btn btn--sm" onclick="document.getElementById('navAssets')?.click();setTimeout(()=>document.getElementById('btnRefreshQuotes')?.click(),200)" style="font-size:13px">⟳ Cotações</button>
         <button class="btn btn--sm" id="btnClearHistory">🗑 Limpar histórico</button>
         <button class="btn btn--ghost btn--sm" id="btnPrintDashboard" title="Imprimir / PDF">🖨️</button>
       </div>
@@ -293,8 +294,8 @@
       <div class="card__head">
         <div><div class="card__title" id="itemsTitle">Ativos</div><div class="card__muted" id="itemsSub">Imobiliário, liquidez, ações/ETFs, metais, cripto, fundos, PPR, depósitos…</div></div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
-          <button class="btn btn--outline" id="btnRefreshQuotes" title="Actualizar cotações de acções e ETFs" style="font-size:13px;padding:6px 10px">⟳ Cotações</button>
-          <button class="btn btn--outline" id="btnQuoteErrors" type="button" style="display:none;font-size:13px;padding:6px 10px">⚠️ Erros</button>
+          <button class="btn btn--outline" id="btnRefreshQuotes" title="Actualizar cotações de acções e ETFs" style="font-size:14px;padding:9px 14px;font-weight:800">⟳ Cotações</button>
+          <button class="btn btn--outline" id="btnQuoteErrors" type="button" style="display:none;font-size:14px;padding:9px 14px;font-weight:800">⚠️ Erros</button>
           <button class="btn btn--primary" id="btnAddItem">Adicionar</button>
         </div>
       </div>
@@ -734,6 +735,7 @@
     <div class="analysis-tabs-wrap">
       <div class="analysis-tabs" id="analysisTabs">
         <button class="analysis-tab analysis-tab--active" data-tab="portfolio">📊 Portfólio</button>
+        <button class="analysis-tab" data-tab="rankings">🏆 Rankings</button>
         <button class="analysis-tab" data-tab="fire">🔥 FIRE</button>
         <button class="analysis-tab" data-tab="forecast">📈 Previsão</button>
         <button class="analysis-tab" data-tab="fiscal">🧾 Fiscal</button>
@@ -793,7 +795,13 @@
       </div>
     </div>
 
-    <div class="analysis-section-divider" style="display:none;margin:16px 0 8px;font-size:13px;font-weight:700;color:var(--muted);letter-spacing:.5px;padding:0 4px">📐 JURO COMPOSTO</div>
+    
+    <!-- ═══════════════════════════════ RANKINGS ═══════════════════════════════ -->
+    <div class="analysisPanelTab" id="analysisPanelTab_rankings" style="display:none">
+      <div id="rankingsContent"></div>
+    </div>
+
+<div class="analysis-section-divider" style="display:none;margin:16px 0 8px;font-size:13px;font-weight:700;color:var(--muted);letter-spacing:.5px;padding:0 4px">📐 JURO COMPOSTO</div>
     <div class="analysisPanelTab" id="analysisPanelTab_compound" style="">
       <div class="card">
         <div class="card__title" style="margin-bottom:12px">Simulador de Juro Composto <button class="info-btn" onclick="openTip('compound')" title="O que é o juro composto?">ℹ️</button></div>

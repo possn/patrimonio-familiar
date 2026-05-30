@@ -4694,9 +4694,115 @@ function renderPortfolioCharts() {
 }
 
 
+
+/* ─── RANKINGS PANEL ─────────────────────────────────────────── */
+function renderRankingsPanel() {
+  const el = document.getElementById("rankingsContent");
+  if (!el) return;
+
+  const allAssets = (state.assets || []).filter(a => parseNum(a.value) > 0);
+
+  // Dividends per ticker
+  const divByTicker = {};
+  const divs = (typeof getRealDividendRecords === "function") ? getRealDividendRecords() : (state.dividends || []);
+  for (const d of divs) {
+    const tk = (d.ticker || d.name || "?").toUpperCase();
+    if (!divByTicker[tk]) divByTicker[tk] = { gross:0, net:0, count:0, name: d.name || tk };
+    divByTicker[tk].gross  += parseNum(getDividendGross(d));
+    divByTicker[tk].net    += parseNum(getDividendNet(d));
+    divByTicker[tk].count  += 1;
+  }
+
+  function gainAbs(a)  { const v=parseNum(a.value),cb=parseNum(a.costBasis); return cb>0?v-cb:0; }
+  function gainPct(a)  { const cb=parseNum(a.costBasis); return cb>0?gainAbs(a)/cb*100:0; }
+  function fmtE(n)     { return new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(n); }
+  function fmtP(n)     { return (n>=0?"+":"")+n.toFixed(1)+"%"; }
+  function clr(n)      { return n>=0?"var(--green)":"var(--red)"; }
+  function esc(s)      { return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+  function rankSection(title, items, valFn, labelFn, colorFn, icon, limit=10) {
+    if (!items.length) return "";
+    const sorted = items.slice().sort((a,b)=>Math.abs(valFn(b))-Math.abs(valFn(a)));
+    const top = sorted.slice(0,limit);
+    const max = Math.abs(valFn(top[0]))||1;
+    const rows = top.map((item,i) => {
+      const val=valFn(item);
+      const color=colorFn?colorFn(item,val):"var(--purple)";
+      const barW=Math.round(Math.abs(val)/max*100);
+      const rank=i+1;
+      const medal=rank===1?"🥇":rank===2?"🥈":rank===3?"🥉":`<span style="font-size:11px;color:var(--muted);font-weight:800">${rank}</span>`;
+      return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)">
+        <div style="width:24px;text-align:center;flex-shrink:0">${medal}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:800;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(item.name||item.ticker||"—")}</div>
+          <div style="margin-top:3px;background:var(--line);border-radius:999px;height:4px;overflow:hidden">
+            <div style="height:100%;width:${barW}%;background:${color};border-radius:999px"></div>
+          </div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;font-weight:900;font-size:15px;color:${color}">${labelFn(item,val)}</div>
+      </div>`;
+    }).join("");
+    return `<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="font-size:22px">${icon}</span>
+        <div class="card__title" style="margin:0">${title}</div>
+      </div>${rows}</div>`;
+  }
+
+  // Sections
+  const secValue = rankSection("Maiores posições", allAssets,
+    a=>parseNum(a.value), (a,v)=>fmtE(v), ()=>"var(--purple)", "💼");
+
+  const gainers = allAssets.filter(a=>parseNum(a.costBasis)>50);
+  const secGainAbs = rankSection("Maiores ganhos (€)", gainers,
+    a=>gainAbs(a), (a,v)=>fmtE(v), (a,v)=>clr(v), "📈");
+
+  const secGainPct = rankSection("Maiores ganhos (%)", gainers,
+    a=>gainPct(a), (a,v)=>fmtP(v), (a,v)=>clr(v), "🚀");
+
+  const losers = gainers.filter(a=>gainPct(a)<0);
+  const secLoss = losers.length>=3 ? rankSection("Maiores perdas (%)", losers,
+    a=>-gainPct(a), (a,v)=>fmtP(gainPct(a)), ()=>"var(--red)", "📉") : "";
+
+  const divItems = Object.entries(divByTicker)
+    .map(([tk,d])=>({name:d.name||tk,ticker:tk,_gross:d.gross,_count:d.count}))
+    .filter(x=>x._gross>0);
+  const secDiv = rankSection("Maiores dividendos recebidos", divItems,
+    x=>x._gross, (x,v)=>fmtE(v), ()=>"var(--green)", "💰");
+
+  const yieldItems = allAssets.filter(a=>getAssetPassiveRatePct(a)>0&&parseNum(a.value)>100);
+  const secYield = rankSection("Maior yield anual", yieldItems,
+    a=>getAssetPassiveRatePct(a), (a,v)=>v.toFixed(2)+"%/ano", ()=>"var(--green)", "🎯");
+
+  // Summary header
+  const totalInvested = gainers.reduce((s,a)=>s+parseNum(a.costBasis),0);
+  const totalValue    = allAssets.reduce((s,a)=>s+parseNum(a.value),0);
+  const totalGain     = totalValue - totalInvested;
+  const totalGainPct  = totalInvested>0?totalGain/totalInvested*100:0;
+  const totalDivGross = Object.values(divByTicker).reduce((s,d)=>s+d.gross,0);
+
+  el.innerHTML = `
+    <div class="card" style="background:linear-gradient(135deg,var(--vio-glow,#ede9fe),var(--card));margin-bottom:12px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div><div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px">CARTEIRA TOTAL</div>
+          <div style="font-size:22px;font-weight:900;margin-top:2px">${fmtE(totalValue)}</div></div>
+        <div><div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px">GANHO TOTAL</div>
+          <div style="font-size:22px;font-weight:900;margin-top:2px;color:${clr(totalGain)}">${fmtE(totalGain)}</div>
+          <div style="font-size:12px;font-weight:700;color:${clr(totalGainPct)}">${fmtP(totalGainPct)}</div></div>
+        <div><div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px">Nº POSIÇÕES</div>
+          <div style="font-size:22px;font-weight:900;margin-top:2px">${allAssets.length}</div></div>
+        <div><div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px">DIVIDENDOS TOTAIS</div>
+          <div style="font-size:22px;font-weight:900;margin-top:2px;color:var(--green)">${fmtE(totalDivGross)}</div></div>
+      </div>
+    </div>
+    ${secValue}${secGainAbs}${secGainPct}${secLoss}${secDiv}${secYield}`;
+}
+
 /* ─── ANALYSIS VIEW ───────────────────────────────────────── */
 // Tab groups: which panels to show + render for each nav tab
 const ANALYSIS_TAB_GROUPS = {
+  rankings:  { panels: ["rankings"],
+               render: () => renderRankingsPanel() },
   portfolio: { panels: ["portfolio","performance","compare","allocation","drawdown"],
                render: () => { renderPortfolioCharts(); renderRealPerformancePanel(); renderBenchmarkComparison(); renderRebalancing(); renderComparePanel(); renderAllocationPanel(); renderDrawdownPanel(); } },
   fire:      { panels: ["fire","compound"],
@@ -10406,7 +10512,16 @@ async function refreshLiveQuotes() {
 
   // Convert local / broker tickers into Yahoo candidates.
   // Several imports keep a stale ISIN→Yahoo guess; try that first, then sensible fallbacks.
-  const SKIP_TICKERS = new Set(["WBA","14","DN3.DE","OD7F.DE","U9UA.DE","NGAS.UK","NGAS.L","NGAS"]);
+  const SKIP_TICKERS = new Set([
+    "WBA","WBA.US",        // Walgreens - went private Feb 2025
+    "PARA","PARA.US",      // Paramount - delisted Aug 2024 (Skydance merger)
+    "KOM1","KOM1.DE",      // Komatsu XTB internal ticker, no Yahoo equivalent
+    "14",                  // internal placeholder
+    "DN3.DE","OD7F.DE",   // delisted/no Yahoo data
+    "U9UA.DE",            // no Yahoo data
+    "NGAS.UK","NGAS.L","NGAS",  // post-split price incompatible
+    "GVOLT.LS","GVOLT.PT","GVOLT"  // Greenvolt delisted (acquired by Galp)
+  ]);
   // v21: Reduzido para evitar cascata absurda. Ordem por prevalência para equities dual-listed.
   const ALT_EXCHANGE_SUFFIXES = [".DE", ".L", ".PA", ".TO"];
   const YAHOO_TICKER_OVERRIDES = {
@@ -10725,6 +10840,10 @@ async function fetchQuoteWithFallback(ref) {
   const noCandidateRefs = rawTickerRefs.filter(x => !(x.candidates && x.candidates.length));
   const tickerList = rawTickerRefs.filter(x => x.candidates && x.candidates.length);
   noCandidateRefs.forEach(ref => {
+    // Silently skip assets in SKIP_TICKERS — not a user-facing error
+    const rawUp = String(ref.raw || "").toUpperCase().trim();
+    const baseUp = canonicalBrokerTickerBase(rawUp);
+    if (SKIP_TICKERS.has(rawUp) || SKIP_TICKERS.has(baseUp)) return;
     failed++;
     errors.push({
       raw: ref.raw,
