@@ -371,6 +371,8 @@ const DEFAULT_STATE = {
    448 ISINs covering all exchanges in the T212/XTB universe.
 ──────────────────────────────────────────────────────────────────────────── */
 const ISIN_YAHOO_MAP = {
+  "US7561091049":"O",    // Realty Income Corp
+  "US7424341034":"O",    // Realty Income (alternate ISIN)
   "AN8068571086":"SLB","AT0000743059":"OMV.VI","AT0000A3EPA4":"AMS2.VI",
   "AU000000MOB7":"MOB.AX","AU0000185993":"IREN.AX",
   "BMG1466R1732":"BORR","BMG3398L1182":"FIHL","BMG396372051":"GOGL","BMG9001E1286":"LILAK",
@@ -3561,18 +3563,11 @@ function renderDivProjection() {
 
 function setDivMode(mode) {
   divMode = mode;
-  const summary = document.getElementById("paneDivSummary");
-  const detail = document.getElementById("paneDivDetail");
-  const calendar = document.getElementById("paneDivCalendar");
-  const segS = $("segDivSummary");
-  const segD = $("segDivDetail");
-  const segC = $("segDivCalendar");
-  if (summary) summary.style.display = mode === "summary" ? "" : "none";
-  if (detail) detail.style.display = mode === "detail" ? "" : "none";
-  if (calendar) calendar.style.display = mode === "calendar" ? "" : "none";
-  segS.classList.toggle("seg__btn--active", mode === "summary");
-  segD.classList.toggle("seg__btn--active", mode === "detail");
-  if (segC) segC.classList.toggle("seg__btn--active", mode === "calendar");
+  const panes = { summary:"paneDivSummary", monthly:"paneDivMonthly", detail:"paneDivDetail", calendar:"paneDivCalendar" };
+  const btns  = { summary:"segDivSummary",  monthly:"segDivMonthly",  detail:"segDivDetail",  calendar:"segDivCalendar" };
+  Object.entries(panes).forEach(([m,id])=>{ const el=document.getElementById(id); if(el) el.style.display=m===mode?"":"none"; });
+  Object.entries(btns).forEach(([m,id])=>{ const el=$(id); if(el) el.classList.toggle("seg__btn--active",m===mode); });
+  if (mode === "monthly") { renderDivMonthlyPanel(); return; }
   if (mode === "calendar") renderDivCalendar();
   if (mode === "summary") {
     initDivSummaryYearSelect();
@@ -3862,7 +3857,175 @@ function calcPortfolioRealMetrics() {
     hasData: events.length > 0 || (state.dividends||[]).length > 0
   };
 }
+
+/* ─── DIV MONTHLY PANEL ─────────────────────────────────────── */
+let _divMonthlyChart = null;
+
+function renderDivMonthlyPanel() {
+  const cY = new Date().getFullYear();
+  const divs = (typeof getRealDividendRecords === "function") ? getRealDividendRecords() : (state.dividends||[]);
+  const years = [];
+  divs.forEach(function(d){ var y=String(d.date||"").slice(0,4); if(y.length===4 && years.indexOf(y)<0) years.push(y); });
+  years.sort();
+  [String(cY), String(cY+1), String(cY+2)].forEach(function(y){ if(years.indexOf(y)<0) years.push(y); });
+  const chartYears = years.slice(-5);
+  const defaultYear = String(cY);
+
+  // Build year buttons
+  const btnEl = document.getElementById("divMonthlyYearBtns");
+  if (btnEl) {
+    btnEl.innerHTML = chartYears.map(function(y){
+      return '<button onclick="renderDivMonthlyChart(\'' + y + '\')" id="divMBtn_' + y + '" class="btn btn--sm" style="font-size:12px;padding:5px 10px;font-weight:700">' + y + (parseInt(y) > cY ? ' 📈' : '') + '</button>';
+    }).join("");
+  }
+
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){ renderDivMonthlyChart(defaultYear); }); });
+}
+
+function renderDivMonthlyChart(year) {
+  const ctx = document.getElementById("divMonthlyChart");
+  if (!ctx) return;
+
+  const cY = new Date().getFullYear();
+  const cM = new Date().getMonth(); // 0-indexed
+  const isFuture = parseInt(year) > cY;
+  const isCurrentYear = parseInt(year) === cY;
+
+  // Highlight button
+  document.querySelectorAll("[id^='divMBtn_']").forEach(function(b){
+    b.classList.toggle("btn--primary", b.id === "divMBtn_"+year);
+  });
+
+  const divs = (typeof getRealDividendRecords === "function") ? getRealDividendRecords() : (state.dividends||[]);
+  const MONTHS = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+
+  // Actual data for selected year
+  const monthly = new Array(12).fill(0);
+  divs.forEach(function(d){
+    if (!d.date || String(d.date).slice(0,4) !== String(year)) return;
+    var m = parseInt(String(d.date).slice(5,7)) - 1;
+    if (m>=0 && m<12) monthly[m] += parseNum(getDividendNet(d));
+  });
+
+  // Projection: yield × portfolio value × seasonal pattern
+  const projMonthly = new Array(12).fill(0);
+  if (isFuture || (isCurrentYear && cM < 11)) {
+    // Annual projected income = sum(yield_pct × current_value) for each dividend asset
+    var projNetAnnual = 0;
+    (state.assets||[]).forEach(function(a){
+      if (parseNum(a.value) <= 0) return;
+      var rate = (typeof getAssetPassiveRatePct === "function") ? getAssetPassiveRatePct(a) : 0;
+      if (rate > 0 && rate < 40) { // cap at 40% to exclude data artefacts
+        projNetAnnual += parseNum(a.value) * rate / 100;
+      }
+    });
+    // TTM fallback
+    if (projNetAnnual <= 0) {
+      var yData = (typeof calcDividendYield === "function") ? calcDividendYield() : {};
+      projNetAnnual = parseNum(yData.net12m || 0);
+    }
+    // Apply 0.85 net factor if using gross yield
+    // (getAssetPassiveRatePct already returns net-adjusted values in most cases)
+
+    // Seasonal pattern: last 2 years of actual payments
+    var pattern = new Array(12).fill(0);
+    var patternTotal = 0;
+    divs.forEach(function(d){
+      var yr = parseInt(String(d.date||"").slice(0,4));
+      if (yr >= cY-2 && yr < cY+(isFuture?0:1)) {
+        var m = parseInt(String(d.date).slice(5,7)) - 1;
+        if (m>=0 && m<12) { pattern[m] += parseNum(getDividendNet(d)); patternTotal += parseNum(getDividendNet(d)); }
+      }
+    });
+
+    if (patternTotal > 0) {
+      for (var i=0; i<12; i++) projMonthly[i] = projNetAnnual * (pattern[i]/patternTotal);
+    } else {
+      for (var i=0; i<12; i++) projMonthly[i] = projNetAnnual / 12;
+    }
+  }
+
+  if (_divMonthlyChart) { _divMonthlyChart.destroy(); _divMonthlyChart = null; }
+
+  var datasets = [];
+  if (isFuture) {
+    datasets.push({ label:"Projecção líquida", data:projMonthly, backgroundColor:"rgba(99,102,241,.5)", borderColor:"#6366f1", borderWidth:2, borderRadius:4 });
+  } else {
+    datasets.push({ label:"Líquido real", data:monthly.map(function(v,i){ return isCurrentYear && i>cM ? null : v; }), backgroundColor:"#10b981", borderRadius:4 });
+    if (isCurrentYear) {
+      datasets.push({ label:"Projecção", data:projMonthly.map(function(v,i){ return i>cM ? v : null; }), backgroundColor:"rgba(99,102,241,.4)", borderColor:"#6366f1", borderWidth:1, borderRadius:4 });
+    }
+  }
+
+  var canvasCtx = ctx.getContext ? ctx.getContext("2d") : ctx;
+  _divMonthlyChart = new Chart(canvasCtx, {
+    type:"bar",
+    data:{ labels:MONTHS, datasets:datasets },
+    options:{
+      animation:false,
+      plugins:{
+        legend:{ labels:{ boxWidth:12, font:{size:12} } },
+        tooltip:{ callbacks:{ label:function(c){ return c.dataset.label+": "+new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:2}).format(c.raw||0); } } }
+      },
+      scales:{ x:{ grid:{ display:false } }, y:{ ticks:{ callback:function(v){ return v+"€"; } }, beginAtZero:true } },
+      responsive:true, maintainAspectRatio:false
+    }
+  });
+
+  // Total line
+  var total = monthly.reduce(function(s,v){return s+v;},0);
+  var projTotal = projMonthly.reduce(function(s,v){return s+v;},0);
+  var fmt = function(n){ return new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(n); };
+  var totalEl = document.getElementById("divMonthlyTotal");
+  if (totalEl) {
+    if (isFuture) totalEl.innerHTML = "Projecção "+year+": <b>"+fmt(projTotal)+"</b> líquido/ano &middot; <span style='font-size:11px;color:var(--muted)'>baseado em yield actual × carteira</span>";
+    else totalEl.innerHTML = "Total "+year+": <b>"+fmt(total)+"</b> líquido"+(isCurrentYear?" (YTD)"+(projTotal>0?" · Projecção anual: <b>"+fmt(projTotal)+"</b>":""):"");
+  }
+
+  // By ticker breakdown
+  var byTicker = {};
+  divs.forEach(function(d){
+    if (!d.date || String(d.date).slice(0,4) !== String(year)) return;
+    var tk = (d.ticker||d.name||"?").toUpperCase();
+    var nm = d.name || tk;
+    if (!byTicker[tk]) byTicker[tk] = {name:nm, gross:0, net:0, count:0};
+    byTicker[tk].gross += parseNum(getDividendGross(d));
+    byTicker[tk].net   += parseNum(getDividendNet(d));
+    byTicker[tk].count++;
+  });
+  var sorted = Object.values(byTicker).sort(function(a,b){return b.gross-a.gross;}).slice(0,15);
+  var tickerEl = document.getElementById("divMonthlyByTicker");
+  if (tickerEl && sorted.length > 0) {
+    var maxG = sorted[0].gross || 1;
+    tickerEl.innerHTML = sorted.map(function(t){
+      var barW = Math.round(t.gross/maxG*100);
+      return "<div style='display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)'>"
+        + "<div style='flex:1;min-width:0'>"
+        + "<div style='font-weight:700;font-size:13px'>"+t.name+"</div>"
+        + "<div style='margin-top:2px;background:var(--line);border-radius:999px;height:3px'><div style='height:100%;width:"+barW+"%;background:#10b981;border-radius:999px'></div></div></div>"
+        + "<div style='text-align:right;flex-shrink:0'>"
+        + "<div style='font-weight:800;font-size:13px;color:var(--green)'>"+fmt(t.gross)+"</div>"
+        + "<div style='font-size:11px;color:var(--muted)'>líq: "+fmt(t.net)+" · "+t.count+"x</div></div></div>";
+    }).join("");
+  } else if (tickerEl) {
+    tickerEl.innerHTML = isFuture ? "<div class='note'>Dados de projecção — sem pagamentos reais em "+year+"</div>" : "<div class='note'>Sem dividendos registados em "+year+"</div>";
+  }
+}
+
 function renderDividends() {
+  // Show/hide panes based on mode
+  const paneMap = { summary:"paneDivSummary", monthly:"paneDivMonthly", detail:"paneDivDetail", calendar:"paneDivCalendar" };
+  Object.entries(paneMap).forEach(([mode, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = divMode === mode ? "" : "none";
+  });
+  ["segDivSummary","segDivMonthly","segDivDetail","segDivCalendar"].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.classList.toggle("seg__btn--active", btn.id === "segDiv"+divMode.charAt(0).toUpperCase()+divMode.slice(1));
+  });
+
+  if (divMode === "monthly") { renderDivMonthlyPanel(); return; }
+
   if (divMode === "summary") {
     // Auto-sync from broker data before rendering
     autoSyncDivSummariesFromImportedData();
@@ -4706,8 +4869,15 @@ function renderRankingsPanel() {
   // Dividends per ticker
   const divByTicker = {};
   for (const d of divs) {
-    const tk = (d.ticker || d.name || "?").toUpperCase();
-    if (!divByTicker[tk]) divByTicker[tk] = { gross:0, net:0, count:0, name: d.name || tk };
+    const rawTk = (d.ticker || d.isin || d.name || "").toUpperCase().trim();
+    if (!rawTk) continue; // skip empty records
+    const tk = rawTk;
+    // Use asset name lookup for display
+    const assetName = d.name || (function(){
+      const a = (state.assets||[]).find(a => (a.ticker||"").toUpperCase()===tk || (a.isin||"").toUpperCase()===tk);
+      return a ? (a.name || a.ticker || tk) : tk;
+    })();
+    if (!divByTicker[tk]) divByTicker[tk] = { gross:0, net:0, count:0, name: assetName };
     divByTicker[tk].gross += parseNum(getDividendGross(d));
     divByTicker[tk].net   += parseNum(getDividendNet(d));
     divByTicker[tk].count += 1;
@@ -4760,7 +4930,11 @@ function renderRankingsPanel() {
   var secLoss = losers.length>=3 ? rankSection("Maiores perdas (%)", losers, function(a){return -gainPct(a);}, function(a){return fmtP(gainPct(a));}, function(){return "var(--red)";}, "📉") : "";
   var divItems = Object.entries(divByTicker).map(function(e){return {name:e[1].name||e[0],ticker:e[0],_gross:e[1].gross,_count:e[1].count};}).filter(function(x){return x._gross>0;});
   var secDiv = rankSection("Maiores dividendos recebidos", divItems, function(x){return x._gross;}, function(x,v){return fmtE(v);}, function(){return "var(--green)";}, "💰");
-  var yieldItems = allAssets.filter(function(a){return getAssetPassiveRatePct(a)>0 && parseNum(a.value)>100;});
+  // Cap yield at 35% to exclude data artefacts (small positions with large configured dividend)
+  var yieldItems = allAssets.filter(function(a){
+    var rate = getAssetPassiveRatePct(a);
+    return rate > 0 && rate <= 35 && parseNum(a.value) > 200 && parseNum(a.costBasis) > 100;
+  });
   var secYield = rankSection("Maior yield anual", yieldItems, getAssetPassiveRatePct, function(a,v){return v.toFixed(2)+"%/ano";}, function(){return "var(--green)";}, "🎯");
 
   // Totals
@@ -4791,17 +4965,9 @@ function renderRankingsPanel() {
     + "<div><div style='font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px'>Nº POSIÇÕES</div><div style='font-size:22px;font-weight:900;margin-top:2px'>"+allAssets.length+"</div></div>"
     + "<div><div style='font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.5px'>DIVIDENDOS TOTAIS</div><div style='font-size:22px;font-weight:900;margin-top:2px;color:var(--green)'>"+fmtE(totalDivGross)+"</div></div>"
     + "</div></div>"
-    + "<div class='card' style='margin-bottom:12px'>"
-    + "<div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px'>"
-    + "<div style='display:flex;align-items:center;gap:8px'><span style='font-size:22px'>📅</span><div class='card__title' style='margin:0'>Dividendos mensais</div></div>"
-    + "<div style='display:flex;gap:6px;flex-wrap:wrap'>"+yearBtns+"</div></div>"
-    + "<div style='position:relative;height:220px;width:100%'><canvas id='rankingsDivChart'></canvas></div>"
-    + "<div id='rankingsDivChartTotal' style='text-align:center;font-size:13px;font-weight:700;color:var(--muted);margin-top:8px'></div>"
-    + "</div>"
     + secValue + secGainAbs + secGainPct + secLoss + secDiv + secYield;
 
   el.innerHTML = html;
-  requestAnimationFrame(function(){ requestAnimationFrame(function(){ renderRankingsDivChart(defaultYear); }); });
 }
 
 
@@ -7830,6 +7996,36 @@ function rebuildBrokerGeneratedData() {
   if (!state.settings) state.settings = {};
   state.settings.brokerRebuildSig = getBrokerDataSignature();
   state.settings.brokerRebuildSchemaVersion = BROKER_REBUILD_SCHEMA_VERSION;
+
+  // Post-rebuild: merge manual assets that duplicate broker assets
+  // e.g. a manually-added "Realty Income" + broker-generated "O" from imports
+  (function dedupeManualVsBroker() {
+    const assets = state.assets || [];
+    const brokerAssets = assets.filter(a => a.generatedFromBroker);
+    const toRemove = new Set();
+    assets.forEach((a, i) => {
+      if (a.generatedFromBroker) return;
+      const ya = String(a.yahooTicker || inferYahooTickerFromIdentity(a) || "").toUpperCase();
+      const ia = normalizeISIN(a.isin || "");
+      if (!ya && !ia) return;
+      const match = brokerAssets.find(b => {
+        if (ia && normalizeISIN(b.isin||"") === ia) return true;
+        if (ya) {
+          const by = String(b.yahooTicker || inferYahooTickerFromIdentity(b) || "").toUpperCase();
+          if (by && by === ya) return true;
+        }
+        return false;
+      });
+      if (match) {
+        // Keep broker asset, copy manual name if broker has none
+        if ((!match.name || match.name === match.ticker) && a.name) match.name = a.name;
+        toRemove.add(i);
+      }
+    });
+    if (toRemove.size > 0) {
+      state.assets = assets.filter((_, i) => !toRemove.has(i));
+    }
+  })();
 }
 
 
@@ -10430,6 +10626,8 @@ function wire() {
   if (segDivS) segDivS.addEventListener("click", () => setDivMode("summary"));
   if (segDivD) segDivD.addEventListener("click", () => setDivMode("detail"));
   if (segDivC) segDivC.addEventListener("click", () => setDivMode("calendar"));
+  const segDivM = document.getElementById("segDivMonthly");
+  if (segDivM) segDivM.addEventListener("click", () => setDivMode("monthly"));
   const btnSaveDivSummary = document.getElementById("btnSaveDivSummary");
   if (btnSaveDivSummary) btnSaveDivSummary.addEventListener("click", saveDivSummary);
   const btnDeleteDivSummary = document.getElementById("btnDeleteDivSummary");

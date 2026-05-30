@@ -490,10 +490,11 @@
   <section class="view" data-view="dividends" id="viewDividends" hidden>
 
     <!-- Selector de modo -->
-    <div class="seg seg--3">
-      <button class="seg__btn seg__btn--active" id="segDivSummary">📊 Resumo anual</button>
-      <button class="seg__btn" id="segDivDetail">📋 Por dividendo</button>
-      <button class="seg__btn" id="segDivCalendar">📅 Calendário</button>
+    <div class="seg" style="display:grid;grid-template-columns:repeat(4,1fr)">
+      <button class="seg__btn seg__btn--active" id="segDivSummary">📊 Resumo</button>
+      <button class="seg__btn" id="segDivMonthly">📅 Mensal</button>
+      <button class="seg__btn" id="segDivDetail">📋 Detalhe</button>
+      <button class="seg__btn" id="segDivCalendar">🗓 Calendário</button>
     </div>
 
     <!-- MODO 1: Resumo anual (dados da corretora) -->
@@ -726,7 +727,27 @@
       </div>
     </div>
 
-  </section>
+  
+    <div id="paneDivMonthly" style="display:none">
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:22px">📅</span>
+            <div class="card__title" style="margin:0">Dividendos mensais</div>
+          </div>
+          <div id="divMonthlyYearBtns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        </div>
+        <div style="position:relative;height:240px;width:100%">
+          <canvas id="divMonthlyChart"></canvas>
+        </div>
+        <div id="divMonthlyTotal" style="text-align:center;font-size:13px;font-weight:700;color:var(--muted);margin-top:8px"></div>
+      </div>
+      <div class="card">
+        <div class="card__title" style="margin-bottom:10px">Por ticker</div>
+        <div id="divMonthlyByTicker"></div>
+      </div>
+    </div>
+</section>
 
   <!-- ANÁLISE -->
   <section class="view" data-view="analysis" id="viewAnalysis" hidden>
