@@ -4757,10 +4757,16 @@ function renderRankingsPanel() {
   const secGainAbs = rankSection("Maiores ganhos (€)", gainers,
     a=>gainAbs(a), (a,v)=>fmtE(v), (a,v)=>clr(v), "📈");
 
-  const secGainPct = rankSection("Maiores ganhos (%)", gainers,
+  // Exclude mostly-sold positions from % rankings (distorted cost basis)
+  const gainersReal = gainers.filter(a => parseNum(a.value) >= parseNum(a.costBasis) * 0.1 && parseNum(a.value) > 20);
+  const secGainPct = rankSection("Maiores ganhos (%)", gainersReal,
     a=>gainPct(a), (a,v)=>fmtP(v), (a,v)=>clr(v), "🚀");
 
-  const losers = gainers.filter(a=>gainPct(a)<0);
+  // Only include real losses — exclude mostly-sold positions (value < 10% of costBasis)
+  const losers = gainers.filter(a => {
+    const v = parseNum(a.value), cb = parseNum(a.costBasis);
+    return gainPct(a) < 0 && v >= cb * 0.1 && v > 20;
+  });
   const secLoss = losers.length>=3 ? rankSection("Maiores perdas (%)", losers,
     a=>-gainPct(a), (a,v)=>fmtP(gainPct(a)), ()=>"var(--red)", "📉") : "";
 
@@ -4781,6 +4787,12 @@ function renderRankingsPanel() {
   const totalGainPct  = totalInvested>0?totalGain/totalInvested*100:0;
   const totalDivGross = Object.values(divByTicker).reduce((s,d)=>s+d.gross,0);
 
+  // Available years for chart
+  const divYears = [...new Set(divs.map(d => String(d.date||"").slice(0,4)).filter(y=>y.length===4))].sort();
+  const currentYear = new Date().getFullYear();
+  const chartYears = [...divYears, String(currentYear), String(currentYear+1)].filter((y,i,a)=>a.indexOf(y)===i).sort().slice(-4);
+  const defaultYear = String(currentYear);
+
   el.innerHTML = `
     <div class="card" style="background:linear-gradient(135deg,var(--vio-glow,#ede9fe),var(--card));margin-bottom:12px">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
@@ -4795,7 +4807,105 @@ function renderRankingsPanel() {
           <div style="font-size:22px;font-weight:900;margin-top:2px;color:var(--green)">${fmtE(totalDivGross)}</div></div>
       </div>
     </div>
+
+    <!-- Monthly dividend chart -->
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:22px">📅</span>
+          <div class="card__title" style="margin:0">Dividendos mensais</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${chartYears.map(y=>`<button onclick="renderRankingsDivChart('${y}')" id="rankDivBtn_${y}"
+            class="btn btn--sm" style="font-size:12px;padding:5px 10px;font-weight:700">${y}${parseInt(y)>currentYear?" 📈":""}</button>`).join("")}
+        </div>
+      </div>
+      <canvas id="rankingsDivChart" height="200"></canvas>
+      <div id="rankingsDivChartTotal" style="text-align:center;font-size:13px;font-weight:700;color:var(--muted);margin-top:8px"></div>
+    </div>
+
     ${secValue}${secGainAbs}${secGainPct}${secLoss}${secDiv}${secYield}`;
+
+  // Render chart for default year
+  setTimeout(() => renderRankingsDivChart(defaultYear), 50);
+}
+
+let _rankingsDivChart = null;
+function renderRankingsDivChart(year) {
+  const ctx = document.getElementById("rankingsDivChart");
+  if (!ctx) return;
+  const currentYear = new Date().getFullYear();
+  const isFuture = parseInt(year) > currentYear;
+
+  // Highlight active button
+  document.querySelectorAll("[id^='rankDivBtn_']").forEach(b => {
+    b.classList.toggle("btn--primary", b.id === "rankDivBtn_"+year);
+  });
+
+  const divs = (typeof getRealDividendRecords === "function") ? getRealDividendRecords() : (state.dividends||[]);
+  const MONTHS = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+
+  // Actual data for selected year
+  const monthly = new Array(12).fill(0);
+  for (const d of divs) {
+    if (!d.date || String(d.date).slice(0,4) !== String(year)) continue;
+    const m = parseInt(String(d.date).slice(5,7)) - 1;
+    if (m>=0 && m<12) monthly[m] += parseNum(getDividendNet(d));
+  }
+
+  // Projection: use last 12 months average per month (for future year)
+  const projMonthly = new Array(12).fill(0);
+  if (isFuture || monthly.every(v=>v===0)) {
+    const lastYear = String(parseInt(year)-1);
+    for (const d of divs) {
+      if (!d.date || String(d.date).slice(0,4) !== lastYear) continue;
+      const m = parseInt(String(d.date).slice(5,7))-1;
+      if (m>=0 && m<12) projMonthly[m] += parseNum(getDividendNet(d));
+    }
+    // If no last year data, use TTM average
+    if (projMonthly.every(v=>v===0)) {
+      const annualRate = (typeof calcDividendYield === "function") ? calcDividendYield().net12m||0 : 0;
+      projMonthly.fill(annualRate/12);
+    }
+  }
+
+  const isCurrentYear = parseInt(year) === currentYear;
+  const currentMonth = new Date().getMonth(); // 0-indexed
+
+  if (_rankingsDivChart) { _rankingsDivChart.destroy(); _rankingsDivChart = null; }
+
+  const datasets = [];
+  if (isFuture) {
+    datasets.push({ label:"Projecção (líquido)", data:projMonthly, backgroundColor:"rgba(16,185,129,.5)", borderColor:"#10b981", borderWidth:2 });
+  } else {
+    datasets.push({ label:"Líquido", data:monthly.map((v,i)=>isCurrentYear&&i>currentMonth?null:v), backgroundColor:"#10b981" });
+    if (isCurrentYear) {
+      datasets.push({ label:"Projecção", data:monthly.map((v,i)=>i>currentMonth?projMonthly[i]:null), backgroundColor:"rgba(16,185,129,.3)", borderColor:"#10b981", borderWidth:1, borderDash:[4,4] });
+    }
+  }
+
+  _rankingsDivChart = new Chart(ctx.getContext("2d"), {
+    type:"bar",
+    data:{ labels:MONTHS, datasets },
+    options:{
+      animation:false,
+      plugins:{ legend:{ labels:{ boxWidth:12, font:{size:12} } },
+        tooltip:{ callbacks:{ label:c=>`${c.dataset.label}: ${new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:2}).format(c.raw||0)}` } } },
+      scales:{
+        x:{ grid:{ display:false } },
+        y:{ ticks:{ callback:v=>v+"€" }, beginAtZero:true }
+      },
+      responsive:true, maintainAspectRatio:false
+    }
+  });
+
+  const total = monthly.reduce((s,v)=>s+v,0);
+  const projTotal = projMonthly.reduce((s,v)=>s+v,0);
+  const totalEl = document.getElementById("rankingsDivChartTotal");
+  if (totalEl) {
+    if (isFuture) totalEl.textContent = `Projecção ${year}: ${new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(projTotal)} líquido/ano`;
+    else totalEl.textContent = `Total ${year}: ${new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(total)} líquido`;
+  }
 }
 
 /* ─── ANALYSIS VIEW ───────────────────────────────────────── */
@@ -4816,8 +4926,9 @@ const ANALYSIS_TAB_GROUPS = {
 function renderAnalysis() {
   const activeBtn = document.querySelector(".analysis-tab.analysis-tab--active");
   const tab = (activeBtn && activeBtn.dataset && activeBtn.dataset.tab) || "portfolio";
-  // Hide all panels first
+  // Hide all panels AND section dividers first
   document.querySelectorAll(".analysisPanelTab").forEach(p => { p.style.display = "none"; });
+  document.querySelectorAll(".analysis-section-divider").forEach(d => { d.style.display = "none"; });
   // Show panels for this group
   const group = ANALYSIS_TAB_GROUPS[tab] || ANALYSIS_TAB_GROUPS.portfolio;
   group.panels.forEach(id => {
