@@ -7480,7 +7480,9 @@ function parseXTBCashRows(rows, meta) {
       id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
       type, actionRaw: typeRaw,
       date: dateStr, dateTime: dateRaw || dateStr,
-      ticker, isin: "",
+      ticker,
+      yahooTicker: ticker, // explicitly set so merge logic works regardless of currency
+      isin: "",
       name: (r.instrumento || r.instrument || r.name_col || r.nm || "").trim() || symbol || typeRaw,
       qty: 0, pricePerShare: 0,
       totalEUR: Math.abs(amount), totalCurrency: "EUR",
@@ -8000,62 +8002,6 @@ function rebuildBrokerGeneratedData() {
   state.settings.brokerRebuildSig = getBrokerDataSignature();
   state.settings.brokerRebuildSchemaVersion = BROKER_REBUILD_SCHEMA_VERSION;
 
-  // Post-rebuild: merge duplicate broker assets with same yahoo ticker
-  // e.g. XTB "O.US" + T212 "O" both becoming "O" after yahoo conversion
-  (function dedupeAllByYahoo() {
-    const assets = state.assets || [];
-    const seenYahoo = new Map(); // yahoo ticker → first asset index
-    const toRemove = new Set();
-    assets.forEach((a, i) => {
-      if (!a.generatedFromBroker) return;
-      const ya = String(a.yahooTicker || inferYahooTickerFromIdentity(a) || "").toUpperCase();
-      if (!ya) return;
-      if (!seenYahoo.has(ya)) {
-        seenYahoo.set(ya, i);
-      } else {
-        // Merge into the first one: add qty, cost, value
-        const firstIdx = seenYahoo.get(ya);
-        const first = assets[firstIdx];
-        first.qty = (parseNum(first.qty) || 0) + (parseNum(a.qty) || 0);
-        first.costBasis = (parseNum(first.costBasis) || 0) + (parseNum(a.costBasis) || 0);
-        first.value = (parseNum(first.value) || 0) + (parseNum(a.value) || 0);
-        first.marketValueEUR = (parseNum(first.marketValueEUR) || 0) + (parseNum(a.marketValueEUR) || 0);
-        if (!first.name || first.name === first.ticker) first.name = a.name || first.name;
-        if (!first.isin && a.isin) first.isin = a.isin;
-        toRemove.add(i);
-      }
-    });
-    if (toRemove.size > 0) state.assets = assets.filter((_, i) => !toRemove.has(i));
-  })();
-
-  // Post-rebuild: also merge manual assets that duplicate broker assets
-  (function dedupeManualVsBroker() {
-    const assets = state.assets || [];
-    const brokerAssets = assets.filter(a => a.generatedFromBroker);
-    const toRemove = new Set();
-    assets.forEach((a, i) => {
-      if (a.generatedFromBroker) return;
-      const ya = String(a.yahooTicker || inferYahooTickerFromIdentity(a) || "").toUpperCase();
-      const ia = normalizeISIN(a.isin || "");
-      if (!ya && !ia) return;
-      const match = brokerAssets.find(b => {
-        if (ia && normalizeISIN(b.isin||"") === ia) return true;
-        if (ya) {
-          const by = String(b.yahooTicker || inferYahooTickerFromIdentity(b) || "").toUpperCase();
-          if (by && by === ya) return true;
-        }
-        return false;
-      });
-      if (match) {
-        // Keep broker asset, copy manual name if broker has none
-        if ((!match.name || match.name === match.ticker) && a.name) match.name = a.name;
-        toRemove.add(i);
-      }
-    });
-    if (toRemove.size > 0) {
-      state.assets = assets.filter((_, i) => !toRemove.has(i));
-    }
-  })();
 }
 
 
@@ -11622,36 +11568,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (cb > 50 && v > cb * 50) { a.value = cb; changed = true; }
       });
     }
-    // One-time fix: merge duplicate broker assets (e.g. O.US + Realty Income)
-    // Runs every load to catch assets from before the merge fix
-    (function dedupeOnLoad() {
-      const assets = state.assets || [];
-      const seenYahoo = new Map();
-      const toRemove = new Set();
-      assets.forEach((a, i) => {
-        if (!a.generatedFromBroker) return;
-        const t = String(a.ticker || "").toUpperCase();
-        const yh = String(a.yahooTicker || "").toUpperCase();
-        // Compute yahoo ticker: strip .US suffix, use yahooTicker if set
-        let ya = yh || (t.endsWith(".US") ? t.slice(0,-3) : t.endsWith(".PT") ? t.slice(0,-3)+".LS" : t);
-        if (!ya) return;
-        if (!seenYahoo.has(ya)) {
-          seenYahoo.set(ya, i);
-        } else {
-          const firstIdx = seenYahoo.get(ya);
-          const first = assets[firstIdx];
-          first.qty = (parseNum(first.qty)||0) + (parseNum(a.qty)||0);
-          first.costBasis = (parseNum(first.costBasis)||0) + (parseNum(a.costBasis)||0);
-          first.value = (parseNum(first.value)||0) + (parseNum(a.value)||0);
-          first.marketValueEUR = (parseNum(first.marketValueEUR)||0) + (parseNum(a.marketValueEUR)||0);
-          if ((!first.name||first.name===first.ticker) && a.name) first.name = a.name;
-          if (!first.isin && a.isin) first.isin = a.isin;
-          toRemove.add(i);
-          changed = true;
-        }
-      });
-      if (toRemove.size > 0) state.assets = assets.filter((_,i) => !toRemove.has(i));
-    })();
     if (migrateDividendRecords()) changed = true;
     const bd = ensureBrokerData();
     if ((bd.files||[]).length || (bd.events||[]).length || (bd.positions||[]).length) {
