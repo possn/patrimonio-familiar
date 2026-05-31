@@ -11250,7 +11250,8 @@ async function refreshLiveQuotes() {
     const el = document.getElementById("quoteRefreshProgress");
     if (el) { el.style.opacity = "0"; setTimeout(() => { if (el) el.style.display = "none"; }, 300); }
   };
-  _showRefreshProgress("⟳ A actualizar cotações…");
+  const _nTickers = tickerList.length;
+  _showRefreshProgress("⟳ A actualizar " + _nTickers + " activos…");
 
   // Convert local / broker tickers into Yahoo candidates.
   // Several imports keep a stale ISIN→Yahoo guess; try that first, then sensible fallbacks.
@@ -11601,16 +11602,10 @@ async function fetchQuoteWithFallback(ref) {
     });
   });
 
-  // Batch requests to avoid overwhelming the Worker (max 10 concurrent)
-  const CONCURRENCY = 10;
-  const quoteResults = [];
-  for (let i = 0; i < tickerList.length; i += CONCURRENCY) {
-    const batch = tickerList.slice(i, i + CONCURRENCY);
-    const batchResults = await Promise.allSettled(batch.map(x => fetchQuoteWithFallback(x)));
-    quoteResults.push(...batchResults);
-    // Small delay between batches to avoid rate limiting
-    if (i + CONCURRENCY < tickerList.length) await new Promise(r => setTimeout(r, 200));
-  }
+  // Fire all quote requests in parallel - Cloudflare handles the load
+  const quoteResults = await Promise.allSettled(
+    tickerList.map(x => fetchQuoteWithFallback(x))
+  );
   const quoteMap = {};
   const quoteErrMap = {};
   quoteResults.forEach((r, i) => {
