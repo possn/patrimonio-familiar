@@ -372,7 +372,10 @@ const DEFAULT_STATE = {
 ──────────────────────────────────────────────────────────────────────────── */
 const ISIN_YAHOO_MAP = {
   "US7561091049":"O",    // Realty Income Corp
-  "US7424341034":"O",    // Realty Income (alternate ISIN)
+  "US0389231087":"ABR",  // Arbor Realty Trust
+  "US0084921008":"ADC",  // Agree Realty
+  "US3742971092":"GTY",  // Getty Realty Corp
+  "US76169C1009":"REXR", // Rexford Industrial Realty
   "AN8068571086":"SLB","AT0000743059":"OMV.VI","AT0000A3EPA4":"AMS2.VI",
   "AU000000MOB7":"MOB.AX","AU0000185993":"IREN.AX",
   "BMG1466R1732":"BORR","BMG3398L1182":"FIHL","BMG396372051":"GOGL","BMG9001E1286":"LILAK",
@@ -3568,12 +3571,41 @@ function setDivMode(mode) {
   Object.entries(panes).forEach(([m,id])=>{ const el=document.getElementById(id); if(el) el.style.display=m===mode?"":"none"; });
   Object.entries(btns).forEach(([m,id])=>{ const el=$(id); if(el) el.classList.toggle("seg__btn--active",m===mode); });
   if (mode === "monthly") { renderDivMonthlyPanel(); return; }
-  if (mode === "calendar") renderDivCalendar();
+  if (mode === "calendar") { renderDivCalendar(); return; }
   if (mode === "summary") {
     initDivSummaryYearSelect();
     renderDivSummaryKPIs();
     renderDivSummaryList();
     renderDivSummaryChart();
+    return;
+  }
+  if (mode === "detail") {
+    // render list + chart
+    const divs = (state.dividends || []).slice().sort((a,b) => String(b.date).localeCompare(String(a.date)));
+    const wrap = document.getElementById("divList");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const DIV_LIMIT = 10;
+    const shown = divExpanded ? divs : divs.slice(0, DIV_LIMIT);
+    for (const d of shown) {
+      const net = getDividendNet(d);
+      const row = document.createElement("div");
+      row.className = "item";
+      row.innerHTML = "<div class='item__l'><div class='item__t'>" + escapeHtml(d.assetName || "Manual") + "</div>"
+        + "<div class='item__s'>" + escapeHtml(d.date) + (parseNum(d.taxWithheld)>0?" · Ret. "+fmtEUR2(d.taxWithheld):"") + (d.notes?" · "+escapeHtml(d.notes):"") + "</div></div>"
+        + "<div class='item__v' style='text-align:right'><div>" + fmtEUR2(net) + "</div>"
+        + (parseNum(d.taxWithheld)>0?"<div class='item__s'>Bruto "+fmtEUR2(getDividendGross(d))+"</div>":"")
+        + "</div>";
+      row.addEventListener("click", () => openDivModal(d.id));
+      wrap.appendChild(row);
+    }
+    const btnToggle = document.getElementById("btnDivToggle");
+    if (btnToggle) {
+      btnToggle.style.display = divs.length > DIV_LIMIT ? "inline" : "none";
+      if (divs.length > DIV_LIMIT) btnToggle.textContent = divExpanded ? "▲ Ver menos" : "▼ Ver mais (" + divs.length + ")";
+    }
+    renderDivKPIs(divs);
+    requestAnimationFrame(() => renderDivChart(divs));
   }
 }
 
@@ -3912,10 +3944,13 @@ function renderDivMonthlyChart(year) {
   if (isFuture || (isCurrentYear && cM < 11)) {
     // Annual projected income = sum(yield_pct × current_value) for each dividend asset
     var projNetAnnual = 0;
+    // Only project dividend income from equity assets (not deposits/bonds)
+    var divClasses = ["Ações/ETFs","Ações","ETFs","Cripto","Fundos"];
     (state.assets||[]).forEach(function(a){
       if (parseNum(a.value) <= 0) return;
+      if (!divClasses.includes(a.class) && !a.generatedFromBroker) return;
       var rate = (typeof getAssetPassiveRatePct === "function") ? getAssetPassiveRatePct(a) : 0;
-      if (rate > 0 && rate < 40) { // cap at 40% to exclude data artefacts
+      if (rate > 0 && rate <= 25) { // cap at 25% — realistic max for dividend stocks
         projNetAnnual += parseNum(a.value) * rate / 100;
       }
     });
@@ -3986,8 +4021,9 @@ function renderDivMonthlyChart(year) {
   var byTicker = {};
   divs.forEach(function(d){
     if (!d.date || String(d.date).slice(0,4) !== String(year)) return;
-    var tk = (d.ticker||d.name||"?").toUpperCase();
-    var nm = d.name || tk;
+    var tk = (d.ticker||d.isin||d.assetName||d.name||"?").toUpperCase();
+    var nm = d.assetName || d.name || tk;
+    if (!tk || tk === "?") return; // skip empty records
     if (!byTicker[tk]) byTicker[tk] = {name:nm, gross:0, net:0, count:0};
     byTicker[tk].gross += parseNum(getDividendGross(d));
     byTicker[tk].net   += parseNum(getDividendNet(d));
@@ -6965,7 +7001,7 @@ function inferYahooTickerFromIdentity({ isin = "", ticker = "", yahooTicker = ""
 
   if (/\bCORTICEIRA\b/.test(n) || /\bAMORIM\b/.test(n)) return "COR.LS";
   if (/\bSONAE\b/.test(n)) return "SON.LS";
-  if (/\bREALTY\b/.test(n)) return "O"; // "Realty Income" (T212) or "Realty" (XTB short name)
+  // Realty Income identified via ISIN US7561091049 → "O" in ISIN_YAHOO_MAP (see above)
   if (/\bAIRBUS\b/.test(n)) return "AIR.PA";
   if (/\bARCELORMITTAL\b/.test(n)) return "MT.AS";
 
