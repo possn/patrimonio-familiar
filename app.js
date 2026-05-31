@@ -4269,34 +4269,29 @@ function renderDivMonthlyChart(year) {
   // Projection: yield × portfolio value × seasonal pattern
   const projMonthly = new Array(12).fill(0);
   if (isFuture || (isCurrentYear && cM < 11)) {
-    // Annual projected income = sum(yield_pct × current_value) for each dividend asset
+    // Use TTM (trailing 12 months) actual net dividends as annual projection base
+    // This is the most reliable estimate — based on real money received
     var projNetAnnual = 0;
-    // Project dividend income using Yahoo live data when available, else configured yield
-    (state.assets||[]).forEach(function(a){
-      var val = parseNum(a.value);
-      if (val <= 0) return;
-      var qty = parseNum(a.qty) || 0;
-      var annualDivEur = 0;
-
-      // Priority 1: Yahoo live dividend rate × qty (most accurate)
-      if (a._yahooDiv && a._yahooDiv.rate > 0 && qty > 0) {
-        var rateLocal = a._yahooDiv.rate; // per share in stock currency
-        var ccy = (a._yahooDiv.currency || "USD").toUpperCase();
-        // Convert to EUR using approximate FX (from asset value/qty ratio as proxy)
-        var priceEur = val / qty;
-        var priceLocal = parseNum(a.valueLocal || 0) / qty || priceEur;
-        var fxToEur = priceLocal > 0 ? priceEur / priceLocal : 1;
-        annualDivEur = rateLocal * qty * fxToEur;
-      }
-
-      // Priority 2: configured passive rate
-      if (annualDivEur <= 0) {
-        var rate = (typeof getAssetPassiveRatePct === "function") ? getAssetPassiveRatePct(a) : 0;
-        if (rate > 0 && rate <= 25) annualDivEur = val * rate / 100;
-      }
-
-      if (annualDivEur > 0) projNetAnnual += annualDivEur * 0.85; // 85% net (15% WHT)
+    var ttmStart = new Date(); ttmStart.setFullYear(ttmStart.getFullYear() - 1);
+    var ttmStartStr = ttmStart.toISOString().slice(0,10);
+    var ttmDivs = (typeof getRealDividendRecords === "function") ? getRealDividendRecords() : (state.dividends||[]);
+    var ttmNet = 0;
+    ttmDivs.forEach(function(d){
+      if ((d.date||"") >= ttmStartStr) ttmNet += parseNum(getDividendNet(d));
     });
+
+    if (ttmNet > 0) {
+      // Scale TTM by any portfolio value growth vs 12 months ago
+      projNetAnnual = ttmNet;
+    } else {
+      // Fallback: sum configured passive income from all assets
+      (state.assets||[]).forEach(function(a){
+        var rate = (typeof getAssetPassiveRatePct === "function") ? getAssetPassiveRatePct(a) : 0;
+        if (rate > 0 && rate <= 25 && parseNum(a.value) > 0) {
+          projNetAnnual += parseNum(a.value) * rate / 100 * 0.85;
+        }
+      });
+    }
     // TTM fallback
     if (projNetAnnual <= 0) {
       var yData = (typeof calcDividendYield === "function") ? calcDividendYield() : {};
@@ -4637,138 +4632,143 @@ function renderDivCalendar() {
   if (!container) return;
 
   const now = new Date();
-  const currentMonth = now.getMonth() + 1; // 1-12
+  const currentMonth = now.getMonth() + 1;
   const currentYear = now.getFullYear();
+  const MONTHS_PT = ['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 
-  // Get all equity assets
-  const EQUITY_CLS = new Set(["ações/etfs","acoes/etfs"]);
-  const equityAssets = state.assets.filter(a => {
-    const c = (a.class||"").toLowerCase().replace(/ç/g,"c").replace(/ã/g,"a").replace(/õ/g,"o");
-    return EQUITY_CLS.has(c) && parseNum(a.value) > 0;
-  });
+  // Get real dividend records
+  const divs = (typeof getRealDividendRecords === "function") ? getRealDividendRecords() : (state.dividends || []);
 
-  // Build upcoming payments for next 12 months
-  const payments = [];
-  for (const asset of equityAssets) {
-    const ticker = (asset.name||"").toUpperCase().trim();
-    const db = DIV_CALENDAR_DB[ticker];
-    if (!db || db.freq === 'none' || !db.months.length) continue;
+  if (!divs.length) {
+    container.innerHTML = `<div style="text-align:center;padding:30px;color:#64748b">
+      <div style="font-size:32px;margin-bottom:8px">📅</div>
+      <div style="font-weight:600">Sem histórico de dividendos</div>
+      <div style="font-size:13px;margin-top:4px">Importa os ficheiros de corretora para ver o calendário</div>
+    </div>`;
+    return;
+  }
 
-    const value = parseNum(asset.value);
-    const qty = parseNum(asset.qty) || 0;
+  // Build per-ticker history: which months paid, average amount per payment
+  const byTicker = {};
+  for (const d of divs) {
+    const tk = (d.ticker || d.assetName || d.name || "?").toUpperCase().trim();
+    if (!tk || tk === "?") continue;
+    const dt = String(d.date || "");
+    const yr = parseInt(dt.slice(0,4));
+    const mo = parseInt(dt.slice(5,7));
+    if (!yr || !mo) continue;
+    const net = parseNum(getDividendNet(d));
+    if (net <= 0) continue;
+    if (!byTicker[tk]) byTicker[tk] = { name: d.assetName || d.name || tk, months:{}, payments:[] };
+    const key = mo;
+    if (!byTicker[tk].months[key]) byTicker[tk].months[key] = [];
+    byTicker[tk].months[key].push({ yr, net });
+    byTicker[tk].payments.push({ yr, mo, net });
+  }
 
-    // Priority 1: Yahoo live dividend rate × shares held
-    let perPayment = 0;
-    let annualDiv = 0;
-    const yDiv = asset._yahooDiv;
-    if (yDiv && yDiv.rate > 0 && qty > 0) {
-      // Yahoo rate is annual, in stock currency → convert to EUR
-      const priceLocal = parseNum(asset.valueLocal || 0) / qty || 0;
-      const priceEur = value / qty;
-      const fxToEur = priceLocal > 0 ? priceEur / priceLocal : 1;
-      annualDiv = yDiv.rate * qty * fxToEur * 0.85; // 85% net
-      perPayment = annualDiv / Math.max(1, db.months.length);
+  // For each ticker: find payment months from last 2 years, estimate next payment
+  const upcomingPayments = [];
+  const cY = currentYear; const cM = currentMonth;
+
+  for (const [tk, info] of Object.entries(byTicker)) {
+    // Payment months: which months appear in last 2 years
+    const recentMonths = new Set();
+    const recentPayments = info.payments.filter(p => p.yr >= cY - 2);
+    recentPayments.forEach(p => recentMonths.add(p.mo));
+
+    if (!recentMonths.size) continue;
+
+    // Average payment per month (from recent history)
+    const avgByMonth = {};
+    for (const mo of recentMonths) {
+      const forMonth = (info.months[mo] || []).filter(p => p.yr >= cY - 2);
+      if (forMonth.length) avgByMonth[mo] = forMonth.reduce((s,p)=>s+p.net,0) / forMonth.length;
     }
-    // Priority 2: configured yield
-    if (!annualDiv) {
-      const configuredYield = asset.yieldType === 'yield_pct' ? parseNum(asset.yieldValue) : 0;
-      const yieldPct = configuredYield > 0 ? configuredYield : db.yield;
-      annualDiv = value * (yieldPct / 100);
-      perPayment = annualDiv / Math.max(1, db.months.length);
-    }
 
-    // Add upcoming payment months
-    for (let mi = 0; mi < 12; mi++) {
-      let m = currentMonth + mi;
-      let y = currentYear;
+    // Determine frequency label
+    const nMonths = recentMonths.size;
+    const freqLabel = nMonths >= 10 ? "Mensal" : nMonths >= 4 ? "Trimestral" : nMonths >= 2 ? "Semestral" : "Anual";
+
+    // Project next 12 months
+    for (let mi = 0; mi < 15; mi++) {
+      let m = cM + mi; let y = cY;
       if (m > 12) { m -= 12; y++; }
-      if (db.months.includes(m)) {
-        const yDiv2 = asset._yahooDiv;
-        payments.push({
-          ticker, name: db.name || asset.name || ticker, month: m, year: y,
-          amount: perPayment, freq: db.freq,
-          exDate: (yDiv2 && yDiv2.exDate) || "",
-          payDate: (yDiv2 && yDiv2.payDate) || "",
-          ratePerShare: (yDiv2 && yDiv2.rate) || 0,
-          qty: qty,
-          hasLiveData: !!(yDiv2 && yDiv2.rate > 0)
-        });
-      }
+      if (!recentMonths.has(m)) continue;
+      const amount = avgByMonth[m] || 0;
+      if (amount <= 0) continue;
+      upcomingPayments.push({ tk, name: info.name, month: m, year: y, amount, freqLabel });
     }
   }
 
-  // Sort by year+month
-  payments.sort((a,b) => a.year !== b.year ? a.year-b.year : a.month-b.month);
+  upcomingPayments.sort((a,b) => a.year !== b.year ? a.year-b.year : a.month-b.month);
 
-  if (!payments.length) {
+  if (!upcomingPayments.length) {
     container.innerHTML = `<div style="text-align:center;padding:30px;color:#64748b">
       <div style="font-size:32px;margin-bottom:8px">📅</div>
       <div style="font-weight:600">Sem dividendos previstos</div>
-      <div style="font-size:13px;margin-top:4px">Importa o CSV do DivTracker para ver o calendário</div>
+      <div style="font-size:13px;margin-top:4px">Os dividendos importados ainda não têm histórico suficiente para projecção</div>
     </div>`;
     return;
   }
 
   // Group by month
   const byMonth = {};
-  for (const p of payments) {
-    const key = `${p.year}-${String(p.month).padStart(2,'0')}`;
-    if (!byMonth[key]) byMonth[key] = {year:p.year, month:p.month, total:0, items:[]};
+  for (const p of upcomingPayments) {
+    const key = p.year + "-" + String(p.month).padStart(2,"0");
+    if (!byMonth[key]) byMonth[key] = { year:p.year, month:p.month, total:0, items:[] };
     byMonth[key].total += p.amount;
     byMonth[key].items.push(p);
   }
 
-  const MONTHS_PT = ['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const FREQ_LABEL = {monthly:'Mensal',quarterly:'Trimestral',semi:'Semestral',annual:'Anual'};
+  const fmtE = v => new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(v);
 
-  let html = '';
+  let html = "";
   for (const key of Object.keys(byMonth).sort()) {
     const grp = byMonth[key];
-    const isCurrentMonth = grp.month === currentMonth && grp.year === currentYear;
-    const headerBg = isCurrentMonth ? '#eef2ff' : '#f8fafc';
-    const headerColor = isCurrentMonth ? '#4f46e5' : '#475569';
+    const isCurrent = grp.month === currentMonth && grp.year === currentYear;
+    const headerBg = isCurrent ? "#eef2ff" : "#f8fafc";
+    const headerColor = isCurrent ? "#4f46e5" : "#475569";
 
-    html += `<div style="margin-bottom:16px">
-      <div style="background:${headerBg};border-radius:10px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <div style="font-weight:800;font-size:15px;color:${headerColor}">
-          ${isCurrentMonth ? '📍 ' : ''}${MONTHS_PT[grp.month]} ${grp.year}
-        </div>
-        <div style="font-weight:700;font-size:15px;color:#059669">~${fmtEUR(grp.total)}</div>
-      </div>`;
+    html += "<div style='margin-bottom:16px'>"
+      + "<div style='background:"+headerBg+";border-radius:10px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'>"
+      + "<div style='font-weight:800;font-size:15px;color:"+headerColor+"'>"+(isCurrent?"📍 ":"")+MONTHS_PT[grp.month]+" "+grp.year+"</div>"
+      + "<div style='font-weight:700;font-size:15px;color:#059669'>~"+fmtE(grp.total)+"</div>"
+      + "</div>";
 
-    // Sort items by amount desc
-    grp.items.sort((a,b) => b.amount-a.amount);
+    grp.items.sort((a,b)=>b.amount-a.amount);
     for (const item of grp.items) {
-      const liveTag = item.hasLiveData ? "<span style='background:#dcfce7;color:#166534;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:4px'>LIVE</span>" : "";
-      const rateStr = item.ratePerShare > 0 && item.qty > 0 ? ` · <b>${item.ratePerShare.toFixed(3)}/acção</b>` : "";
-      const exStr = item.exDate ? ` · ex-div: ${item.exDate}` : "";
-      const payStr = item.payDate ? ` · pag: ${item.payDate}` : "";
       html += "<div style='display:flex;align-items:center;gap:10px;padding:7px 14px;border-bottom:1px solid #f1f5f9'>"
-        + "<div style='font-weight:700;font-size:13px;font-family:monospace;min-width:60px;color:#0f172a'>" + escapeHtml(item.ticker) + liveTag + "</div>"
-        + "<div style='flex:1;font-size:12px;color:#64748b'>" + escapeHtml(item.name) + " · " + (FREQ_LABEL[item.freq]||item.freq) + rateStr + exStr + payStr + "</div>"
-        + "<div style='font-weight:600;font-size:13px;color:#059669'>~" + fmtEUR(item.amount) + "</div>"
+        + "<div style='font-weight:700;font-size:13px;font-family:monospace;min-width:60px;color:#0f172a'>"+escapeHtml(item.tk)+"</div>"
+        + "<div style='flex:1;font-size:12px;color:#64748b'>"+escapeHtml(item.name)+" · "+item.freqLabel+"</div>"
+        + "<div style='font-weight:600;font-size:13px;color:#059669'>~"+fmtE(item.amount)+"</div>"
         + "</div>";
     }
-    html += `</div>`;
+    html += "</div>";
   }
 
-  // Summary stats
-  const totalAnnual = payments.reduce((s,p) => s + (p.amount * 12 / byMonth[`${p.year}-${String(p.month).padStart(2,'0')}`].items.length), 0);
-  const uniqueTickers = [...new Set(payments.map(p=>p.ticker))].length;
+  // Summary
+  const totalNext12 = upcomingPayments.reduce((s,p)=>s+p.amount,0);
+  const uniqueTickers = [...new Set(upcomingPayments.map(p=>p.tk))].length;
 
   container.innerHTML = `
     <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
       <div style="flex:1;min-width:100px;background:#f0fdf4;border-radius:10px;padding:10px;text-align:center">
         <div style="font-size:11px;color:#64748b;margin-bottom:2px">Próximos 12 meses</div>
-        <div style="font-weight:800;font-size:16px;color:#059669">${fmtEUR(payments.reduce((s,p)=>s+p.amount,0))}</div>
+        <div style="font-weight:800;font-size:16px;color:#059669">${fmtE(totalNext12)}</div>
       </div>
-      <div style="flex:1;min-width:100px;background:#eff6ff;border-radius:10px;padding:10px;text-align:center">
-        <div style="font-size:11px;color:#64748b;margin-bottom:2px">Ações com dividendo</div>
-        <div style="font-weight:800;font-size:16px;color:#4f46e5">${uniqueTickers}</div>
+      <div style="flex:1;min-width:100px;background:#f0f9ff;border-radius:10px;padding:10px;text-align:center">
+        <div style="font-size:11px;color:#64748b;margin-bottom:2px">Pagadores</div>
+        <div style="font-weight:800;font-size:16px;color:#0284c7">${uniqueTickers}</div>
+      </div>
+      <div style="flex:1;min-width:100px;background:#fef9c3;border-radius:10px;padding:10px;text-align:center">
+        <div style="font-size:11px;color:#64748b;margin-bottom:2px">Fonte</div>
+        <div style="font-weight:800;font-size:13px;color:#854d0e">Histórico real</div>
       </div>
     </div>
-    <div style="font-size:11px;color:#94a3b8;margin-bottom:12px">⚠️ Estimativas baseadas em yields históricos. Datas e valores aproximados.</div>
-    ${html}`;
+    ${html}
+    <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:8px;padding:8px">
+      Baseado no histórico real de dividendos recebidos · Estimativas para meses futuros
+    </div>`;
 }
 
 const TICKER_DB = {
@@ -11601,9 +11601,16 @@ async function fetchQuoteWithFallback(ref) {
     });
   });
 
-  const quoteResults = await Promise.allSettled(
-    tickerList.map(x => fetchQuoteWithFallback(x))
-  );
+  // Batch requests to avoid overwhelming the Worker (max 10 concurrent)
+  const CONCURRENCY = 10;
+  const quoteResults = [];
+  for (let i = 0; i < tickerList.length; i += CONCURRENCY) {
+    const batch = tickerList.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.allSettled(batch.map(x => fetchQuoteWithFallback(x)));
+    quoteResults.push(...batchResults);
+    // Small delay between batches to avoid rate limiting
+    if (i + CONCURRENCY < tickerList.length) await new Promise(r => setTimeout(r, 200));
+  }
   const quoteMap = {};
   const quoteErrMap = {};
   quoteResults.forEach((r, i) => {
@@ -11696,14 +11703,14 @@ async function fetchQuoteWithFallback(ref) {
       console.warn("[Quote sanity]", asset.name || asset.ticker, "rejected:", newValue.toFixed(0), "→ costBasis:", _assetCostBasis.toFixed(0));
     }
     asset.value = safeNewValue;
-    // Store Yahoo dividend data for projection use
-    if (quote.div_rate !== undefined) {
+    // Store Yahoo dividend data for projection use (q = quote object in this scope)
+    if (q && q.div_rate !== undefined && q.div_rate > 0) {
       asset._yahooDiv = {
-        rate: parseNum(quote.div_rate) || 0,       // annual dividend per share (in stock currency)
-        yield: parseNum(quote.div_yield) || 0,     // trailing yield
-        exDate: quote.ex_div_date || "",
-        payDate: quote.div_date || "",
-        currency: quote.currency || "USD",
+        rate: parseNum(q.div_rate) || 0,
+        yield: parseNum(q.div_yield) || 0,
+        exDate: q.ex_div_date || "",
+        payDate: q.div_date || "",
+        currency: (q.currency || "USD"),
         updatedAt: new Date().toISOString()
       };
     }
