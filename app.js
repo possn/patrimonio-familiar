@@ -1205,7 +1205,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 10; // v62d: xtbTickerToYahoo suffix fixes
+const BROKER_REBUILD_SCHEMA_VERSION = 11; // v62e: post-rebuild yahoo merge
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -8388,6 +8388,31 @@ function rebuildBrokerGeneratedData() {
   state.settings.brokerRebuildSig = getBrokerDataSignature();
   state.settings.brokerRebuildSchemaVersion = BROKER_REBUILD_SCHEMA_VERSION;
 
+  // Post-rebuild: merge broker assets with same yahoo ticker
+  // Catches touchPos misses due to ticker format differences between brokers
+  (function mergeByYahooTicker() {
+    const assets = state.assets || [];
+    const byYahoo = new Map();
+    const toRemove = new Set();
+    assets.forEach((a, i) => {
+      if (!a.generatedFromBroker) return;
+      const ya = String(a.yahooTicker || "").toUpperCase().trim();
+      if (!ya) return;
+      if (byYahoo.has(ya)) {
+        const into = assets[byYahoo.get(ya)];
+        into.qty = (parseNum(into.qty)||0) + (parseNum(a.qty)||0);
+        into.costBasis = (parseNum(into.costBasis)||0) + (parseNum(a.costBasis)||0);
+        into.value = (parseNum(into.value)||0) + (parseNum(a.value)||0);
+        into.marketValueEUR = (parseNum(into.marketValueEUR)||0) + (parseNum(a.marketValueEUR)||0);
+        if (!into.isin && a.isin) into.isin = a.isin;
+        if (a.name && a.name.length > (into.name||"").length) into.name = a.name;
+        toRemove.add(i);
+      } else {
+        byYahoo.set(ya, i);
+      }
+    });
+    if (toRemove.size) state.assets = assets.filter((_,i) => !toRemove.has(i));
+  })();
 }
 
 
