@@ -11250,8 +11250,7 @@ async function refreshLiveQuotes() {
     const el = document.getElementById("quoteRefreshProgress");
     if (el) { el.style.opacity = "0"; setTimeout(() => { if (el) el.style.display = "none"; }, 300); }
   };
-  const _nTickers = tickerList.length;
-  _showRefreshProgress("⟳ A actualizar " + _nTickers + " activos…");
+  _showRefreshProgress("⟳ A actualizar cotações…");
 
   // Convert local / broker tickers into Yahoo candidates.
   // Several imports keep a stale ISIN→Yahoo guess; try that first, then sensible fallbacks.
