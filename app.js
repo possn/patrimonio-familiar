@@ -1205,7 +1205,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 8; // v62b: full ISIN map (460 entries)
+const BROKER_REBUILD_SCHEMA_VERSION = 9; // v62c: fix cross-broker ticker merge
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -7249,6 +7249,9 @@ function canonicalBrokerTickerBase(v) {
   t = t.normalize("NFD").replace(/[̀-ͯ]/g, "");
   if (/^[A-Z0-9.-]+\.US$/.test(t)) return t.replace(/\.US$/, "");
   if (/^[A-Z0-9.-]+\.(NYSE|NASDAQ|XNAS|XNYS|ARCA|AMEX)$/.test(t)) return t.replace(/\.(NYSE|NASDAQ|XNAS|XNYS|ARCA|AMEX)$/, "");
+  // Strip exchange suffixes: .SW, .DE, .L, .PA, .AS, .MC, .MI, .TO, .CO, .ST, .LS, .HE, .BR, .AX, .F, .VI, .WA, .OL
+  const exSuffix = t.match(/^([A-Z0-9]+)\.(SW|DE|L|PA|AS|MC|MI|TO|CO|ST|LS|HE|BR|AX|F|VI|WA|OL|SG|IR)$/);
+  if (exSuffix) return exSuffix[1];
   return t;
 }
 
@@ -8057,13 +8060,17 @@ function rebuildBrokerGeneratedData() {
     if (!posMap.has(key) && !isinNorm && tickerNorm) {
       const matches = [];
       for (const [k, existing] of posMap.entries()) {
+        // Priority: same yahoo ticker → definitive match (e.g. XTB ADM.US vs T212 ADM)
+        if (inferredYahoo && existing.yahooTicker && inferredYahoo === existing.yahooTicker) {
+          key = k; break;
+        }
         const sameTicker = canonicalBrokerTickerBase(existing.ticker || existing.yahooTicker) === canonicalBrokerTickerBase(tickerNorm);
         if (!sameTicker) continue;
         const sameName = !nameNorm || !existing.name || sameSecurityName(existing.name, nameNorm);
         const sameCurrency = !currencyNorm || !existing.currency || String(existing.currency || '').trim().toUpperCase() === currencyNorm;
         if (sameName || sameCurrency) matches.push(k);
       }
-      if (matches.length === 1) key = matches[0];
+      if (!posMap.has(key) && matches.length === 1) key = matches[0];
     } else if (isinNorm && !posMap.has(key) && tickerNorm) {
       for (const [k, existing] of posMap.entries()) {
         const existingIsin = normalizeISIN(existing.isin);
