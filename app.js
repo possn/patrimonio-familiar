@@ -1205,7 +1205,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 9; // v62c: fix cross-broker ticker merge
+const BROKER_REBUILD_SCHEMA_VERSION = 10; // v62d: xtbTickerToYahoo suffix fixes
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -7677,7 +7677,11 @@ function xtbTickerToYahoo(symbol) {
     // AMS-OSRAM Vienna listing
     "AMS":"AMS2.VI",
     // iShares NASDAQ US Biotech UCITS — listed in London, not Xetra
-    "BTEC.DE":"BTEC.L"
+    "BTEC.DE":"BTEC.L",
+    // Explicit XTB→Yahoo mappings for assets with different names across brokers
+    "ADM.US":"ADM",    // Archer-Daniels-Midland (XTB name="ADM", T212 name="Archer-Daniels-Midland")
+    "BMY.US":"BMY",    // Bristol-Myers Squibb (XTB name="BMS")
+    "NESN.CH":"NESN.SW" // Nestlé (XTB .CH → Yahoo .SW)
   };
   if (directMap[s]) return directMap[s];
   // Remove .US suffix – Yahoo uses bare ticker for US stocks
@@ -7694,6 +7698,18 @@ function xtbTickerToYahoo(symbol) {
   if (s.endsWith(".AU")) return s.slice(0, -3) + ".AX";
   // .JP → .T (Tokyo)
   if (s.endsWith(".JP")) return s.slice(0, -3) + ".T";
+  // European exchange suffixes
+  if (s.endsWith(".CH")) return s.slice(0, -3) + ".SW";  // Swiss → SIX (e.g. NESN.CH → NESN.SW)
+  if (s.endsWith(".PL")) return s.slice(0, -3) + ".WA";  // Poland → Warsaw
+  if (s.endsWith(".DK")) return s.slice(0, -3) + ".CO";  // Denmark → Copenhagen
+  if (s.endsWith(".SE")) return s.slice(0, -3) + ".ST";  // Sweden → Stockholm
+  if (s.endsWith(".NO")) return s.slice(0, -3) + ".OL";  // Norway → Oslo
+  if (s.endsWith(".FI")) return s.slice(0, -3) + ".HE";  // Finland → Helsinki
+  if (s.endsWith(".BE")) return s.slice(0, -3) + ".BR";  // Belgium → Brussels
+  if (s.endsWith(".IT")) return s.slice(0, -3) + ".MI";  // Italy → Milan
+  if (s.endsWith(".FR")) return s.slice(0, -3) + ".PA";  // France → Paris
+  if (s.endsWith(".NL")) return s.slice(0, -3) + ".AS";  // Netherlands → Amsterdam
+  if (s.endsWith(".ES")) return s.slice(0, -3) + ".MC";  // Spain → Madrid
   return s;
 }
 
