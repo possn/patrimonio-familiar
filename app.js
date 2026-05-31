@@ -4271,15 +4271,31 @@ function renderDivMonthlyChart(year) {
   if (isFuture || (isCurrentYear && cM < 11)) {
     // Annual projected income = sum(yield_pct × current_value) for each dividend asset
     var projNetAnnual = 0;
-    // Only project dividend income from equity assets (not deposits/bonds)
-    var divClasses = ["Ações/ETFs","Ações","ETFs","Cripto","Fundos"];
+    // Project dividend income using Yahoo live data when available, else configured yield
     (state.assets||[]).forEach(function(a){
-      if (parseNum(a.value) <= 0) return;
-      if (!divClasses.includes(a.class) && !a.generatedFromBroker) return;
-      var rate = (typeof getAssetPassiveRatePct === "function") ? getAssetPassiveRatePct(a) : 0;
-      if (rate > 0 && rate <= 25) { // cap at 25% — realistic max for dividend stocks
-        projNetAnnual += parseNum(a.value) * rate / 100;
+      var val = parseNum(a.value);
+      if (val <= 0) return;
+      var qty = parseNum(a.qty) || 0;
+      var annualDivEur = 0;
+
+      // Priority 1: Yahoo live dividend rate × qty (most accurate)
+      if (a._yahooDiv && a._yahooDiv.rate > 0 && qty > 0) {
+        var rateLocal = a._yahooDiv.rate; // per share in stock currency
+        var ccy = (a._yahooDiv.currency || "USD").toUpperCase();
+        // Convert to EUR using approximate FX (from asset value/qty ratio as proxy)
+        var priceEur = val / qty;
+        var priceLocal = parseNum(a.valueLocal || 0) / qty || priceEur;
+        var fxToEur = priceLocal > 0 ? priceEur / priceLocal : 1;
+        annualDivEur = rateLocal * qty * fxToEur;
       }
+
+      // Priority 2: configured passive rate
+      if (annualDivEur <= 0) {
+        var rate = (typeof getAssetPassiveRatePct === "function") ? getAssetPassiveRatePct(a) : 0;
+        if (rate > 0 && rate <= 25) annualDivEur = val * rate / 100;
+      }
+
+      if (annualDivEur > 0) projNetAnnual += annualDivEur * 0.85; // 85% net (15% WHT)
     });
     // TTM fallback
     if (projNetAnnual <= 0) {
@@ -4639,12 +4655,27 @@ function renderDivCalendar() {
     if (!db || db.freq === 'none' || !db.months.length) continue;
 
     const value = parseNum(asset.value);
-    // Estimate annual dividend
-    // First check if asset has a yield configured
-    const configuredYield = asset.yieldType === 'yield_pct' ? parseNum(asset.yieldValue) : 0;
-    const yieldPct = configuredYield > 0 ? configuredYield : db.yield;
-    const annualDiv = value * (yieldPct / 100);
-    const perPayment = annualDiv / db.months.length;
+    const qty = parseNum(asset.qty) || 0;
+
+    // Priority 1: Yahoo live dividend rate × shares held
+    let perPayment = 0;
+    let annualDiv = 0;
+    const yDiv = asset._yahooDiv;
+    if (yDiv && yDiv.rate > 0 && qty > 0) {
+      // Yahoo rate is annual, in stock currency → convert to EUR
+      const priceLocal = parseNum(asset.valueLocal || 0) / qty || 0;
+      const priceEur = value / qty;
+      const fxToEur = priceLocal > 0 ? priceEur / priceLocal : 1;
+      annualDiv = yDiv.rate * qty * fxToEur * 0.85; // 85% net
+      perPayment = annualDiv / Math.max(1, db.months.length);
+    }
+    // Priority 2: configured yield
+    if (!annualDiv) {
+      const configuredYield = asset.yieldType === 'yield_pct' ? parseNum(asset.yieldValue) : 0;
+      const yieldPct = configuredYield > 0 ? configuredYield : db.yield;
+      annualDiv = value * (yieldPct / 100);
+      perPayment = annualDiv / Math.max(1, db.months.length);
+    }
 
     // Add upcoming payment months
     for (let mi = 0; mi < 12; mi++) {
@@ -4652,9 +4683,15 @@ function renderDivCalendar() {
       let y = currentYear;
       if (m > 12) { m -= 12; y++; }
       if (db.months.includes(m)) {
+        const yDiv2 = asset._yahooDiv;
         payments.push({
-          ticker, name: db.name, month: m, year: y,
-          amount: perPayment, freq: db.freq, yieldPct
+          ticker, name: db.name || asset.name || ticker, month: m, year: y,
+          amount: perPayment, freq: db.freq,
+          exDate: (yDiv2 && yDiv2.exDate) || "",
+          payDate: (yDiv2 && yDiv2.payDate) || "",
+          ratePerShare: (yDiv2 && yDiv2.rate) || 0,
+          qty: qty,
+          hasLiveData: !!(yDiv2 && yDiv2.rate > 0)
         });
       }
     }
@@ -4702,11 +4739,15 @@ function renderDivCalendar() {
     // Sort items by amount desc
     grp.items.sort((a,b) => b.amount-a.amount);
     for (const item of grp.items) {
-      html += `<div style="display:flex;align-items:center;gap:10px;padding:7px 14px;border-bottom:1px solid #f1f5f9">
-        <div style="font-weight:700;font-size:13px;font-family:monospace;min-width:80px;color:#0f172a">${escapeHtml(item.ticker)}</div>
-        <div style="flex:1;font-size:12px;color:#64748b">${escapeHtml(item.name)} · ${FREQ_LABEL[item.freq]||item.freq}</div>
-        <div style="font-weight:600;font-size:13px;color:#059669">~${fmtEUR(item.amount)}</div>
-      </div>`;
+      const liveTag = item.hasLiveData ? "<span style='background:#dcfce7;color:#166534;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:4px'>LIVE</span>" : "";
+      const rateStr = item.ratePerShare > 0 && item.qty > 0 ? ` · <b>${item.ratePerShare.toFixed(3)}/acção</b>` : "";
+      const exStr = item.exDate ? ` · ex-div: ${item.exDate}` : "";
+      const payStr = item.payDate ? ` · pag: ${item.payDate}` : "";
+      html += "<div style='display:flex;align-items:center;gap:10px;padding:7px 14px;border-bottom:1px solid #f1f5f9'>"
+        + "<div style='font-weight:700;font-size:13px;font-family:monospace;min-width:60px;color:#0f172a'>" + escapeHtml(item.ticker) + liveTag + "</div>"
+        + "<div style='flex:1;font-size:12px;color:#64748b'>" + escapeHtml(item.name) + " · " + (FREQ_LABEL[item.freq]||item.freq) + rateStr + exStr + payStr + "</div>"
+        + "<div style='font-weight:600;font-size:13px;color:#059669'>~" + fmtEUR(item.amount) + "</div>"
+        + "</div>";
     }
     html += `</div>`;
   }
@@ -11655,6 +11696,17 @@ async function fetchQuoteWithFallback(ref) {
       console.warn("[Quote sanity]", asset.name || asset.ticker, "rejected:", newValue.toFixed(0), "→ costBasis:", _assetCostBasis.toFixed(0));
     }
     asset.value = safeNewValue;
+    // Store Yahoo dividend data for projection use
+    if (quote.div_rate !== undefined) {
+      asset._yahooDiv = {
+        rate: parseNum(quote.div_rate) || 0,       // annual dividend per share (in stock currency)
+        yield: parseNum(quote.div_yield) || 0,     // trailing yield
+        exDate: quote.ex_div_date || "",
+        payDate: quote.div_date || "",
+        currency: quote.currency || "USD",
+        updatedAt: new Date().toISOString()
+      };
+    }
     // Keep valueLocal in sync for multi-currency display and clear stale FX badges when asset returns to EUR.
     if (ccy !== "EUR") {
       asset.currency   = ccy;

@@ -96,6 +96,11 @@ async function fetchYahooQuoteCore(ticker, ctx) {
           country: q.country || "",
           exchange: q.exchange || q.fullExchangeName || "",
           quote_type: q.quoteType || "",
+          // Dividend data from Yahoo Finance
+          div_rate: Number.isFinite(q.trailingAnnualDividendRate) ? q.trailingAnnualDividendRate : 0,
+          div_yield: Number.isFinite(q.trailingAnnualDividendYield) ? q.trailingAnnualDividendYield : 0,
+          ex_div_date: q.exDividendDate ? new Date(q.exDividendDate * 1000).toISOString().slice(0,10) : "",
+          div_date: q.dividendDate ? new Date(q.dividendDate * 1000).toISOString().slice(0,10) : "",
           updated: new Date().toISOString(),
         };
         ctx.waitUntil(cache.put(cacheUrl, new Response(JSON.stringify(result), {
