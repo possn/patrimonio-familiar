@@ -1213,7 +1213,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 13; // v63b: XTB extId dedup key (recovers 2709 dropped dividends), WHT-before-dividend classifier
+const BROKER_REBUILD_SCHEMA_VERSION = 14; // v63c: purge legacy XTB events on re-import + stale-import banner
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -4261,6 +4261,7 @@ function renderDivMonthlyPanel() {
     }).join("");
   }
 
+  try { renderStaleXtbImportBanner(); } catch (_) {}
   requestAnimationFrame(function(){ requestAnimationFrame(function(){ renderDivMonthlyChart(defaultYear); }); });
 }
 
@@ -7078,6 +7079,35 @@ function hasBrokerGeneratedMirror() {
   );
 }
 
+/* v63b: detect XTB events stored by a pre-v63b import.
+   Those imports keyed rows on type|time|ticker|amount. Because the XLSX export
+   truncates sub-second precision and XTB pays many identical lots in the same
+   second, ~61% of dividend rows collided and were never written to IndexedDB.
+   A rebuild cannot recover them — they simply are not there — so the XLSX must
+   be re-imported. Events written by v63b onwards always carry `extId`. */
+function xtbImportNeedsReimport() {
+  const bd = ensureBrokerData();
+  const xtbEvents = (bd.events || []).filter(e => e && e.broker === "XTB");
+  if (!xtbEvents.length) return false;
+  const withId = xtbEvents.filter(e => String(e.extId || "").trim()).length;
+  return withId < xtbEvents.length * 0.5;
+}
+
+function renderStaleXtbImportBanner() {
+  const host = document.getElementById("brokerImportWarning");
+  if (!host) return;
+  if (!xtbImportNeedsReimport()) { host.innerHTML = ""; return; }
+  host.innerHTML =
+    '<div style="margin:10px 0;padding:12px 14px;border-radius:12px;background:#fff7ed;' +
+    'border:1px solid #fdba74;color:#9a3412;font-size:13px;line-height:1.5">' +
+    '<strong>⚠️ Importação XTB incompleta</strong><br>' +
+    'Os dados do XTB foram importados por uma versão anterior que descartava ' +
+    'pagamentos repetidos no mesmo segundo. Cerca de 60% dos dividendos XTB não ' +
+    'chegaram a ser guardados. Volta a importar o ficheiro <em>Movimentos_totais_XTB.xlsx</em> ' +
+    'para corrigir — os duplicados são filtrados automaticamente.' +
+    '</div>';
+}
+
 async function hashFile(file) {
   try {
     if (crypto && crypto.subtle && file && typeof file.arrayBuffer === "function") {
@@ -8844,6 +8874,28 @@ async function importBrokerFiles(files) {
   if (!fileArr.length) throw new Error("Sem ficheiros.");
   const bd = ensureBrokerData();
   let addedFiles = 0, replacedFiles = 0, addedEvents = 0, addedPositions = 0, unknownFiles = 0;
+  // v63b: purge XTB events written by a pre-v63b import before ingesting anything.
+  // Those rows were keyed on type|time|ticker|amount; since the XLSX export truncates
+  // sub-second precision, identical same-second lots collided and ~61% of dividend
+  // rows were silently dropped. Their keys can never match the new extId-based keys,
+  // so re-importing would ADD to the broken set instead of replacing it — duplicating
+  // whatever did survive. Drop the legacy XTB rows and let the re-import rebuild them.
+  {
+    const evts = bd.events || [];
+    const legacy = evts.filter(e => e && e.broker === "XTB" && !String(e.extId || "").trim());
+    if (legacy.length) {
+      const legacyHashes = new Set(legacy.map(e => e.sourceHash).filter(Boolean));
+      bd.events = evts.filter(e => !(e && e.broker === "XTB" && !String(e.extId || "").trim()));
+      // Drop the stale file records too, so the same XLSX is not rejected as "already imported".
+      if (legacyHashes.size && Array.isArray(bd.files)) {
+        bd.files = bd.files.filter(f => !legacyHashes.has(f.hash));
+      }
+      if (Array.isArray(bd.positions)) {
+        bd.positions = bd.positions.filter(p => !(p && legacyHashes.has(p.sourceHash)));
+      }
+    }
+  }
+
   const existingEventKeys = new Set();
   const existingPosKeys = new Set();
   const refreshKeySets = () => {
