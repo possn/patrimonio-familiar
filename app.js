@@ -1213,7 +1213,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 14; // v63c: purge legacy XTB events on re-import + stale-import banner
+const BROKER_REBUILD_SCHEMA_VERSION = 15; // v63d: exportJSON fix (Set/cycle/iOS), per-file import removal
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -8505,7 +8505,7 @@ function rebuildBrokerGeneratedData() {
   }
 
   for (const p of posMap.values()) {
-    // Combine XTB snapshot qty + T212/XTB-ledger qty
+    // Combine broker snapshot qty + ledger-reconstructed qty
     const snapshotQty     = p.hasSnapshot && p.snapshotQty > 0 ? p.snapshotQty : 0;
     const ledgerQty       = p.qty > 0 ? p.qty : 0;
     const finalQty        = snapshotQty + ledgerQty > 0 ? snapshotQty + ledgerQty : (snapshotQty || ledgerQty);
@@ -8850,9 +8850,57 @@ function renderBrokerImportStatus() {
         <div class="item__t">${escapeHtml(f.name || "Ficheiro")}</div>
         <div class="item__s">${escapeHtml(f.broker || "Corretora")} · ${escapeHtml(f.format || "—")} · ${f.rows || 0} linhas · ${f.events || 0} eventos · ${f.positions || 0} posições${f.snapshotTotalEUR ? ` · snapshot ${fmtEUR(f.snapshotTotalEUR)}` : ""}</div>
       </div>
-      <div class="item__r"><span class="pill">${escapeHtml(f.importedAt ? String(f.importedAt).slice(0, 10) : "")}</span></div>
+      <div class="item__r" style="display:flex;align-items:center;gap:8px">
+        <span class="pill">${escapeHtml(f.importedAt ? String(f.importedAt).slice(0, 10) : "")}</span>
+        <button class="btn btn--ghost js-del-broker-file" data-hash="${escapeHtml(f.hash || "")}"
+          style="font-size:12px;padding:4px 10px;color:#b91c1c" title="Remover este import">🗑️</button>
+      </div>
     </div>
   `).join("");
+
+  // v63d: allow removing a single broker import. Older XTB exports had different
+  // sheets (with open positions); those stale snapshots stay in the database and
+  // are added on top of the ledger, inflating quantities. Without this there was
+  // no way to drop one import short of wiping everything.
+  list.querySelectorAll(".js-del-broker-file").forEach(btn => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const hash = btn.getAttribute("data-hash") || "";
+      if (!hash) return;
+      const bd2 = ensureBrokerData();
+      const file = (bd2.files || []).find(x => String(x.hash) === hash);
+      const label = file ? (file.name || "este ficheiro") : "este ficheiro";
+      if (btn.dataset.armed !== "1") {
+        btn.dataset.armed = "1";
+        btn.textContent = "Confirmar?";
+        btn.style.color = "#fff";
+        btn.style.background = "#b91c1c";
+        setTimeout(() => {
+          if (btn.dataset.armed === "1") {
+            btn.dataset.armed = "0";
+            btn.textContent = "🗑️";
+            btn.style.color = "#b91c1c";
+            btn.style.background = "";
+          }
+        }, 4000);
+        return;
+      }
+      const evBefore = (bd2.events || []).length;
+      const poBefore = (bd2.positions || []).length;
+      bd2.files     = (bd2.files || []).filter(x => String(x.hash) !== hash);
+      bd2.events    = (bd2.events || []).filter(e => String(e.sourceHash) !== hash);
+      bd2.positions = (bd2.positions || []).filter(p => String(p.sourceHash) !== hash);
+      const removedEv = evBefore - bd2.events.length;
+      const removedPo = poBefore - bd2.positions.length;
+      renderBrokerImportStatus._lastHash = null;
+      rebuildBrokerGeneratedData();
+      state.settings.brokerDataSignature = getBrokerDataSignature();
+      state.settings.brokerRebuildSchemaVersion = BROKER_REBUILD_SCHEMA_VERSION;
+      saveState();
+      renderAll();
+      toast(`Removido "${label}" · ${removedEv} eventos, ${removedPo} posições.`);
+    });
+  });
   if (files.length > BROKER_LIMIT) {
     const btn = document.createElement("div");
     btn.style.cssText = "text-align:center;margin-top:10px";
@@ -10659,12 +10707,49 @@ function handleUnifiedImport(files) {
 }
 
 function exportJSON() {
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `PF_backup_${isoToday()}.json`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  // v63d: this silently did nothing before.
+  // 1) state can contain Set/Map values (e.g. sourceNames) which JSON.stringify
+  //    turns into {} — and any accidental cycle throws. There was no try/catch,
+  //    so the click just died with no feedback.
+  // 2) On iOS Safari a detached <a> does not reliably trigger a download; the
+  //    element must be in the DOM before click().
+  try {
+    const replacer = (key, value) => {
+      if (value instanceof Set) return Array.from(value);
+      if (value instanceof Map) return Array.from(value.entries());
+      if (typeof key === "string" && key.startsWith("_")) return undefined; // internal scratch fields
+      return value;
+    };
+    const seen = new WeakSet();
+    const safeReplacer = function (key, value) {
+      if (typeof key === "string" && key.charAt(0) === "_") return undefined; // internal scratch
+      const v = replacer(key, value);
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        if (seen.has(v)) return undefined; // drop cycles instead of throwing
+        seen.add(v);
+      }
+      return v;
+    };
+    const json = JSON.stringify(state, safeReplacer, 2);
+    if (!json) { toast("Falha ao gerar o backup."); return; }
+
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `PF_backup_${isoToday()}.json`;
+    a.style.display = "none";
+    document.body.appendChild(a);           // iOS Safari requires this
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      if (a.parentNode) a.parentNode.removeChild(a);
+    }, 1500);
+    toast(`Backup exportado (${(json.length / 1024 / 1024).toFixed(1)} MB).`);
+  } catch (err) {
+    console.error("[exportJSON]", err);
+    toast("Erro ao exportar: " + (err && err.message ? err.message : "desconhecido"));
+  }
 }
 
 async function importJSON(file) {
@@ -11246,6 +11331,9 @@ function wire() {
     if (b("btnExportCashflowCSV"))  b("btnExportCashflowCSV").addEventListener("click", exportCashflowCSV);
     if (b("btnExportPortfolioCSV")) b("btnExportPortfolioCSV").addEventListener("click", exportPortfolioCSV);
     if (b("btnExportPortfolioXLSX")) b("btnExportPortfolioXLSX").addEventListener("click", exportPortfolioXLSX);
+    // v63d: same actions, second copy in the Definições panel (IDs must be unique)
+    if (b("btnExportPortfolioCSV2")) b("btnExportPortfolioCSV2").addEventListener("click", exportPortfolioCSV);
+    if (b("btnExportPortfolioXLSX2")) b("btnExportPortfolioXLSX2").addEventListener("click", exportPortfolioXLSX);
     if (b("btnEnableNotifications")) b("btnEnableNotifications").addEventListener("click", requestNotifications);
     if (b("btnPrintDashboard"))     b("btnPrintDashboard").addEventListener("click", printDashboard);
     if (b("btnEnableNotifications") && typeof Notification !== "undefined" && Notification.permission === "granted") {
