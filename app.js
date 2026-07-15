@@ -1213,7 +1213,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 12; // v63: T212 Total=GROSS fix, Time (UTC) date fix, bidirectional XTB WHT merge
+const BROKER_REBUILD_SCHEMA_VERSION = 13; // v63b: XTB extId dedup key (recovers 2709 dropped dividends), WHT-before-dividend classifier
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -7544,6 +7544,13 @@ function brokerPositionClassFromTicker(ticker) {
 }
 
 function brokerEventKey(evt) {
+  // v63b: brokers assign a unique transaction ID per row (XTB "ID" column).
+  // XTB pays several identical lots of the same ticker within the SAME second, and
+  // the Excel export truncates sub-second precision, so type+time+ticker+amount is
+  // NOT unique: 2709 of 4456 dividend rows collided and were silently dropped on
+  // import (-1326.85 EUR). When a broker row ID exists, it alone identifies the row.
+  const extId = String(evt.extId || "").trim();
+  if (extId) return [evt.broker || "", evt.type || "", extId].join("|");
   return [
     evt.type || "", evt.dateTime || evt.date || "", evt.ticker || "", evt.isin || "", evt.name || "",
     Math.round(parseNum(evt.qty) * 1e8) / 1e8,
@@ -7680,13 +7687,17 @@ function parseXTBNormalizeAction(type, comment) {
   // Cash operations
   if (t.includes("deposit") || t.includes("deposito") || t.includes("depositar") || c.includes("deposit")) return "DEPOSIT";
   if (t.includes("withdraw") || t.includes("levantamento") || t.includes("retirada") || t.includes("levantar")) return "WITHDRAWAL";
-  // XTB often exports the typo "DIVIDENT"; also PT "Dividendo"
-  if (t.includes("divident") || t.includes("dividend") || t.includes("dividendo") ||
-      c.includes("dividend") || c.includes("dividendo")) return "DIVIDEND";
-  // Withholding tax — PT: "Imposto retido na fonte", "Retenção na fonte"
+  // v63b: the TYPE column is authoritative — test withholding BEFORE dividend.
+  // Two real rows are typed "Withholding tax" but carry the comment
+  // "US Dividends Reclassification", so the comment-based dividend test fired
+  // first and booked withheld tax as income (+8.30 EUR of phantom dividends).
   if (t.includes("withholding") || t.includes("wht") || t.includes("imposto retido") ||
-      t.includes("retencao na fonte") || t.includes("retencao") ||
-      c.includes(" wht ") || c.includes("retido na fonte")) return "DIVIDEND_TAX";
+      t.includes("retencao na fonte") || t.includes("retencao")) return "DIVIDEND_TAX";
+  // XTB often exports the typo "DIVIDENT"; also PT "Dividendo"
+  if (t.includes("divident") || t.includes("dividend") || t.includes("dividendo")) return "DIVIDEND";
+  // Fall back to the comment only when the type itself is uninformative
+  if (c.includes(" wht ") || c.includes("retido na fonte")) return "DIVIDEND_TAX";
+  if (c.includes("dividend") || c.includes("dividendo")) return "DIVIDEND";
   // Swap = overnight/financing cost → treat as cost (WITHDRAWAL)
   if (t === "swap" || t.includes("rollover") || t.includes("overnight") || t.includes("financiamento")) return "WITHDRAWAL";
   // Interest on cash balance — PT: "Juros sobre saldo", "Juro sobre saldo"
@@ -7919,6 +7930,8 @@ function parseXTBCashRows(rows, meta) {
     const amount  = parseNumberSmart(r.montante || r.amount || r.valor || r.lucro || r.profit || r.resultado);
     const comment = String(r.comentario || r.comment || r.comments || r.descricao || r.observacoes || "").trim();
     const dateRaw = String(r.data || r.date || r.datetime || r.time || r.hora || r.data_operacao || "").trim();
+    // v63b: XTB's unique per-row transaction ID — required to keep same-second lots distinct
+    const extId = String(r.id || r.id_transacao || r.transaction_id || "").trim();
 
     if (!Number.isFinite(amount) || amount === 0) continue;
     let type = parseXTBNormalizeAction(typeRaw, comment);
@@ -7927,6 +7940,7 @@ function parseXTBCashRows(rows, meta) {
     const ticker  = symbol ? xtbTickerToYahoo(symbol) : "";
     const evt = {
       id: uid(), sourceHash: meta.hash, sourceName: meta.name, broker: "XTB",
+      extId,
       type, actionRaw: typeRaw,
       date: dateStr, dateTime: dateRaw || dateStr,
       ticker,
@@ -7960,9 +7974,6 @@ function parseXTBCashRows(rows, meta) {
       evt.type = type === "XTB_STOCK_PURCHASE" ? "BUY" : "SELL";
       if (type === "XTB_STOCK_SALE") {
         evt.resultEUR = amount;
-      }
-      if (symbol && (symbol.toUpperCase() === "O.US" || symbol.toUpperCase() === "LAND.US")) {
-        console.log("[XTB DEBUG]", symbol, type, "→", evt.type, "qty="+qty, "comment="+comment, "qtyMatch="+!!qtyMatch);
       }
       if (!qty || qty <= 0) continue;
       // NGAS.UK is a leveraged ETC where XTB's internal lot units are incompatible
@@ -8246,30 +8257,39 @@ function rebuildBrokerGeneratedData() {
 
   let events = (bd.events || []).slice().sort((a, b) => String(a.dateTime || a.date).localeCompare(String(b.dateTime || b.date)));
 
-  // v63: Merge XTB withholding-tax rows into their dividend.
-  // XTB emits the pair with the SAME microsecond timestamp (verified on real
-  // exports: 2932 exact 1:1 groups). The old code scanned a forward-only
-  // positional window (i+1..i+5), which orphaned every WHT row that preceded
-  // its dividend (465 of 3928) and could bind the wrong lot when a ticker paid
-  // several lots in the same second. Pair on ticker + exact timestamp instead.
+  // v63b: Merge XTB withholding-tax rows into their dividend.
+  // XTB emits the pair with adjacent transaction IDs (dividend id, WHT id±1) —
+  // verified on the real export: 3920 of 3928 WHT rows pair this way.
+  // Timestamps alone are unusable because the Excel export truncates sub-second
+  // precision and one ticker can pay many lots in the same second.
   {
-    const whtPool = new Map(); // ticker|timestamp -> queue of WHT event indices
-    const keyOf = (e) => String(e.ticker || "").toUpperCase() + "|" + String(e.dateTime || e.date || "");
+    const consumed = new Set();
+    const whtById = new Map();   // extId -> index
     for (let i = 0; i < events.length; i++) {
       const a = events[i];
       if (!a || a.type !== "DIVIDEND_ADJ") continue;
       if (!(parseNum(a.taxEUR) > 0 && parseNum(a.totalEUR) === 0)) continue;
-      const k = keyOf(a);
-      if (!whtPool.has(k)) whtPool.set(k, []);
-      whtPool.get(k).push(i);
+      const id = String(a.extId || "").trim();
+      if (id) whtById.set(id, i);
     }
-    const consumed = new Set();
+    const takeWht = (e) => {
+      const idNum = parseInt(String(e.extId || "").trim(), 10);
+      if (!Number.isFinite(idNum)) return -1;
+      for (const cand of [idNum + 1, idNum - 1]) {
+        const j = whtById.get(String(cand));
+        if (j === undefined || consumed.has(j)) continue;
+        const a = events[j];
+        if (!a) continue;
+        if (String(a.ticker || "").toUpperCase() !== String(e.ticker || "").toUpperCase()) continue;
+        return j;
+      }
+      return -1;
+    };
     for (let i = 0; i < events.length; i++) {
       const e = events[i];
       if (!e || e.type !== "DIVIDEND" || !(parseNum(e.totalEUR) > 0)) continue;
-      const q = whtPool.get(keyOf(e));
-      if (!q || !q.length) continue;
-      const j = q.shift();
+      const j = takeWht(e);
+      if (j < 0) continue;
       const wht = parseNum(events[j].taxEUR);
       // XTB "Amount" on the Dividend row is already GROSS; only attach the tax.
       e.taxEUR = (parseNum(e.taxEUR) || 0) + wht;
@@ -8291,9 +8311,6 @@ function rebuildBrokerGeneratedData() {
       const buyCost = Math.max(0, parseNum(e.totalEUR) + parseNum(e.feeEUR));
       pos.costBasis += buyCost;
       pos.ledgerCostBasis = (pos.ledgerCostBasis || 0) + buyCost;
-      if (e.ticker === "O" || e.ticker === "LAND") {
-        console.log("[POSMAP BUY DEBUG]", e.ticker, "qty+="+parseNum(e.qty), "totalQty="+pos.qty, "broker="+e.broker, "src="+e.sourceName);
-      }
       continue;
     }
     if (e.type === "SELL") {
@@ -8459,9 +8476,6 @@ function rebuildBrokerGeneratedData() {
 
   for (const p of posMap.values()) {
     // Combine XTB snapshot qty + T212/XTB-ledger qty
-    if (p.ticker === "O" || p.ticker === "LAND" || (p.yahooTicker || "").includes("LAND")) {
-      console.log("[FINAL DEBUG]", p.ticker, "hasSnapshot="+p.hasSnapshot, "snapshotQty="+p.snapshotQty, "qty="+p.qty, "ledgerCostBasis="+p.ledgerCostBasis, "marketVal="+p.marketValueEUR);
-    }
     const snapshotQty     = p.hasSnapshot && p.snapshotQty > 0 ? p.snapshotQty : 0;
     const ledgerQty       = p.qty > 0 ? p.qty : 0;
     const finalQty        = snapshotQty + ledgerQty > 0 ? snapshotQty + ledgerQty : (snapshotQty || ledgerQty);
