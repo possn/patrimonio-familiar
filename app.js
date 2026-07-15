@@ -413,8 +413,8 @@ const ISIN_YAHOO_MAP = {
   "IE00BLS09M33":"PNR","IE00BQT3WG13":"CNYA.DE","IE00BTN1Y115":"MDT",
   "IE00BY7QL619":"JCI",
   "IT0003128367":"ENEL.MI",
-  "LU1598757687":"MT.LU",
-  "NL0000235190":"AIR.AS","NL0009434992":"LYB","NL0009805522":"NBIS",
+  "LU1598757687":"MT.AS",
+  "NL0000235190":"AIR.PA","NL0009434992":"LYB","NL0009805522":"NBIS",
   "NL0010583399":"CRBN.AS","NL0013267909":"AKZA.AS","NL00150001Q9":"STLA",
   "NL0015002MS2":"MICC.AS","NL0015073TS8":"CSG.AS",
   "PTBCP0AM0015":"BCP.LS","PTCOR0AE0006":"COR.LS","PTEDP0AM0009":"EDP.LS",
@@ -1234,7 +1234,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 17; // v63f: ISIN-guarded merge + repair yahooTicker from ISIN
+const BROKER_REBUILD_SCHEMA_VERSION = 18; // v63g: country-scoped venue fallbacks; fix Airbus/ArcelorMittal ISIN map
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -11761,20 +11761,34 @@ async function refreshLiveQuotes() {
     if (normRaw && normRaw !== raw) push(normRaw);
     if (!directMapped && raw) push(raw);
 
-    // v63e: NEVER brute-force exchange suffixes when the security is already
-    // identified by ISIN (or an explicit Yahoo=/Ticker= tag). Doing so appended
-    // venues like AI.PA / ADM.PA / ADM.DE and, because candidates are tried in
-    // order until one returns a price, a ticker that is ambiguous across venues
-    // could silently take ANOTHER company's quote:
-    //   C3.ai (US12468P1049, "AI") → AI.PA is Air Liquide
-    //   ADM  (US0394831020)       → ADM.L/.DE/.PA are unrelated listings
-    // That produced impossible prices (Air Liquide at ~1918 €/share, +561%).
-    // With an ISIN the venue is already known — guessing can only be wrong.
-    const hasStrongIdentity = !!(isin && (knownOverride || ISIN_YAHOO_MAP[isin] || inferredYahoo))
-                              || hasExplicitTickerTag(asset);
-    if (!hasStrongIdentity && rawBase && !/[.=\-]/.test(rawBase) && !SKIP_TICKERS.has(rawBase)) {
-      const alts = getAltExchangeSuffixes(asset);
-      alts.forEach(suf => push(rawBase + suf));
+    // v63g: fall back to other exchanges, but ONLY to venues consistent with the
+    // ISIN's country. Two competing failure modes must both be avoided:
+    //  - v63d and earlier brute-forced every suffix, so an ambiguous base ticker
+    //    could take another company's quote (C3.ai "AI" → AI.PA = Air Liquide).
+    //  - v63e then cut fallbacks entirely whenever an ISIN existed. That exposed
+    //    wrong ISIN_YAHOO_MAP entries with no safety net (Airbus mapped to AIR.AS
+    //    but Yahoo lists it as AIR.PA; ArcelorMittal MT.LU vs MT.AS), taking the
+    //    failures from 7 to 16.
+    // Restricting fallbacks by ISIN country keeps the cross-company collision
+    // impossible (a US ISIN never tries .PA) while still recovering from a bad map
+    // entry within the correct market.
+    const isinCountry = isin.slice(0, 2);
+    const VENUES_BY_COUNTRY = {
+      FR: [".PA"], NL: [".AS", ".PA"], DE: [".DE", ".F"], BE: [".BR"],
+      LU: [".AS", ".PA", ".LU"], IE: [".IR", ".L", ".DE", ".AS", ".MI"],
+      GB: [".L"], CH: [".SW"], IT: [".MI"], ES: [".MC"], PT: [".LS"],
+      AT: [".VI"], DK: [".CO"], SE: [".ST"], NO: [".OL"], FI: [".HE"],
+      CA: [".TO", ".V"], US: [""], PL: [".WA"]
+    };
+    if (rawBase && !/[.=\-]/.test(rawBase) && !SKIP_TICKERS.has(rawBase)) {
+      if (isinCountry && VENUES_BY_COUNTRY[isinCountry]) {
+        // Known country → only its own venues (plus dual-listing neighbours above)
+        VENUES_BY_COUNTRY[isinCountry].forEach(suf => push(rawBase + suf));
+      } else if (!isin) {
+        // No ISIN at all → keep the old broad search; it is all we have
+        const alts = getAltExchangeSuffixes(asset);
+        alts.forEach(suf => push(rawBase + suf));
+      }
     }
 
     return out;
