@@ -1213,7 +1213,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 15; // v63d: exportJSON fix (Set/cycle/iOS), per-file import removal
+const BROKER_REBUILD_SCHEMA_VERSION = 16; // v63e: no exchange-suffix brute-force when ISIN identifies the security
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -11727,8 +11727,18 @@ async function refreshLiveQuotes() {
     if (normRaw && normRaw !== raw) push(normRaw);
     if (!directMapped && raw) push(raw);
 
-    // Don't try exchange suffixes if the base ticker is in SKIP_TICKERS
-    if (rawBase && !/[.=\-]/.test(rawBase) && !SKIP_TICKERS.has(rawBase)) {
+    // v63e: NEVER brute-force exchange suffixes when the security is already
+    // identified by ISIN (or an explicit Yahoo=/Ticker= tag). Doing so appended
+    // venues like AI.PA / ADM.PA / ADM.DE and, because candidates are tried in
+    // order until one returns a price, a ticker that is ambiguous across venues
+    // could silently take ANOTHER company's quote:
+    //   C3.ai (US12468P1049, "AI") → AI.PA is Air Liquide
+    //   ADM  (US0394831020)       → ADM.L/.DE/.PA are unrelated listings
+    // That produced impossible prices (Air Liquide at ~1918 €/share, +561%).
+    // With an ISIN the venue is already known — guessing can only be wrong.
+    const hasStrongIdentity = !!(isin && (knownOverride || ISIN_YAHOO_MAP[isin] || inferredYahoo))
+                              || hasExplicitTickerTag(asset);
+    if (!hasStrongIdentity && rawBase && !/[.=\-]/.test(rawBase) && !SKIP_TICKERS.has(rawBase)) {
       const alts = getAltExchangeSuffixes(asset);
       alts.forEach(suf => push(rawBase + suf));
     }
