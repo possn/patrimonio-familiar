@@ -1234,7 +1234,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 18; // v63g: country-scoped venue fallbacks; fix Airbus/ArcelorMittal ISIN map
+const BROKER_REBUILD_SCHEMA_VERSION = 21; // v63j: qty drift detector during quote refresh
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -8625,6 +8625,16 @@ function rebuildBrokerGeneratedData() {
       }
     });
     if (toRemove.size) state.assets = assets.filter((_,i) => !toRemove.has(i));
+
+    // v63h: the "Qty=" tag inside notes is written before this merge, so a merged
+    // asset kept the pre-merge figure (ADM showed Qty=23 while holding 38). The
+    // refresh prefers the real qty field, so this was cosmetic — but it is also
+    // the number a human reads when checking, so keep it truthful.
+    (state.assets || []).forEach(a => {
+      if (!a || !a.generatedFromBroker || !a.notes) return;
+      if (!/Qty=/.test(a.notes)) return;
+      a.notes = a.notes.replace(/Qty=[\d.,]+/, "Qty=" + fmt(parseNum(a.qty), 6));
+    });
   })();
 }
 
@@ -10740,6 +10750,147 @@ function handleUnifiedImport(files) {
   }
 }
 
+/* v63h: on-screen diagnostic. Repeated remote guesses about why a holding is
+   wrong have been expensive; this prints, for one security, every stored fact
+   that feeds its quantity and value, so the real cause is visible instead of
+   inferred from a screenshot. */
+function diagnoseAsset(query) {
+  const q = String(query || "").toLowerCase().trim();
+  if (!q) return "Indica um nome ou ticker.";
+  const bd = ensureBrokerData();
+  const hits = (state.assets || []).filter(a =>
+    String(a.name || "").toLowerCase().includes(q) ||
+    String(a.ticker || "").toLowerCase() === q ||
+    String(a.isin || "").toLowerCase() === q);
+  if (!hits.length) return "Nenhum activo encontrado para: " + query;
+
+  const L = [];
+  for (const a of hits) {
+    L.push("═══ " + (a.name || "?") + " ═══");
+    L.push("ISIN        : " + (a.isin || "—"));
+    L.push("ticker      : " + (a.ticker || "—"));
+    L.push("yahooTicker : " + (a.yahooTicker || "—"));
+    L.push("ISIN diz    : " + (ISIN_YAHOO_MAP[String(a.isin || "").toUpperCase()] || "—"));
+    L.push("qty         : " + a.qty);
+    L.push("value (EUR) : " + a.value);
+    L.push("valueLocal  : " + (a.valueLocal !== undefined ? a.valueLocal : "—") + " " + (a.currency || ""));
+    L.push("costBasis   : " + (a.costBasis !== undefined ? a.costBasis : "—"));
+    L.push("gerado?     : " + (a.generatedFromBroker ? "sim (corretora)" : "NÃO — manual"));
+    L.push("notas       : " + String(a.notes || "").slice(0, 160));
+
+    const secKey = makeBrokerSecurityKey(a);
+    const evs = (bd.events || []).filter(e => makeBrokerSecurityKey(e) === secKey);
+    const buys = evs.filter(e => e.type === "BUY");
+    const sells = evs.filter(e => e.type === "SELL");
+    const byBroker = {};
+    buys.forEach(e => { byBroker[e.broker || "?"] = (byBroker[e.broker || "?"] || 0) + parseNum(e.qty); });
+    sells.forEach(e => { byBroker[e.broker || "?"] = (byBroker[e.broker || "?"] || 0) - Math.abs(parseNum(e.qty)); });
+    L.push("--- eventos (chave " + secKey + ") ---");
+    L.push("BUY: " + buys.length + " | SELL: " + sells.length);
+    Object.keys(byBroker).forEach(b => L.push("   " + b + " → qty líquida " + (Math.round(byBroker[b] * 1e6) / 1e6)));
+
+    const poss = (bd.positions || []).filter(p => makeBrokerSecurityKey(p) === secKey);
+    L.push("--- posições declaradas: " + poss.length + " ---");
+    poss.forEach(p => L.push("   " + (p.sourceName || "?") + " · " + (p.positionKind || "?") +
+      " · qty=" + p.qty + " · mv=" + p.marketValueEUR));
+    L.push("");
+  }
+  // v63i: does the stored qty actually match the events that justify it?
+  L.push("─── COERÊNCIA qty vs eventos ───");
+  for (const a of hits) {
+    const secKey = makeBrokerSecurityKey(a);
+    let net = 0;
+    (bd.events || []).forEach(e => {
+      if (makeBrokerSecurityKey(e) !== secKey) return;
+      if (e.type === "BUY") net += parseNum(e.qty);
+      else if (e.type === "SELL") net -= Math.abs(parseNum(e.qty));
+      else if (e.type === "STOCK_DISTRIBUTION") net += Math.max(0, parseNum(e.qty));
+      else if (e.type === "SPLIT_OPEN") net += parseNum(e.qty);
+      else if (e.type === "SPLIT_CLOSE") net -= Math.abs(parseNum(e.qty));
+    });
+    const snap = (bd.positions || [])
+      .filter(p => makeBrokerSecurityKey(p) === secKey && p.positionKind === "market_snapshot")
+      .reduce((s2, p) => s2 + parseNum(p.qty), 0);
+    L.push((a.name || "?") + ":");
+    L.push("   qty guardada      : " + a.qty);
+    L.push("   eventos dizem     : " + (Math.round(net * 1e6) / 1e6));
+    L.push("   snapshots dizem   : " + (Math.round(snap * 1e6) / 1e6));
+    const expect = snap + net;
+    if (Math.abs(parseNum(a.qty) - expect) > 0.001) {
+      L.push("   *** DISCREPÂNCIA: guardada " + a.qty + " vs esperada " + (Math.round(expect * 1e6) / 1e6) + " ***");
+    } else {
+      L.push("   coerente ✓");
+    }
+  }
+  L.push("");
+  const drift = (state.settings && state.settings.lastQtyDrift) || [];
+  L.push("─── QTY alterada no último refresh de cotações ───");
+  if (!drift.length) L.push("   nenhuma (o refresh não mexeu em quantidades)");
+  else drift.forEach(d => L.push("   *** " + d));
+  L.push("");
+  L.push("Ficheiros importados:");
+  (bd.files || []).forEach(f => L.push("   " + (f.name || "?") + " · " + (f.broker || "?") +
+    " · " + (f.events || 0) + " eventos · " + (f.positions || 0) + " posições · " + String(f.importedAt || "").slice(0, 10)));
+  return L.join("\n");
+}
+
+/* v63i: full reset of broker-generated data.
+   The stored quantities on device disagree with what the same files reproduce
+   here (ADM 61 vs 38, BMY 56 vs 29) and repeated refresh/rebuild cycles are
+   stable in testing — so the bad numbers come from state written by an older
+   build that no rebuild path currently overwrites. This drops every
+   broker-generated asset/dividend/transaction and regenerates them purely from
+   the stored events. Manual assets are untouched. */
+function hardResetBrokerData() {
+  const bd = ensureBrokerData();
+  const nGen = (state.assets || []).filter(a => a && a.generatedFromBroker).length;
+  const nMan = (state.assets || []).filter(a => a && !a.generatedFromBroker).length;
+  if (!confirm(
+    "Reconstruir tudo a partir dos movimentos importados?\n\n" +
+    "• " + nGen + " activos de corretora serão recalculados do zero\n" +
+    "• " + nMan + " activos manuais NÃO são tocados\n" +
+    "• Os ficheiros importados mantêm-se\n\n" +
+    "Quantidades, valores e cotações guardadas são descartados e recalculados."
+  )) return;
+
+  // drop every generated artefact, including stale price/qty fields
+  state.assets = (state.assets || []).filter(a => a && !a.generatedFromBroker);
+  state.dividends = (state.dividends || []).filter(d => d && !d.generatedFromBroker);
+  state.transactions = (state.transactions || []).filter(t => t && !t.generatedFromBroker);
+  state.divSummaries = [];
+
+  rebuildBrokerGeneratedData();
+  state.settings.brokerDataSignature = getBrokerDataSignature();
+  state.settings.brokerRebuildSchemaVersion = BROKER_REBUILD_SCHEMA_VERSION;
+  saveState();
+  renderAll();
+  const now = (state.assets || []).filter(a => a && a.generatedFromBroker).length;
+  toast("Reconstruído: " + now + " activos de corretora. Faz 'Cotações' a seguir.");
+}
+
+function showAssetDiagnostic() {
+  const q = prompt("Diagnóstico — nome, ticker ou ISIN do activo:", "ADM");
+  if (!q) return;
+  const txt = diagnoseAsset(q);
+  const w = document.createElement("div");
+  w.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px";
+  w.innerHTML = '<div style="background:#fff;color:#0f172a;border-radius:14px;max-width:560px;width:100%;max-height:80vh;overflow:auto;padding:16px">' +
+    '<pre style="white-space:pre-wrap;font-size:11px;line-height:1.45;margin:0;font-family:ui-monospace,monospace">' +
+    escapeHtml(txt) + '</pre>' +
+    '<div style="display:flex;gap:8px;margin-top:12px">' +
+    '<button id="dgCopy" class="btn btn--outline" style="flex:1">📋 Copiar</button>' +
+    '<button id="dgClose" class="btn btn--primary" style="flex:1">Fechar</button></div></div>';
+  document.body.appendChild(w);
+  w.querySelector("#dgClose").onclick = () => w.remove();
+  w.querySelector("#dgCopy").onclick = () => {
+    const ta = document.createElement("textarea");
+    ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); toast("Copiado."); } catch (_) { toast("Copia manualmente."); }
+    ta.remove();
+  };
+}
+
 function exportJSON() {
   // v63d: this silently did nothing before.
   // 1) state can contain Set/Map values (e.g. sourceNames) which JSON.stringify
@@ -11195,6 +11346,8 @@ function wire() {
 
   // JSON backup
   $("btnExportJSON").addEventListener("click", exportJSON);
+  if ($("btnDiagnose")) $("btnDiagnose").addEventListener("click", showAssetDiagnostic);
+  if ($("btnHardReset")) $("btnHardReset").addEventListener("click", hardResetBrokerData);
   $("jsonInput").addEventListener("change", () => { $("btnImportJSON").disabled = !($("jsonInput").files && $("jsonInput").files.length); });
   $("btnImportJSON").addEventListener("click", async () => {
     const f = $("jsonInput").files && $("jsonInput").files[0];
@@ -11960,6 +12113,12 @@ async function fetchQuoteWithFallback(ref) {
     if (fxh.length > 1095) fxh.splice(0, fxh.length - 1095);
   }
 
+  // v63j: snapshot every quantity before the loop. The user reports values are
+  // right after import and only diverge after refreshing quotes, yet the same
+  // files reproduce correct values in testing — so capture the evidence on device.
+  const _qtyBefore = new Map();
+  (state.assets || []).forEach(a => { if (a && a.id) _qtyBefore.set(a.id, parseNum(a.qty)); });
+
   const today = new Date().toLocaleDateString("pt-PT");
   for (const [idx, ref] of tickerList.entries()) {
     const { asset, raw } = ref;
@@ -12068,6 +12227,22 @@ async function fetchQuoteWithFallback(ref) {
   }
 
   if (!state.settings) state.settings = {};
+
+  // v63j: did this refresh change any quantity? A quote must never do that.
+  try {
+    const drift = [];
+    (state.assets || []).forEach(a => {
+      if (!a || !a.id || !_qtyBefore.has(a.id)) return;
+      const b = _qtyBefore.get(a.id), n2 = parseNum(a.qty);
+      if (Math.abs(b - n2) > 1e-6) drift.push((a.name || a.ticker || "?") + ": " + b + " → " + n2);
+    });
+    state.settings.lastQtyDrift = drift.slice(0, 40);
+    if (drift.length) {
+      console.warn("[QTY DRIFT no refresh]", drift);
+      setTimeout(() => toast("⚠️ " + drift.length + " activos mudaram de quantidade no refresh — ver 🔍 Diagnóstico", 7000), 3500);
+    }
+  } catch (_) {}
+
   state.settings.lastQuoteRefresh = { updated, failed, errors, ts: new Date().toISOString() };
   // Hide progress indicator
   try { _hideRefreshProgress(); } catch (_) {}
