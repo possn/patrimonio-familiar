@@ -1173,6 +1173,27 @@ function normalizeDividendRecord(d) {
   return d;
 }
 
+/* v63f: repair assets whose yahooTicker contradicts their ISIN.
+   Earlier builds brute-forced exchange suffixes and could stamp another
+   company's ticker onto an asset (C3.ai → "AI.PA" = Air Liquide). Once stored,
+   the post-rebuild merge fused the two holdings. Re-derive from the ISIN, which
+   is authoritative, and force a rebuild so any bad merge is undone. */
+function repairYahooTickersFromISIN() {
+  if (!Array.isArray(state.assets)) return false;
+  let fixed = 0;
+  for (const a of state.assets) {
+    if (!a || !a.isin) continue;
+    const truth = ISIN_YAHOO_MAP[String(a.isin).toUpperCase().trim()];
+    if (!truth) continue;
+    if (String(a.yahooTicker || "").toUpperCase() !== String(truth).toUpperCase()) {
+      a.yahooTicker = truth;
+      fixed++;
+    }
+  }
+  if (fixed) console.warn("[repair] yahooTicker corrigido em", fixed, "activos a partir do ISIN");
+  return fixed > 0;
+}
+
 function migrateDividendRecords() {
   if (!Array.isArray(state.dividends)) return false;
   let changed = false;
@@ -1213,7 +1234,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 16; // v63e: no exchange-suffix brute-force when ISIN identifies the security
+const BROKER_REBUILD_SCHEMA_VERSION = 17; // v63f: ISIN-guarded merge + repair yahooTicker from ISIN
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -8567,8 +8588,13 @@ function rebuildBrokerGeneratedData() {
   state.settings.brokerRebuildSig = getBrokerDataSignature();
   state.settings.brokerRebuildSchemaVersion = BROKER_REBUILD_SCHEMA_VERSION;
 
-  // Post-rebuild: merge broker assets with same yahoo ticker
-  // Catches touchPos misses due to ticker format differences between brokers
+  // Post-rebuild: merge broker assets that are genuinely the same security but
+  // arrived with different ticker formats from each broker.
+  // v63f: the ISIN is decisive. Merging on yahooTicker ALONE fused unrelated
+  // companies: a stale quote refresh had written yahooTicker="AI.PA" onto C3.ai
+  // (US12468P1049), which then merged into Air Liquide (FR0000120073), summing
+  // 2.2 + 39 shares and pricing the lot at Air Liquide's ~174 €. Two different
+  // ISINs are, by definition, two different securities — never merge them.
   (function mergeByYahooTicker() {
     const assets = state.assets || [];
     const byYahoo = new Map();
@@ -8577,8 +8603,16 @@ function rebuildBrokerGeneratedData() {
       if (!a.generatedFromBroker) return;
       const ya = String(a.yahooTicker || "").toUpperCase().trim();
       if (!ya) return;
-      if (byYahoo.has(ya)) {
-        const into = assets[byYahoo.get(ya)];
+      const isinA = String(a.isin || "").toUpperCase().trim();
+      const prev = byYahoo.get(ya);
+      if (prev !== undefined) {
+        const into = assets[prev];
+        const isinInto = String(into.isin || "").toUpperCase().trim();
+        // Conflicting ISINs → different companies sharing a ticker string. Keep both.
+        if (isinA && isinInto && isinA !== isinInto) {
+          console.warn("[merge] ISIN mismatch on", ya, "-", into.name, isinInto, "vs", a.name, isinA, "— not merged");
+          return;
+        }
         into.qty = (parseNum(into.qty)||0) + (parseNum(a.qty)||0);
         into.costBasis = (parseNum(into.costBasis)||0) + (parseNum(a.costBasis)||0);
         into.value = (parseNum(into.value)||0) + (parseNum(a.value)||0);
@@ -11928,7 +11962,16 @@ async function fetchQuoteWithFallback(ref) {
       });
       continue;
     }
-    asset.yahooTicker = yahoo || asset.yahooTicker || "";
+    // v63f: never let a resolved quote overwrite an ISIN-derived identity.
+    // A stale/ambiguous resolution previously stamped yahooTicker="AI.PA" onto
+    // C3.ai, and the post-rebuild merge then fused it into Air Liquide.
+    const _isinTrue = ISIN_YAHOO_MAP[String(asset.isin || "").toUpperCase().trim()] || "";
+    if (_isinTrue && String(yahoo || "").toUpperCase() !== String(_isinTrue).toUpperCase()) {
+      console.warn("[Quote] ignoring", yahoo, "for", asset.name, "— ISIN says", _isinTrue);
+      asset.yahooTicker = _isinTrue;
+    } else {
+      asset.yahooTicker = yahoo || asset.yahooTicker || "";
+    }
     const ccy = (q.currency||"EUR").toUpperCase();
     const fxToEur = ccy === "EUR" ? 1 : (fxRates[ccy] || FX_FALLBACK_LOCAL[ccy] || FX_FALLBACK_STATIC[ccy] || 1);
     const priceEur = q.price * fxToEur;
@@ -12316,6 +12359,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       _setMsg("A processar corretoras…");
       const sig = getBrokerDataSignature();
       const prevSig = (((state || {}).settings || {}).brokerRebuildSig) || "";
+      try { repairYahooTickersFromISIN(); } catch (_) {}
       const prevSchema = parseInt((((state || {}).settings || {}).brokerRebuildSchemaVersion) || 0, 10) || 0;
       if (!hasBrokerGeneratedMirror() || sig !== prevSig || prevSchema !== BROKER_REBUILD_SCHEMA_VERSION) {
         rebuildBrokerGeneratedData();
