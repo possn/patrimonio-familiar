@@ -1113,27 +1113,34 @@ function passiveFromItem(it) {
 }
 
 
+// v63: dividend adjustments may legitimately be negative (clawbacks).
+// Clamping them to 0 overstates income, so only non-adjustments are floored.
+function divFloor(d, v) {
+  return (d && d.isAdjustment) ? v : Math.max(0, v);
+}
+
 function getDividendGross(d) {
   const tax = Math.max(0, parseNum(d && d.taxWithheld || 0));
   if (!d) return 0;
-  if (d.grossAmount !== undefined && d.grossAmount !== null && d.grossAmount !== "") return Math.max(0, parseNum(d.grossAmount));
+  if (d.grossAmount !== undefined && d.grossAmount !== null && d.grossAmount !== "") return divFloor(d, parseNum(d.grossAmount));
   if (d.generatedFromBroker && !("grossAmount" in d) && !("netAmount" in d)) {
-    // Legacy broker imports stored amount as NET; reconstruct gross
-    return Math.max(0, parseNum(d.amount) + tax);
+    // v63: broker imports now store `amount` as GROSS (T212 "Total" is gross —
+    // verified against 1871 real rows). Do NOT re-add tax here; that was the
+    // ~22% inflation bug.
+    return divFloor(d, parseNum(d.amount));
   }
-  if (d.netAmount !== undefined && d.netAmount !== null && d.netAmount !== "") return Math.max(0, parseNum(d.netAmount) + tax);
-  return Math.max(0, parseNum(d.amount));
+  if (d.netAmount !== undefined && d.netAmount !== null && d.netAmount !== "") return divFloor(d, parseNum(d.netAmount) + tax);
+  return divFloor(d, parseNum(d.amount));
 }
 
 function getDividendNet(d) {
   const tax = Math.max(0, parseNum(d && d.taxWithheld || 0));
   if (!d) return 0;
-  if (d.netAmount !== undefined && d.netAmount !== null && d.netAmount !== "") return Math.max(0, parseNum(d.netAmount));
+  if (d.netAmount !== undefined && d.netAmount !== null && d.netAmount !== "") return divFloor(d, parseNum(d.netAmount));
   if (d.generatedFromBroker && !("grossAmount" in d) && !("netAmount" in d)) {
-    // Legacy broker imports stored amount as NET
-    return Math.max(0, parseNum(d.amount));
+    return divFloor(d, parseNum(d.amount) - tax);
   }
-  return Math.max(0, getDividendGross(d) - tax);
+  return divFloor(d, getDividendGross(d) - tax);
 }
 
 function normalizeDividendRecord(d) {
@@ -1142,14 +1149,15 @@ function normalizeDividendRecord(d) {
 
   if (d.generatedFromBroker) {
     if (!("grossAmount" in d) && !("netAmount" in d)) {
-      const legacyNet = Math.max(0, parseNum(d.amount));
-      d.grossAmount = legacyNet + tax;
-      d.netAmount = legacyNet;
-      d.amount = d.grossAmount; // normalize storage to GROSS
+      // v63: `amount` from broker import is GROSS (was wrongly assumed NET).
+      const g = divFloor(d, parseNum(d.amount));
+      d.grossAmount = g;
+      d.netAmount = g - tax;
+      d.amount = g; // storage stays GROSS
       return d;
     }
-    const gross = ("grossAmount" in d) ? Math.max(0, parseNum(d.grossAmount)) : Math.max(0, parseNum(d.amount));
-    const net = ("netAmount" in d) ? Math.max(0, parseNum(d.netAmount)) : Math.max(0, gross - tax);
+    const gross = ("grossAmount" in d) ? divFloor(d, parseNum(d.grossAmount)) : divFloor(d, parseNum(d.amount));
+    const net = ("netAmount" in d) ? divFloor(d, parseNum(d.netAmount)) : divFloor(d, gross - tax);
     d.grossAmount = gross;
     d.netAmount = net;
     d.amount = gross;
@@ -1157,8 +1165,8 @@ function normalizeDividendRecord(d) {
   }
 
   // Manual / other sources: amount is gross by convention
-  const gross = ("grossAmount" in d) ? Math.max(0, parseNum(d.grossAmount)) : Math.max(0, parseNum(d.amount));
-  const net = ("netAmount" in d) ? Math.max(0, parseNum(d.netAmount)) : Math.max(0, gross - tax);
+  const gross = ("grossAmount" in d) ? divFloor(d, parseNum(d.grossAmount)) : divFloor(d, parseNum(d.amount));
+  const net = ("netAmount" in d) ? divFloor(d, parseNum(d.netAmount)) : divFloor(d, gross - tax);
   d.grossAmount = gross;
   d.netAmount = net;
   d.amount = gross;
@@ -1205,7 +1213,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 11; // v62e: post-rebuild yahoo merge
+const BROKER_REBUILD_SCHEMA_VERSION = 12; // v63: T212 Total=GROSS fix, Time (UTC) date fix, bidirectional XTB WHT merge
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -2086,10 +2094,12 @@ function renderSearchResults(q) {
   const ql = q.toLowerCase();
   const results = [];
 
-  // Assets
+  // Assets — search by name, class, ticker
   for (const a of state.assets) {
-    if (`${a.name} ${a.class}`.toLowerCase().includes(ql)) {
-      results.push({ type: "Ativo", label: a.name, sub: `${a.class} · ${fmtEUR(parseNum(a.value))}`, action: () => { setView("assets"); editItem(a.id); toggleSearch(); } });
+    if (`${a.name} ${a.class} ${a.ticker || ""} ${a.yahooTicker || ""}`.toLowerCase().includes(ql)) {
+      const gl = calcGainLoss(a);
+      const glStr = gl ? ` · ${gl.gain >= 0 ? "+" : ""}${fmtPct(gl.gainPct)}` : "";
+      results.push({ type: "Ativo", label: a.name, sub: `${a.class} · ${fmtEUR(parseNum(a.value))}${glStr}`, action: () => { setView("assets"); editItem(a.id); toggleSearch(); } });
     }
   }
   // Liabilities
@@ -2491,6 +2501,19 @@ function renderItems() {
   if (sort === "value_desc") src.sort((a, b) => parseNum(b.value) - parseNum(a.value));
   if (sort === "value_asc") src.sort((a, b) => parseNum(a.value) - parseNum(b.value));
   if (sort === "name_asc") src.sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "pt"));
+  if (sort === "gain_pct_desc") src.sort((a, b) => {
+    const gl_a = calcGainLoss(a), gl_b = calcGainLoss(b);
+    return (gl_b ? gl_b.gainPct : -9999) - (gl_a ? gl_a.gainPct : -9999);
+  });
+  if (sort === "gain_pct_asc") src.sort((a, b) => {
+    const gl_a = calcGainLoss(a), gl_b = calcGainLoss(b);
+    return (gl_a ? gl_a.gainPct : 9999) - (gl_b ? gl_b.gainPct : 9999);
+  });
+  if (sort === "div_desc") src.sort((a, b) => {
+    const ya = getAssetPassiveRatePct(a) * parseNum(a.value) / 100;
+    const yb = getAssetPassiveRatePct(b) * parseNum(b.value) / 100;
+    return yb - ya;
+  });
 
   if (!src.length) {
     list.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem ${showingLiabs ? "passivos" : "ativos"}</div><div class="item__s">Usa "Adicionar".</div></div><div class="item__v">—</div></div>`;
@@ -4722,53 +4745,50 @@ function renderDivCalendar() {
 
   const fmtE = v => new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(v);
 
-  let html = "";
-  for (const key of Object.keys(byMonth).sort()) {
-    const grp = byMonth[key];
-    const isCurrent = grp.month === currentMonth && grp.year === currentYear;
-    const headerBg = isCurrent ? "#eef2ff" : "#f8fafc";
-    const headerColor = isCurrent ? "#4f46e5" : "#475569";
-
-    html += "<div style='margin-bottom:16px'>"
-      + "<div style='background:"+headerBg+";border-radius:10px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px'>"
-      + "<div style='font-weight:800;font-size:15px;color:"+headerColor+"'>"+(isCurrent?"📍 ":"")+MONTHS_PT[grp.month]+" "+grp.year+"</div>"
-      + "<div style='font-weight:700;font-size:15px;color:#059669'>~"+fmtE(grp.total)+"</div>"
-      + "</div>";
-
-    grp.items.sort((a,b)=>b.amount-a.amount);
-    for (const item of grp.items) {
-      html += "<div style='display:flex;align-items:center;gap:10px;padding:7px 14px;border-bottom:1px solid #f1f5f9'>"
-        + "<div style='font-weight:700;font-size:13px;font-family:monospace;min-width:60px;color:#0f172a'>"+escapeHtml(item.tk)+"</div>"
-        + "<div style='flex:1;font-size:12px;color:#64748b'>"+escapeHtml(item.name)+" · "+item.freqLabel+"</div>"
-        + "<div style='font-weight:600;font-size:13px;color:#059669'>~"+fmtE(item.amount)+"</div>"
-        + "</div>";
-    }
-    html += "</div>";
-  }
-
-  // Summary
   const totalNext12 = upcomingPayments.reduce((s,p)=>s+p.amount,0);
   const uniqueTickers = [...new Set(upcomingPayments.map(p=>p.tk))].length;
 
-  container.innerHTML = `
-    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-      <div style="flex:1;min-width:100px;background:#f0fdf4;border-radius:10px;padding:10px;text-align:center">
-        <div style="font-size:11px;color:#64748b;margin-bottom:2px">Próximos 12 meses</div>
-        <div style="font-weight:800;font-size:16px;color:#059669">${fmtE(totalNext12)}</div>
-      </div>
-      <div style="flex:1;min-width:100px;background:#f0f9ff;border-radius:10px;padding:10px;text-align:center">
-        <div style="font-size:11px;color:#64748b;margin-bottom:2px">Pagadores</div>
-        <div style="font-weight:800;font-size:16px;color:#0284c7">${uniqueTickers}</div>
-      </div>
-      <div style="flex:1;min-width:100px;background:#fef9c3;border-radius:10px;padding:10px;text-align:center">
-        <div style="font-size:11px;color:#64748b;margin-bottom:2px">Fonte</div>
-        <div style="font-weight:800;font-size:13px;color:#854d0e">Histórico real</div>
-      </div>
-    </div>
-    ${html}
-    <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:8px;padding:8px">
-      Baseado no histórico real de dividendos recebidos · Estimativas para meses futuros
-    </div>`;
+  // Build month cards
+  var monthCards = "";
+  for (const key of Object.keys(byMonth).sort()) {
+    const grp = byMonth[key];
+    const isCurrent = grp.month === currentMonth && grp.year === currentYear;
+    const isPast = (grp.year < currentYear) || (grp.year === currentYear && grp.month < currentMonth);
+    const borderColor = isCurrent ? "#6366f1" : isPast ? "#e2e8f0" : "#e2e8f0";
+    const headerBg = isCurrent ? "linear-gradient(135deg,#6366f1,#818cf8)" : isPast ? "#f8fafc" : "#f8fafc";
+    const headerTextColor = isCurrent ? "#fff" : "#475569";
+    const totalColor = isCurrent ? "#fff" : "#059669";
+    const opacity = isPast ? "0.55" : "1";
+
+    grp.items.sort(function(a,b){ return b.amount - a.amount; });
+
+    var rows = grp.items.map(function(item){
+      return "<div style='display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #f1f5f9'>"
+        + "<span style='font-size:11px;font-weight:800;font-family:monospace;color:#0f172a;min-width:48px'>"+escapeHtml(item.tk)+"</span>"
+        + "<span style='flex:1;font-size:11px;color:#64748b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>"+escapeHtml(item.name)+"</span>"
+        + "<span style='font-size:12px;font-weight:700;color:#059669;flex-shrink:0'>"+fmtE(item.amount)+"</span>"
+        + "</div>";
+    }).join("");
+
+    monthCards += "<div style='border:1.5px solid "+borderColor+";border-radius:14px;overflow:hidden;margin-bottom:12px;opacity:"+opacity+"'>"
+      + "<div style='background:"+headerBg+";padding:10px 14px;display:flex;justify-content:space-between;align-items:center'>"
+      + "<div style='font-weight:800;font-size:15px;color:"+headerTextColor+"'>"+(isCurrent?"📍 ":isPast?"✓ ":"")+MONTHS_PT[grp.month]+" "+grp.year+"</div>"
+      + "<div style='font-weight:900;font-size:16px;color:"+totalColor+"'>"+fmtE(grp.total)+"</div>"
+      + "</div>"
+      + "<div style='padding:4px 12px 6px'>"+rows+"</div>"
+      + "</div>";
+  }
+
+  container.innerHTML = "<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px'>"
+    + "<div style='background:#f0fdf4;border-radius:10px;padding:10px;text-align:center'>"
+    + "<div style='font-size:11px;color:#64748b;margin-bottom:2px'>Próximos 12 meses</div>"
+    + "<div style='font-weight:800;font-size:17px;color:#059669'>"+fmtE(totalNext12)+"</div></div>"
+    + "<div style='background:#f0f9ff;border-radius:10px;padding:10px;text-align:center'>"
+    + "<div style='font-size:11px;color:#64748b;margin-bottom:2px'>Pagadores</div>"
+    + "<div style='font-weight:800;font-size:17px;color:#0284c7'>"+uniqueTickers+" acções</div></div>"
+    + "</div>"
+    + monthCards
+    + "<div style='font-size:11px;color:#94a3b8;text-align:center;margin-top:4px'>Baseado no histórico real importado · valores estimados</div>";
 }
 
 const TICKER_DB = {
@@ -7505,6 +7525,9 @@ function normalizeBrokerAction(raw) {
   if (n.includes("lending interest")) return "LENDING_INTEREST";
   if (n.includes("dividend adjustment")) return "DIVIDEND_ADJ";
   if (n.includes("return of capital")) return "ROC";
+  // v63: "Stock dividends" = shares credited, no cash → stock event, not cash dividend
+  if (n.includes("stock dividend")) return "STOCK_DISTRIBUTION";
+  if (n.includes("adr fee")) return "FEE";
   if (n.startsWith("dividend")) return "DIVIDEND";
   if (n.includes("stock split open")) return "SPLIT_OPEN";
   if (n.includes("stock split close")) return "SPLIT_CLOSE";
@@ -7545,9 +7568,12 @@ function brokerPositionKey(pos) {
 function estimateEURFactorFromRow(r, grossLocal, totalEUR, ccy) {
   const cur = String(ccy || "EUR").toUpperCase();
   if (!cur || cur === "EUR") return 1;
-  if (grossLocal > 0 && totalEUR > 0) return totalEUR / grossLocal;
+  // v63: T212 exports an exact "Exchange rate" column — use it first.
+  // Deriving totalEUR/grossLocal is imprecise because Total is rounded to 2dp
+  // (e.g. gives 0.859057 instead of the true 0.853191).
   const fx = parseNumberSmart(r.exchange_rate);
   if (Number.isFinite(fx) && fx > 0 && fx < 10) return fx;
+  if (grossLocal > 0 && totalEUR > 0) return totalEUR / grossLocal;
   return brokerApproxFxToEUR(cur);
 }
 
@@ -7569,7 +7595,7 @@ function parseBrokerLedgerRows(rows, meta) {
       .map(parseNumberSmart)
       .filter(v => Number.isFinite(v) && v > 0)
       .reduce((a, b) => a + b, 0);
-    const when = String(r.time || r.date || "").trim();
+    const when = String(r.time || r.time_utc || r.date || r.record_date || "").trim();
     const date = normalizeDate(when.slice(0, 10)) || normalizeDate(when) || isoToday();
     const evt = {
       id: uid(),
@@ -7913,6 +7939,15 @@ function parseXTBCashRows(rows, meta) {
       taxEUR: 0, feeEUR: 0, resultEUR: amount,
       notes: comment, key: ""
     };
+    // v63: XTB posts dividend REVERSALS as negative "Dividend" rows (comment
+    // starts with "corr ..."). Math.abs() flipped them positive, inflating gross
+    // by 2x the correction (verified: 21 rows, +20.74 EUR). Keep the sign.
+    if (type === "DIVIDEND" && amount < 0) {
+      evt.type = "DIVIDEND_ADJ";
+      evt.totalEUR = amount;      // negative
+      evt.grossLocal = amount;
+      evt.resultEUR = amount;
+    }
     // Handle Stock purchase / Stock sale with qty from comment
     if (type === "XTB_STOCK_PURCHASE" || type === "XTB_STOCK_SALE") {
       // Extract qty from comment: "OPEN BUY 2/4 @ 63.38" or "CLOSE BUY 1 @ 13.00"
@@ -8211,39 +8246,41 @@ function rebuildBrokerGeneratedData() {
 
   let events = (bd.events || []).slice().sort((a, b) => String(a.dateTime || a.date).localeCompare(String(b.dateTime || b.date)));
 
-  // v19: Merge XTB Withholding Tax (DIVIDEND_ADJ with taxEUR>0, totalEUR=0) into the
-  // adjacent DIVIDEND event for the same ticker+date. XTB exports them as two rows.
-  // Without merge: dividend records are duplicated AND gross is understated by WHT.
+  // v63: Merge XTB withholding-tax rows into their dividend.
+  // XTB emits the pair with the SAME microsecond timestamp (verified on real
+  // exports: 2932 exact 1:1 groups). The old code scanned a forward-only
+  // positional window (i+1..i+5), which orphaned every WHT row that preceded
+  // its dividend (465 of 3928) and could bind the wrong lot when a ticker paid
+  // several lots in the same second. Pair on ticker + exact timestamp instead.
   {
-    const merged = [];
+    const whtPool = new Map(); // ticker|timestamp -> queue of WHT event indices
+    const keyOf = (e) => String(e.ticker || "").toUpperCase() + "|" + String(e.dateTime || e.date || "");
+    for (let i = 0; i < events.length; i++) {
+      const a = events[i];
+      if (!a || a.type !== "DIVIDEND_ADJ") continue;
+      if (!(parseNum(a.taxEUR) > 0 && parseNum(a.totalEUR) === 0)) continue;
+      const k = keyOf(a);
+      if (!whtPool.has(k)) whtPool.set(k, []);
+      whtPool.get(k).push(i);
+    }
     const consumed = new Set();
     for (let i = 0; i < events.length; i++) {
-      if (consumed.has(i)) continue;
       const e = events[i];
-      if (e && e.type === "DIVIDEND" && parseNum(e.totalEUR) > 0) {
-        // Look ahead for a DIVIDEND_ADJ with same ticker+date, taxEUR>0, totalEUR=0
-        for (let j = i + 1; j < Math.min(i + 5, events.length); j++) {
-          if (consumed.has(j)) continue;
-          const a = events[j];
-          if (!a || a.type !== "DIVIDEND_ADJ") continue;
-          const sameTicker = String(a.ticker || "").toUpperCase() === String(e.ticker || "").toUpperCase();
-          const sameDate = String(a.date || "").slice(0,10) === String(e.date || "").slice(0,10);
-          if (sameTicker && sameDate && parseNum(a.taxEUR) > 0 && parseNum(a.totalEUR) === 0) {
-            // Merge: e becomes gross=(net+wht), tax=wht
-            const net = parseNum(e.totalEUR);
-            const wht = parseNum(a.taxEUR);
-            e.totalEUR = net + wht;  // gross = net received + WHT
-            e.taxEUR = (parseNum(e.taxEUR) || 0) + wht;
-            e.notes = (e.notes || "") + (e.notes ? " · " : "") + `WHT merged: ${fmtEUR2(wht)}`;
-            consumed.add(j);
-            break;
-          }
-        }
-      }
-      merged.push(e);
+      if (!e || e.type !== "DIVIDEND" || !(parseNum(e.totalEUR) > 0)) continue;
+      const q = whtPool.get(keyOf(e));
+      if (!q || !q.length) continue;
+      const j = q.shift();
+      const wht = parseNum(events[j].taxEUR);
+      // XTB "Amount" on the Dividend row is already GROSS; only attach the tax.
+      e.taxEUR = (parseNum(e.taxEUR) || 0) + wht;
+      e.notes = (e.notes || "") + (e.notes ? " · " : "") + `WHT: ${fmtEUR2(wht)}`;
+      consumed.add(j);
     }
-    events = merged;
+    events = events.filter((_, i) => !consumed.has(i));
   }
+
+  // v63: collects XTB withholding-tax rows that found no dividend partner
+  const orphanWhtByKey = new Map();
 
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
@@ -8312,12 +8349,28 @@ function rebuildBrokerGeneratedData() {
     }
 
     if (e.type === "DIVIDEND" || e.type === "ROC" || e.type === "DIVIDEND_ADJ") {
-      // T212: "Total" = NET credited after WHT. XTB: "Amount" for DIVIDENT = gross (WHT merged via v19).
-      // Correct gross for T212 = totalEUR + taxEUR (re-add WHT to get pre-tax amount).
-      const net_received = Math.max(0, parseNum(e.totalEUR));
+      // v63: an unmerged XTB withholding-tax row (totalEUR=0, taxEUR>0) is NOT a
+      // dividend. Booking it here created a phantom record with gross 0 and a
+      // negative net, double-counting the tax. Fold it into the matching security
+      // as a tax-only correction instead of emitting a bogus dividend.
+      if (e.broker === "XTB" && parseNum(e.totalEUR) === 0 && parseNum(e.taxEUR) > 0) {
+        orphanWhtByKey.set(makeBrokerSecurityKey(e) || (e.ticker || ""),
+          (orphanWhtByKey.get(makeBrokerSecurityKey(e) || (e.ticker || "")) || 0) + parseNum(e.taxEUR));
+        continue;
+      }
+      // v63 CORRECTION (verified against real T212 CSVs 2023-2026, n=1871):
+      // T212 "Total" is the GROSS amount in EUR, NOT net of withholding tax.
+      // Proof: |Total - qty*price*fx| MAE = 0.0002 (gross) vs 0.1333+ (net).
+      // The previous code did gross = total + tax, inflating gross by ~22%.
+      // XTB: "Amount" for Dividend is also gross (WHT is a separate row, merged above).
+      // => Both brokers now store totalEUR as GROSS.
       const tax = Math.max(0, parseNum(e.taxEUR));
-      const gross = (e.broker === "XTB") ? net_received : (net_received + tax);
-      const net = Math.max(0, gross - tax);
+      // v63: "Dividend adjustment" can be NEGATIVE (clawback of a prior dividend).
+      // Math.max(0,...) silently erased those, overstating totals. Allow the sign
+      // through for adjustments; ordinary dividends/ROC remain non-negative.
+      const rawTotal = parseNum(e.totalEUR);
+      const gross = (e.type === "DIVIDEND_ADJ") ? rawTotal : Math.max(0, rawTotal);
+      const net = gross - tax;
       const divNoteParts = [e.actionRaw || e.type, e.broker || "Corretora"];
       if (e.sourceName) divNoteParts.push(e.sourceName);
       if (e.ticker) divNoteParts.push(`Ticker=${String(e.ticker).trim().toUpperCase()}`);
@@ -8327,9 +8380,25 @@ function rebuildBrokerGeneratedData() {
       state.dividends.push(normalizeDividendRecord({
         id: uid(), assetId: "", assetName: e.ticker || e.name || e.isin || "Dividendo",
         amount: gross, grossAmount: gross, netAmount: net, taxWithheld: tax,
+        isAdjustment: e.type === "DIVIDEND_ADJ",
+        secKey: makeBrokerSecurityKey(e) || (e.ticker || ""),
+        divBroker: e.broker || "",
         date: e.date, notes: divNoteParts.join(' · '),
         generatedFromBroker: true, sourceHash: e.sourceHash, eventKey: e.key
       }));
+      continue;
+    }
+    if (e.type === "FEE") {
+      // v63: broker fees (e.g. T212 "ADR Fee") are a cash outflow, not a dividend.
+      const feeAmt = Math.abs(parseNum(e.totalEUR)) || Math.abs(parseNum(e.feeEUR));
+      if (feeAmt > 0) {
+        state.transactions.push({
+          id: uid(), date: e.date, type: "out", category: "Comissões corretora",
+          amount: feeAmt, recurring: "none",
+          notes: `${e.actionRaw || e.type} · ${e.broker || "Corretora"}${e.sourceName ? " · " + e.sourceName : ""}`,
+          generatedFromBroker: true, sourceHash: e.sourceHash, eventKey: e.key
+        });
+      }
       continue;
     }
     if (e.type === "CASH_INTEREST" || e.type === "LENDING_INTEREST") {
@@ -8350,6 +8419,31 @@ function rebuildBrokerGeneratedData() {
       });
     }
   }
+
+  // v63: apply XTB withholding-tax rows that had no dividend partner, spreading
+  // them pro-rata over that security's XTB dividends so the tax is neither lost
+  // nor double-counted as a phantom record.
+  if (orphanWhtByKey.size) {
+    for (const [secKey, whtTotal] of orphanWhtByKey) {
+      if (!(whtTotal > 0)) continue;
+      const targets = state.dividends.filter(d =>
+        d && d.generatedFromBroker && d.divBroker === "XTB" && d.secKey === secKey && parseNum(d.grossAmount) > 0);
+      const grossSum = targets.reduce((a, d) => a + parseNum(d.grossAmount), 0);
+      if (!targets.length || !(grossSum > 0)) continue;
+      let applied = 0;
+      targets.forEach((d, idx) => {
+        const share = idx === targets.length - 1
+          ? whtTotal - applied
+          : Math.round((whtTotal * (parseNum(d.grossAmount) / grossSum)) * 100) / 100;
+        applied += share;
+        const cappedTax = Math.min(parseNum(d.grossAmount), parseNum(d.taxWithheld) + share);
+        d.taxWithheld = cappedTax;
+        d.netAmount = parseNum(d.grossAmount) - cappedTax;
+      });
+    }
+  }
+  // strip internal helper fields
+  for (const d of state.dividends) { if (d && "secKey" in d) { delete d.secKey; delete d.divBroker; } }
 
   const cutoffDiv12m = new Date(new Date().getFullYear() - 1, new Date().getMonth(), new Date().getDate()).toISOString().slice(0, 10);
   const divNet12mBySecurity = new Map();
@@ -11766,7 +11860,11 @@ async function fetchQuoteWithFallback(ref) {
   // Disparar evento para outros listeners (P&L, price alerts)
   document.dispatchEvent(new CustomEvent("quotesUpdated"));
 
-  if (btn) { btn.disabled = false; btn.textContent = "⟳ Cotações"; }
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = "⟳ Cotações";
+    btn.title = "Cotações actualizadas em " + new Date().toLocaleTimeString("pt-PT", {hour:"2-digit",minute:"2-digit"});
+  }
 
   if (updated > 0 && !failed) {
     toast(`✅ ${updated} ativo${updated !== 1 ? "s" : ""} actualizado${updated !== 1 ? "s" : ""}`, 3000);
@@ -11977,6 +12075,22 @@ function checkDuplicateWarning() {
    - Houver activos com ticker
    - A última actualização foi há mais de 30 minutos OU nunca foi hoje
    ────────────────────────────────────────────────────────────── */
+function updateQuoteButtonStaleness() {
+  const btn = document.getElementById("btnRefreshQuotes");
+  if (!btn) return;
+  const lastTs = (state.settings && state.settings.lastQuoteRefreshTs) || 0;
+  if (!lastTs) return;
+  const hoursAgo = (Date.now() - lastTs) / 3600000;
+  if (hoursAgo > 24) {
+    btn.style.borderColor = "#f59e0b";
+    btn.style.color = "#d97706";
+    btn.title = "Cotações desactualizadas (" + Math.floor(hoursAgo) + "h) — clica para actualizar";
+  } else {
+    btn.style.borderColor = "";
+    btn.style.color = "";
+  }
+}
+
 function autoRefreshQuotesIfStale() {
   const workerUrl = (state.settings && state.settings.workerUrl) || "";
   if (!workerUrl) return; // Worker não configurado — não fazer nada
