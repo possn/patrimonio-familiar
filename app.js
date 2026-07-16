@@ -1234,7 +1234,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 25; // v63n: force-update button + active SW cache badge
+const BROKER_REBUILD_SCHEMA_VERSION = 28; // v63q: cost_snapshot positions no longer double-count on top of ledger events (second layer of defense for the T212 2026 format bug)
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -7519,7 +7519,16 @@ function detectBrokerRowsFormat(rows) {
   sample.forEach(r => Object.keys(r || {}).forEach(k => keys.add(k)));
   const has = (...arr) => arr.some(k => keys.has(k));
   // Trading 212 ledger
-  if (has("action") && has("time") && has("ticker", "isin") && has("total")) return "broker_ledger";
+  // v63p: T212 renamed the "Time" column to "Time (UTC)" in newer exports (seen in
+  // 2026 CSVs). Because this check required exactly "time", a 2026 export fell
+  // through to the next rule ("positions") — Action/ISIN/Ticker/No. of shares/
+  // Price per share/Total are ALSO a superset match for a generic positions CSV.
+  // The result: 1364 ledger rows (BUY/SELL/DIVIDEND events) were reinterpreted as
+  // 1364 static cost-basis SNAPSHOTS, each holding the security's running quantity.
+  // Those snapshot quantities were then summed on top of the real BUY/SELL events
+  // from the OTHER T212 years, silently doubling holdings (e.g. ADM: 23 real buys
+  // + a 23-share snapshot = 46, plus XTB's 15 = 61 instead of 38).
+  if (has("action") && has("time", "time_utc") && has("ticker", "isin") && has("total")) return "broker_ledger";
   // Generic positions CSV (cost per share)
   if (has("ticker", "symbol") && has("quantity", "qty", "shares", "no_of_shares") && has("cost_per_share", "price_share", "price", "preco")) return "positions";
   // XTB trade history CSV (closed trades)
@@ -8267,7 +8276,16 @@ function rebuildBrokerGeneratedData() {
   for (const p of (bd.positions || [])) {
     const cls = p.class || brokerPositionClassFromTicker(p.ticker);
     const pos = touchPos({ ticker: p.ticker, isin: p.isin, name: p.name, cls, sourceName: p.sourceName, currency: p.priceCurrency || "EUR" });
-    if (p.positionKind === "market_snapshot") {
+    if (p.positionKind === "market_snapshot" || p.positionKind === "cost_snapshot") {
+      // v63q: "cost_snapshot" (from parseBrokerPositionRows — a generic positions
+      // CSV with qty + cost-per-share, no market value) was falling into the
+      // ledger-reconstruction branch below, which ADDS onto pos.qty per source.
+      // A snapshot is a statement of the CURRENT holding, not another purchase —
+      // it must replace/reconcile, never accumulate on top of BUY/SELL events for
+      // the same security. This was the second half of the "Time (UTC)" bug: even
+      // after fixing format detection so 2026 exports aren't misread as positions,
+      // any genuine positions-format import (or a stale one still in IndexedDB)
+      // would keep double-counting. Treat both snapshot kinds identically here.
       const d = String(p.snapshotDate || "");
       if (!pos.hasSnapshot || !pos.snapshotDate || (d && d > pos.snapshotDate)) {
         // Newer snapshot date → reset and use this one
