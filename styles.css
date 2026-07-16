@@ -167,8 +167,9 @@ body {
 .fab:active { transform: scale(.93); }
 
 /* ─── MAIN ─── */
+:root { --passivebar-h: 62px; } /* fallback; overridden in JS with the real measured height */
 .main {
-  padding: 14px 12px 180px;
+  padding: 14px 12px calc(var(--bottomnav-h) + var(--passivebar-h) + env(safe-area-inset-bottom, 0px) + 24px);
   max-width: 680px;
   margin: 0 auto;
   contain: layout style;
@@ -461,9 +462,10 @@ select.input   { cursor: pointer; }
 }
 
 /* ─── PASSIVE BAR ─── */
+:root { --bottomnav-h: 78px; } /* fallback; overridden in JS with the real measured height */
 .passivebar {
   position: fixed; left: 50%; transform: translateX(-50%);
-  bottom: 82px;
+  bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + 8px);
   width: min(680px, calc(100% - 16px));
   z-index: 59;
   background: var(--nav-bg);
@@ -496,7 +498,7 @@ select.input   { cursor: pointer; }
   background: var(--nav-bg);
   border-top: 1px solid var(--line);
   box-shadow: 0 -2px 20px rgba(15,23,42,.06);
-  padding: 6px 8px 22px;
+  padding: 6px 8px calc(env(safe-area-inset-bottom, 0px) + 10px);
   display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px;
   will-change: transform;
   contain: layout style;

@@ -1271,7 +1271,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 34; // v63w: sector chart reconciliation diagnostic + clarified scope label (Ações/ETFs e Cripto only)
+const BROKER_REBUILD_SCHEMA_VERSION = 38; // v64: auto-suggest allocation targets in Rebalancing, bridging existing FIRE_ALLOCATION_PRESETS to the person's actual asset classes instead of 9 empty % boxes
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -11043,6 +11043,46 @@ async function reportActiveSwVersion() {
   }
 }
 
+/* v63z: .bottomnav and .passivebar are fixed-position, so nothing pushes the
+   scrollable content out of their way automatically — .main's padding-bottom
+   had a single hardcoded number (180px) that had to guess both bars' combined
+   height AND the device's safe-area inset. On some iPhones that guess was too
+   small, so list content (e.g. "Fontes activas da carteira") scrolled UNDER
+   the passivebar and got visually clipped, and the passivebar itself could
+   overlap the bottomnav. This measures the real rendered height of both bars
+   and writes it into CSS custom properties that .main's padding and
+   .passivebar's position are built from — so they can never drift out of sync,
+   regardless of device, font size, or future content changes to either bar. */
+function syncFixedBarHeights() {
+  const nav = document.querySelector(".bottomnav");
+  const bar = document.getElementById("passivebar");
+  const root = document.documentElement.style;
+  if (nav) {
+    const h = nav.getBoundingClientRect().height;
+    if (h > 0) root.setProperty("--bottomnav-h", Math.ceil(h) + "px");
+  }
+  if (bar && bar.style.display !== "none" && bar.offsetParent !== null) {
+    const h = bar.getBoundingClientRect().height;
+    if (h > 0) root.setProperty("--passivebar-h", Math.ceil(h) + "px");
+  } else {
+    root.setProperty("--passivebar-h", "0px");
+  }
+}
+
+function setupFixedBarSpacing() {
+  syncFixedBarHeights();
+  // Re-measure after fonts/content settle, on resize (rotation, keyboard), and
+  // whenever the passivebar's own content changes (e.g. numbers wrap to 2 lines
+  // on a narrow device after a large portfolio value is rendered).
+  setTimeout(syncFixedBarHeights, 300);
+  window.addEventListener("resize", () => { syncFixedBarHeights(); });
+  window.addEventListener("orientationchange", () => { setTimeout(syncFixedBarHeights, 200); });
+  const bar = document.getElementById("passivebar");
+  if (bar && "ResizeObserver" in window) {
+    try { new ResizeObserver(() => syncFixedBarHeights()).observe(bar); } catch (_) {}
+  }
+}
+
 async function forceAppUpdate() {
   if (!confirm(
     "Forçar actualização?\n\n" +
@@ -12888,6 +12928,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
   try { reportActiveSwVersion(); } catch (_) {}
   try { renderStaleXtbImportBanner(); } catch (_) {}
+  try { setupFixedBarSpacing(); } catch (_) {}
   // Hide loading overlay with fade
   if (_splash) {
     _splash.style.transition = "opacity 0.3s ease";
@@ -14108,7 +14149,14 @@ function renderRebalancing() {
   if (!hasSomeTarget) {
     const byClass = {};
     for (const a of state.assets) { const k = a.class||"Outros"; byClass[k]=(byClass[k]||0)+parseNum(a.value); }
+    const detectedPhase = detectFIREPhase();
+    const phaseLabel = (FIRE_ALLOCATION_PRESETS[detectedPhase] || {}).label || detectedPhase;
     el.innerHTML = `
+      <div style="margin-bottom:12px;padding:12px 14px;border-radius:12px;background:#f4f4ff;border:1px solid #ddd6fe">
+        <div style="font-weight:800;font-size:13px;color:#4c1d95;margin-bottom:4px">💡 Sugestão automática disponível</div>
+        <div style="font-size:12px;color:#5b21b6;margin-bottom:10px">Baseada na tua fase FIRE actual (${escapeHtml(phaseLabel)}) e nas classes que já tens. Preenche os campos abaixo — continuas a poder ajustar tudo antes de guardar.</div>
+        <button class="btn btn--outline" id="btnSuggestAlloc" style="width:100%;font-size:13px;border-color:#8b5cf6;color:#6d28d9">✨ Preencher com sugestão</button>
+      </div>
       <div class="note" style="margin-bottom:12px">Define a tua <b>alocação alvo</b> por classe (total deve = 100%):</div>
       ${Object.entries(byClass).map(([cls, val]) => `
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
@@ -14118,6 +14166,17 @@ function renderRebalancing() {
           <span style="font-size:13px;color:#94a3b8">%</span>
         </div>`).join("")}
       <button class="btn btn--primary" id="btnSaveTargets" style="width:100%;margin-top:8px">💾 Guardar alocação alvo</button>`;
+
+    const btnSuggest = document.getElementById("btnSuggestAlloc");
+    if (btnSuggest) btnSuggest.addEventListener("click", () => {
+      const suggestion = suggestedAllocationFromPreset(detectedPhase);
+      Object.entries(byClass).forEach(([cls]) => {
+        const key = cls.replace(/[^a-zA-Z0-9]/g,'_');
+        const inp = document.getElementById("target_" + key);
+        if (inp) inp.value = suggestion[cls] != null ? String(suggestion[cls]) : "";
+      });
+      toast("Sugestão preenchida — revê e ajusta antes de guardar.");
+    });
 
     const btnSave = document.getElementById("btnSaveTargets");
     if (btnSave) btnSave.addEventListener("click", () => {
@@ -14385,6 +14444,20 @@ function buildPortfolioContext() {
     if (pct>=50) riskAlerts.push(`${cls}: ${fmt(pct,1)}% do portfólio (concentração elevada)`);
   }
 
+  // v63y: rendimento passivo por activo — necessário para identificar concretamente
+  // que posições (grandes o suficiente para importar) não geram rendimento, para
+  // sugestões de equilíbrio rendimento/valorização com base em dados reais.
+  const assetYields = state.assets
+    .filter(a => parseNum(a.value) >= t.assetsTotal * 0.01) // só activos com peso ≥1% do total
+    .map(a => ({ name: a.name, cls: a.class, value: parseNum(a.value), yieldPct: getAssetPassiveRatePct(a) }))
+    .sort((a, b) => b.value - a.value);
+  const idleAssets = assetYields.filter(a => a.yieldPct < 0.5).slice(0, 8);
+  const idleStr = idleAssets.length
+    ? idleAssets.map(a => `${a.name} [${a.cls}]: ${fmtEUR(a.value)} — yield ${fmt(a.yieldPct,2)}%`).join("\n  ")
+    : "Nenhum activo relevante sem rendimento identificado";
+  const topYieldStr = [...assetYields].sort((a,b)=>b.yieldPct-a.yieldPct).slice(0,5)
+    .map(a => `${a.name} [${a.cls}]: ${fmtEUR(a.value)} — yield ${fmt(a.yieldPct,2)}%`).join("\n  ");
+
   return `PORTFÓLIO FAMILIAR — DADOS REAIS (${isoToday()})
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 BALANÇO GLOBAL
@@ -14404,6 +14477,12 @@ SCORE DE DIVERSIFICAÇÃO: ${div.score}/100 (${div.label})
 
 TOP 5 ACTIVOS
     ${top5}
+
+ACTIVOS RELEVANTES (≥1% do portfólio) COM YIELD MAIS BAIXO OU NULO
+  ${idleStr}
+
+ACTIVOS COM MAIOR YIELD
+  ${topYieldStr}
 
 PASSIVOS
   ${liabsStr}
@@ -14533,7 +14612,36 @@ Estrutura assim:
 ## 📅 Plano de Execução
 (Como e quando executar o rebalancing de forma eficiente)
 
-Considera o contexto português: fiscalidade de ETFs, PPR, depósitos, imobiliário. Máximo 500 palavras.`
+Considera o contexto português: fiscalidade de ETFs, PPR, depósitos, imobiliário. Máximo 500 palavras.`,
+
+  balance: `És um analista financeiro sénior, com décadas de experiência em gestão de património de particulares em Portugal, a rever esta carteira para um cliente.
+
+O objectivo permanente deste cliente é claro: equilibrar o portfólio para AUMENTAR o rendimento passivo E o valor total ao longo do tempo — não escolher um em detrimento do outro.
+
+CONTEXTO MACRO ACTUAL (referência, não é o foco principal):
+- Inflação em Portugal (IPC homólogo, junho 2026): 3,2%
+- Inflação harmonizada da Zona Euro: 3,1%
+
+Usa os dados do portfólio abaixo, em particular a secção "ACTIVOS RELEVANTES COM YIELD MAIS BAIXO OU NULO" e "ACTIVOS COM MAIOR YIELD", para dar sugestões concretas e específicas — não genéricas.
+
+Estrutura a resposta EXACTAMENTE assim:
+
+## ⚖️ Equilíbrio actual: rendimento vs. valorização
+(Com base no yield global e no TWR, esta carteira está inclinada para rendimento, para valorização, ou já equilibrada? Sê directo.)
+
+## 🐌 Capital a render pouco ou nada
+(Lista os activos concretos — nome, classe, valor — da secção de yield mais baixo que pesam o suficiente para importar. Explica para cada um se faz sentido manter por valorização esperada, ou se está simplesmente parado.)
+
+## 🔁 Sugestões de reequilíbrio
+(3-5 acções concretas: que posições reforçar, reduzir ou substituir para subir o rendimento passivo sem abdicar de crescimento de valor. Refere valores aproximados e, quando relevante, o efeito fiscal em Portugal — mais-valias de acções/ETFs, categoria E vs G, PPR.)
+
+## 📈 Impacto estimado
+(Se as sugestões acima forem seguidas, qual o efeito aproximado no rendimento passivo anual e na diversificação? Usa os números reais da carteira para estimar, não invente precisão que os dados não sustentam.)
+
+## 📋 Resumo em 3 pontos
+(Três frases curtas e directas — o essencial, para quem só vai ler isto.)
+
+Sê concreto, usa os números reais do portfólio abaixo, evita generalidades de manual. Termina sempre com: "Isto é uma análise informativa gerada por IA, não é aconselhamento financeiro personalizado — a decisão final e a responsabilidade são tuas." Máximo 600 palavras.`
 };
 
 /* ─── ENGINE DE ANÁLISE IA ───────────────────────────────────── */
@@ -14657,7 +14765,7 @@ ${provider.keyHint}
   if (resultCard) resultCard.style.display = "none";
   if (loading) loading.style.display = "";
 
-  const modeLabels = { geral:"Análise Geral", risco:"Análise de Risco", fiscal:"Análise Fiscal", fire:"Plano FIRE", rebalancing:"Rebalancing" };
+  const modeLabels = { geral:"Análise Geral", risco:"Análise de Risco", fiscal:"Análise Fiscal", fire:"Plano FIRE", rebalancing:"Rebalancing", balance:"Equilíbrio Rendimento/Valor" };
 
   const loadingMsgs = [
     `A usar ${provider.name}…`,
@@ -15243,6 +15351,70 @@ const FIRE_ALLOCATION_PRESETS = {
 
 let _allocPreset = "acumulacao";
 let _allocCustom = null; // user overrides
+
+/* v64: bridges FIRE_ALLOCATION_PRESETS into the Rebalancing panel.
+   The presets use their own class labels ("Depósitos a prazo", "Metais
+   Preciosos", "Obrigações/Fundos") which don't match 1:1 the classes actually
+   used on assets (CLASSES_ASSETS: "Depósitos", "Ouro", "Prata", "Obrigações",
+   "Fundos", "Cripto", "Outros", ...). Previously the Rebalancing panel had no
+   connection to this data at all and just handed the person 9 empty % boxes.
+   This maps preset percentages onto real class keys, splitting combined
+   preset buckets (e.g. "Metais Preciosos" → Ouro + Prata) proportionally by
+   the person's OWN current split between them when they hold both, or evenly
+   otherwise — and folds in whatever classes they hold that the preset doesn't
+   mention (e.g. Cripto, Outros) at a small residual weight taken off Ações/ETFs. */
+function suggestedAllocationFromPreset(phase) {
+  const preset = FIRE_ALLOCATION_PRESETS[phase || detectFIREPhase()];
+  if (!preset) return {};
+
+  const byClass = {};
+  for (const a of (state.assets || [])) {
+    const k = a.class || "Outros";
+    byClass[k] = (byClass[k] || 0) + parseNum(a.value);
+  }
+  const total = Object.values(byClass).reduce((s, v) => s + v, 0) || 1;
+
+  const out = {};
+  const splitProportional = (pct, keys) => {
+    const vals = keys.map(k => parseNum(byClass[k] || 0));
+    const sum = vals.reduce((s, v) => s + v, 0);
+    if (sum > 0) {
+      keys.forEach((k, i) => { out[k] = (out[k] || 0) + pct * (vals[i] / sum); });
+    } else {
+      keys.forEach(k => { out[k] = (out[k] || 0) + pct / keys.length; });
+    }
+  };
+
+  preset.classes.forEach(c => {
+    if (c.class === "Metais Preciosos") { splitProportional(c.pct, ["Ouro", "Prata"]); return; }
+    if (c.class === "Obrigações/Fundos") { splitProportional(c.pct, ["Obrigações", "Fundos"]); return; }
+    if (c.class === "Depósitos a prazo") { out["Depósitos"] = (out["Depósitos"] || 0) + c.pct; return; }
+    out[c.class] = (out[c.class] || 0) + c.pct;
+  });
+
+  // Classes the person holds that the preset doesn't cover at all (Cripto, Outros, ...)
+  // get a small weight proportional to their current share, taken from Ações/ETFs so
+  // the total still sums to 100 without silently dropping a class the person owns.
+  const coveredKeys = new Set(Object.keys(out));
+  const uncovered = Object.entries(byClass).filter(([k, v]) => !coveredKeys.has(k) && v > 0);
+  if (uncovered.length) {
+    const uncoveredPctOfPortfolio = uncovered.reduce((s, [, v]) => s + v, 0) / total * 100;
+    const residual = Math.min(uncoveredPctOfPortfolio, out["Ações/ETFs"] ? out["Ações/ETFs"] * 0.5 : 0);
+    if (residual > 0 && out["Ações/ETFs"]) out["Ações/ETFs"] -= residual;
+    const uncoveredTotal = uncovered.reduce((s, [, v]) => s + v, 0) || 1;
+    uncovered.forEach(([k, v]) => { out[k] = (out[k] || 0) + residual * (v / uncoveredTotal); });
+  }
+
+  // Round to whole percent and correct rounding drift on the largest bucket so it sums to exactly 100.
+  const rounded = {};
+  Object.entries(out).forEach(([k, v]) => { if (v > 0.05) rounded[k] = Math.round(v); });
+  const sum = Object.values(rounded).reduce((s, v) => s + v, 0);
+  if (sum !== 100 && Object.keys(rounded).length) {
+    const biggestKey = Object.entries(rounded).sort((a, b) => b[1] - a[1])[0][0];
+    rounded[biggestKey] += (100 - sum);
+  }
+  return rounded;
+}
 
 function setAllocationPreset(phase, opts = {}) {
   const { persist = false, rerender = true } = opts || {};
