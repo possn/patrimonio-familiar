@@ -1271,7 +1271,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 32; // v63u: fix diagnostic dividend matching — secKey/divBroker are deleted from stored records, so matching had to move to parsing the notes text (ISIN= tag first, ticker fallback)
+const BROKER_REBUILD_SCHEMA_VERSION = 33; // v63v: merged duplicate maturity-alert cards; added sub-tabs to Portfólio analysis group
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -1904,37 +1904,15 @@ function saveGoal(val) {
 }
 
 /* ─── 2. ALERTAS DE VENCIMENTOS ──────────────────────────── */
+// v63v: was a near-duplicate of renderMaturityAlerts() below — same source data
+// (state.assets by maturityDate), same 30-vs-60-day window, rendered as a second
+// card right above it. Merged into the single "Vencimentos (60 dias)" card,
+// which already covers this window and adds urgency colouring. Kept as a no-op
+// so any stray call site doesn't throw, and to hide the old host element in
+// case a cached DOM still has it.
 function renderAlerts() {
   const card = document.getElementById("alertsCard");
-  const list = document.getElementById("alertsList");
-  if (!card || !list) return;
-
-  const today = new Date();
-  const soon = new Date(today); soon.setDate(today.getDate() + 30);
-  const todayISO = today.toISOString().slice(0, 10);
-  const soonISO = soon.toISOString().slice(0, 10);
-
-  const alerts = state.assets.filter(a => {
-    const m = a.maturityDate;
-    return m && m >= todayISO && m <= soonISO;
-  }).sort((a, b) => a.maturityDate.localeCompare(b.maturityDate));
-
-  if (!alerts.length) { card.style.display = "none"; return; }
-  card.style.display = "";
-  const cardEl = card.querySelector(".card");
-  if (cardEl) { cardEl.style.borderColor = "#f59e0b"; cardEl.style.background = "#fffbeb"; }
-  const title = card.querySelector(".card__title");
-  if (title) title.textContent = "⚠️ Vencimentos próximos";
-  list.innerHTML = alerts.map(a => {
-    const days = Math.round((new Date(a.maturityDate) - today) / 86400000);
-    return `<div class="item" style="cursor:default">
-      <div class="item__l">
-        <div class="item__t">${escapeHtml(a.name)}</div>
-        <div class="item__s">${escapeHtml(a.class)} · Vence em ${days} dia${days !== 1 ? "s" : ""} (${a.maturityDate})</div>
-      </div>
-      <div class="item__v">${fmtEUR(parseNum(a.value))}</div>
-    </div>`;
-  }).join("");
+  if (card) card.style.display = "none";
 }
 
 /* ─── 3. EDITAR / APAGAR MOVIMENTOS ──────────────────────── */
@@ -5581,15 +5559,37 @@ const ANALYSIS_TAB_GROUPS = {
   ai:        { panels: ["ai"],        render: () => renderAIHistory() },
 };
 
+// v63v: the "Portfólio" top-level tab stacks 5 panels (Sector/Geografia,
+// Comparação, Performance, Alocação, Simulação) with no way to jump between
+// them — a long, repetitive-feeling scroll. Sub-tabs let a person see one at
+// a time. Maps a sub-tab id to which of the group's panel ids it shows.
+const PORTFOLIO_SUBTABS = {
+  overview:    ["portfolio"],
+  compare:     ["compare"],
+  performance: ["performance"],
+  allocation:  ["allocation"],
+  drawdown:    ["drawdown"]
+};
+
 function renderAnalysis() {
   const activeBtn = document.querySelector(".analysis-tab.analysis-tab--active");
   const tab = (activeBtn && activeBtn.dataset && activeBtn.dataset.tab) || "portfolio";
+
+  const subTabBar = document.getElementById("portfolioSubTabs");
+  if (subTabBar) subTabBar.style.display = (tab === "portfolio") ? "" : "none";
+
   // Hide all panels AND section dividers first
   document.querySelectorAll(".analysisPanelTab").forEach(p => { p.style.display = "none"; });
   document.querySelectorAll(".analysis-section-divider").forEach(d => { d.style.display = "none"; });
   // Show panels for this group
   const group = ANALYSIS_TAB_GROUPS[tab] || ANALYSIS_TAB_GROUPS.portfolio;
-  group.panels.forEach(id => {
+  let panelsToShow = group.panels;
+  if (tab === "portfolio") {
+    const activeSub = document.querySelector("#portfolioSubTabs .seg__btn--active");
+    const subId = (activeSub && activeSub.dataset && activeSub.dataset.subtab) || "overview";
+    panelsToShow = PORTFOLIO_SUBTABS[subId] || PORTFOLIO_SUBTABS.overview;
+  }
+  panelsToShow.forEach(id => {
     const p = document.getElementById("analysisPanelTab_" + id);
     if (p) p.style.display = "";
     // Show section divider if it precedes this panel
@@ -11432,6 +11432,16 @@ function wire() {
       b.classList.toggle("analysis-tab--active", b.dataset.tab === tab);
     });
     scheduleRenderAnalysis();
+  });
+
+  // v63v: Portfólio sub-tabs (Visão geral / Comparar / Performance / Alocação / Simulação)
+  document.querySelectorAll("#portfolioSubTabs .seg__btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (btn.classList.contains("seg__btn--active")) return;
+      document.querySelectorAll("#portfolioSubTabs .seg__btn").forEach(b => b.classList.remove("seg__btn--active"));
+      btn.classList.add("seg__btn--active");
+      scheduleRenderAnalysis();
+    });
   });
 
   // Forecast years

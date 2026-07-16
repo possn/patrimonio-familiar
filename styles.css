@@ -538,6 +538,9 @@ select.input   { cursor: pointer; }
   margin-bottom: 12px;
 }
 .seg--3 { grid-template-columns: 1fr 1fr 1fr; }
+.seg--4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+.seg--5 { grid-template-columns: 1fr 1fr 1fr 1fr 1fr; }
+.seg--sm .seg__btn { padding: 8px 4px; font-size: 12px; font-weight: 700; }
 .seg__btn {
   border: 0; background: transparent; border-radius: 11px;
   padding: 12px 10px; font-weight: 800; color: var(--muted);
