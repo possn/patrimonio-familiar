@@ -1234,7 +1234,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 21; // v63j: qty drift detector during quote refresh
+const BROKER_REBUILD_SCHEMA_VERSION = 25; // v63n: force-update button + active SW cache badge
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -2768,6 +2768,10 @@ function editItem(id) {
   const src = showingLiabs ? state.liabilities : state.assets;
   const it = src.find(x => x.id === id);
   if (!it) return;
+  // v63l: wire the in-modal diagnostic once per open, bound to THIS item's id.
+  editingItemId = id;
+  const diagBtn = document.getElementById("btnDiagnoseThis");
+  if (diagBtn) diagBtn.onclick = () => showAssetDiagnostic(it.name || it.ticker || it.id);
   editingItemId = id;
   const kind = showingLiabs ? "liab" : "asset";
   $("mId").value = id;
@@ -8492,12 +8496,24 @@ function rebuildBrokerGeneratedData() {
   // them pro-rata over that security's XTB dividends so the tax is neither lost
   // nor double-counted as a phantom record.
   if (orphanWhtByKey.size) {
+    // v63k: this was O(secKeys × dividends) — filtering the FULL dividends array
+    // once per orphan key. With a large history (thousands of dividends across
+    // many securities) that became O(n²) and could take many seconds, appearing
+    // to freeze the app on startup. Bucket once by secKey instead: O(dividends).
+    const byXtbSecKey = new Map();
+    for (const d of state.dividends) {
+      if (!d || !d.generatedFromBroker || d.divBroker !== "XTB" || !(parseNum(d.grossAmount) > 0)) continue;
+      const k = d.secKey;
+      if (!k) continue;
+      if (!byXtbSecKey.has(k)) byXtbSecKey.set(k, []);
+      byXtbSecKey.get(k).push(d);
+    }
     for (const [secKey, whtTotal] of orphanWhtByKey) {
       if (!(whtTotal > 0)) continue;
-      const targets = state.dividends.filter(d =>
-        d && d.generatedFromBroker && d.divBroker === "XTB" && d.secKey === secKey && parseNum(d.grossAmount) > 0);
+      const targets = byXtbSecKey.get(secKey);
+      if (!targets || !targets.length) continue;
       const grossSum = targets.reduce((a, d) => a + parseNum(d.grossAmount), 0);
-      if (!targets.length || !(grossSum > 0)) continue;
+      if (!(grossSum > 0)) continue;
       let applied = 0;
       targets.forEach((d, idx) => {
         const share = idx === targets.length - 1
@@ -8515,6 +8531,11 @@ function rebuildBrokerGeneratedData() {
 
   const cutoffDiv12m = new Date(new Date().getFullYear() - 1, new Date().getMonth(), new Date().getDate()).toISOString().slice(0, 10);
   const divNet12mBySecurity = new Map();
+  // v63m: track which calendar months (last 12) actually paid a dividend, so the
+  // real payment cadence can be inferred instead of hard-coding monthly
+  // compounding for every broker-imported holding (ADM pays quarterly, not
+  // monthly — a flat "Mensal" distorts any FIRE/compound-interest projection).
+  const divMonthsBySecurity = new Map();
   for (const e of (bd.events || [])) {
     if (!(e && (e.type === "DIVIDEND" || e.type === "ROC" || e.type === "DIVIDEND_ADJ"))) continue;
     if (String(e.date || "") < cutoffDiv12m) continue;
@@ -8523,6 +8544,19 @@ function rebuildBrokerGeneratedData() {
     const net = Math.max(0, parseNum(e.totalEUR) - parseNum(e.taxEUR));
     if (net <= 0) continue;
     divNet12mBySecurity.set(secKey, (divNet12mBySecurity.get(secKey) || 0) + net);
+    const ym = String(e.date || "").slice(0, 7);
+    if (ym) {
+      if (!divMonthsBySecurity.has(secKey)) divMonthsBySecurity.set(secKey, new Set());
+      divMonthsBySecurity.get(secKey).add(ym);
+    }
+  }
+  // n distinct paying months in the last 12 → nearest standard cadence
+  function inferCompoundFreqFromMonths(nMonths) {
+    if (nMonths >= 10) return 12;  // monthly
+    if (nMonths >= 6)  return 12;  // ~bimonthly, still closer to monthly than quarterly for compounding purposes
+    if (nMonths >= 3)  return 4;   // quarterly
+    if (nMonths >= 2)  return 2;   // semi-annual
+    return 1;                      // annual (or a single/irregular payment)
   }
 
   for (const p of posMap.values()) {
@@ -8574,9 +8608,15 @@ function rebuildBrokerGeneratedData() {
     if (p.realizedPnL !== undefined && p.realizedPnL !== 0) {
       noteBits.push(`P&L realizado=${p.realizedPnL >= 0 ? "+" : ""}${fmtEUR2(p.realizedPnL)}`);
     }
+    const _payMonths = divMonthsBySecurity.get(secKey);
+    const _inferredFreq = _payMonths ? inferCompoundFreqFromMonths(_payMonths.size) : 12;
+    if (_payMonths && _payMonths.size <= 6) {
+      const freqLabel = _inferredFreq === 4 ? "trimestral" : _inferredFreq === 2 ? "semestral" : "anual";
+      noteBits.push(`Cadência real≈${freqLabel} (${_payMonths.size} meses c/ pagamento em 12m)`);
+    }
     state.assets.push({
       id: uid(), class: p.class || brokerPositionClassFromTicker(p.ticker), name: displayName, value: finalValue,
-      yieldType: assetYieldType, yieldValue: assetYieldValue, compoundFreq: 12,
+      yieldType: assetYieldType, yieldValue: assetYieldValue, compoundFreq: _inferredFreq,
       notes: `Gerado por importação de corretora. ${noteBits.join(" · ")}`,
       qty: finalQty, costBasis: p.costBasis, pmOriginal: finalQty > 0 && p.costBasis > 0 ? p.costBasis / finalQty : 0, pmCcy: "EUR",
       ticker: p.ticker || "", yahooTicker: correctYahoo || "", isin: p.isin || "", priceCurrency: p.priceCurrency || p.currency || "", brokerMarketSnapshot: !!p.hasSnapshot, brokerSnapshotDate: p.snapshotDate || "",
@@ -10764,7 +10804,13 @@ function diagnoseAsset(query) {
     String(a.isin || "").toLowerCase() === q);
   if (!hits.length) return "Nenhum activo encontrado para: " + query;
 
-  const L = [];
+  const L0 = [];
+  if (hits.length > 1) {
+    L0.push("⚠️ " + hits.length + " ACTIVOS DIFERENTES correspondem a '" + query + "' — se deveriam ser um só, é aqui que está o problema.");
+    L0.push("");
+  }
+
+  const L = L0;
   for (const a of hits) {
     L.push("═══ " + (a.name || "?") + " ═══");
     L.push("ISIN        : " + (a.isin || "—"));
@@ -10841,6 +10887,57 @@ function diagnoseAsset(query) {
    build that no rebuild path currently overwrites. This drops every
    broker-generated asset/dividend/transaction and regenerates them purely from
    the stored events. Manual assets are untouched. */
+/* v63n: known iOS Safari PWA issue — a standalone (Home Screen) PWA sometimes
+   never checks for a new service worker on launch, only on a direct browser
+   navigation. skipWaiting()/clients.claim() alone don't fix this reliably.
+   This unregisters every SW for this origin, deletes every Cache Storage
+   entry, and forces a hard reload with a cache-busting query string — the one
+   sequence that reliably breaks out of a stuck old version on iOS. It does
+   NOT touch IndexedDB, so the portfolio data is untouched. */
+/* v63n: shows which service worker cache is ACTUALLY controlling this page —
+   the ground truth for "am I running the latest version", independent of any
+   changelog text (which is just static HTML and proves nothing by itself). */
+async function reportActiveSwVersion() {
+  const el = document.getElementById("swVersionBadge");
+  if (!el) return;
+  try {
+    if (!("serviceWorker" in navigator)) { el.textContent = "Sem Service Worker neste browser"; return; }
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg || !reg.active) { el.textContent = "Sem Service Worker activo — a app corre sem cache"; return; }
+    const keys = ("caches" in window) ? await caches.keys() : [];
+    const mine = keys.filter(k => k.startsWith("pf-cache-"));
+    el.textContent = mine.length
+      ? "Cache activa: " + mine.join(", ")
+      : "Service Worker activo, mas sem cache pf- reconhecida";
+  } catch (e) {
+    el.textContent = "Não foi possível verificar (" + (e && e.message || "erro") + ")";
+  }
+}
+
+async function forceAppUpdate() {
+  if (!confirm(
+    "Forçar actualização?\n\n" +
+    "Isto substitui a versão da app guardada no telemóvel pela mais recente do GitHub.\n" +
+    "Os teus dados (activos, dividendos, imports) NÃO são apagados — só ficam guardados no IndexedDB, que não é tocado.\n\n" +
+    "A app vai fechar e reabrir de seguida."
+  )) return;
+  try {
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+  } catch (e) {
+    console.error("[forceAppUpdate]", e);
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set("_v", String(Date.now())); // cache-busting for the HTML itself
+  window.location.href = url.toString();
+}
+
 function hardResetBrokerData() {
   const bd = ensureBrokerData();
   const nGen = (state.assets || []).filter(a => a && a.generatedFromBroker).length;
@@ -10868,8 +10965,8 @@ function hardResetBrokerData() {
   toast("Reconstruído: " + now + " activos de corretora. Faz 'Cotações' a seguir.");
 }
 
-function showAssetDiagnostic() {
-  const q = prompt("Diagnóstico — nome, ticker ou ISIN do activo:", "ADM");
+function showAssetDiagnostic(prefill) {
+  const q = prefill || prompt("Diagnóstico — nome, ticker ou ISIN do activo:", "ADM");
   if (!q) return;
   const txt = diagnoseAsset(q);
   const w = document.createElement("div");
@@ -11348,6 +11445,7 @@ function wire() {
   $("btnExportJSON").addEventListener("click", exportJSON);
   if ($("btnDiagnose")) $("btnDiagnose").addEventListener("click", showAssetDiagnostic);
   if ($("btnHardReset")) $("btnHardReset").addEventListener("click", hardResetBrokerData);
+  if ($("btnForceUpdate")) $("btnForceUpdate").addEventListener("click", forceAppUpdate);
   $("jsonInput").addEventListener("change", () => { $("btnImportJSON").disabled = !($("jsonInput").files && $("jsonInput").files.length); });
   $("btnImportJSON").addEventListener("click", async () => {
     const f = $("jsonInput").files && $("jsonInput").files[0];
@@ -12576,6 +12674,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try { wire(); } catch (e) { console.error("Falha no binding dos botões", e); }
   _setMsg("A renderizar…");
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
+  try { reportActiveSwVersion(); } catch (_) {}
   // Hide loading overlay with fade
   if (_splash) {
     _splash.style.transition = "opacity 0.3s ease";
