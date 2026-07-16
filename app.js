@@ -1271,7 +1271,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 33; // v63v: merged duplicate maturity-alert cards; added sub-tabs to Portfólio analysis group
+const BROKER_REBUILD_SCHEMA_VERSION = 34; // v63w: sector chart reconciliation diagnostic + clarified scope label (Ações/ETFs e Cripto only)
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -11096,6 +11096,74 @@ function hardResetBrokerData() {
   toast("Reconstruído: " + now + " activos de corretora." +
     (purged ? " Removidas posições corrompidas — " + (needReimport.length ? "reimporta: " + needReimport.join(", ") : "verifica os imports") + "." : "") +
     " Faz 'Cotações' a seguir.", 8000);
+}
+
+/* v63w: the "Distribuição por Sector" total only sums classes Ações/ETFs and
+   Cripto (renderPortfolioCharts' EQUITY_CLS) — by design, since sectors like
+   "Tecnologia" or "Saúde" don't apply to Depósitos/PPR/Imóveis/Ouro. But a
+   person can hold assets whose class SHOULD count here yet get excluded by a
+   normalization mismatch (accented text, wrong class string, zero/negative
+   value). This reconciles the chart's total against every asset in state,
+   grouped by class, so a silent exclusion is visible instead of guessed at. */
+function diagnoseSectorChartTotal() {
+  const EQUITY_CLS = new Set(["ações/etfs", "acoes/etfs", "cripto"]);
+  const norm = (s) => String(s || "").toLowerCase().replace(/ç/g, "c").replace(/ã/g, "a").replace(/õ/g, "o");
+
+  const byClass = new Map(); // normalized class -> { raw, total, count, excludedZero }
+  let chartTotal = 0, chartCount = 0;
+  for (const a of (state.assets || [])) {
+    const raw = a.class || "(sem classe)";
+    const key = norm(raw);
+    const v = parseNum(a.value);
+    if (!byClass.has(key)) byClass.set(key, { raw, total: 0, count: 0, zeroOrNeg: 0 });
+    const bucket = byClass.get(key);
+    bucket.total += v;
+    bucket.count++;
+    if (!(v > 0)) bucket.zeroOrNeg++;
+    if (EQUITY_CLS.has(key) && v > 0) { chartTotal += v; chartCount++; }
+  }
+
+  const L = [];
+  L.push("═══ Total do gráfico \"Distribuição por Sector\" ═══");
+  L.push("valor mostrado no gráfico : " + fmtEUR(chartTotal));
+  L.push("activos incluídos         : " + chartCount);
+  L.push("");
+  L.push("─── por classe (todos os activos, gerados + manuais) ───");
+  const rows = Array.from(byClass.values()).sort((a, b) => b.total - a.total);
+  let grandTotal = 0;
+  rows.forEach(r => {
+    grandTotal += r.total;
+    const inChart = EQUITY_CLS.has(norm(r.raw)) ? " → CONTA no gráfico" : "";
+    const zeroNote = r.zeroOrNeg > 0 ? "  (" + r.zeroOrNeg + " com valor ≤0, não contam nem aqui nem no gráfico)" : "";
+    L.push("  " + r.raw.padEnd(22) + fmtEUR(r.total).padStart(14) + "  (" + r.count + " activos)" + inChart + zeroNote);
+  });
+  L.push("");
+  L.push("TOTAL de todos os activos : " + fmtEUR(grandTotal));
+  L.push("TOTAL no gráfico Sector   : " + fmtEUR(chartTotal));
+  L.push("Diferença                 : " + fmtEUR(grandTotal - chartTotal) +
+    " (classes fora de Ações/ETFs e Cripto — Depósitos, PPR, Imóveis, etc. Isto é esperado.)");
+  return L.join("\n");
+}
+
+function showSectorChartDiagnostic() {
+  const txt = diagnoseSectorChartTotal();
+  const w = document.createElement("div");
+  w.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px";
+  w.innerHTML = '<div style="background:#fff;color:#0f172a;border-radius:14px;max-width:560px;width:100%;max-height:80vh;overflow:auto;padding:16px">' +
+    '<pre style="white-space:pre-wrap;font-size:11px;line-height:1.45;margin:0;font-family:ui-monospace,monospace">' +
+    escapeHtml(txt) + '</pre>' +
+    '<div style="display:flex;gap:8px;margin-top:12px">' +
+    '<button id="sdCopy" class="btn btn--outline" style="flex:1">📋 Copiar</button>' +
+    '<button id="sdClose" class="btn btn--primary" style="flex:1">Fechar</button></div></div>';
+  document.body.appendChild(w);
+  w.querySelector("#sdClose").onclick = () => w.remove();
+  w.querySelector("#sdCopy").onclick = () => {
+    const ta = document.createElement("textarea");
+    ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); toast("Copiado."); } catch (_) { toast("Copia manualmente."); }
+    ta.remove();
+  };
 }
 
 function showAssetDiagnostic(prefill) {
