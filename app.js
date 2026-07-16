@@ -1271,7 +1271,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 30; // v63s: diagnostic shows per-security 2026 dividend records + fuzzy-identity coherence check (fixes false "discrepancy" alarms for multi-broker holdings)
+const BROKER_REBUILD_SCHEMA_VERSION = 31; // v63t: persistent visible banner for files needing re-import (was only a fleeting toast) — this is why the Nestlé 2026 dividend, and everything else in T212_2026.csv, went missing after v63r purged the file's phantom positions
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -7158,16 +7158,41 @@ function xtbImportNeedsReimport() {
 function renderStaleXtbImportBanner() {
   const host = document.getElementById("brokerImportWarning");
   if (!host) return;
-  if (!xtbImportNeedsReimport()) { host.innerHTML = ""; return; }
-  host.innerHTML =
-    '<div style="margin:10px 0;padding:12px 14px;border-radius:12px;background:#fff7ed;' +
-    'border:1px solid #fdba74;color:#9a3412;font-size:13px;line-height:1.5">' +
-    '<strong>⚠️ Importação XTB incompleta</strong><br>' +
-    'Os dados do XTB foram importados por uma versão anterior que descartava ' +
-    'pagamentos repetidos no mesmo segundo. Cerca de 60% dos dividendos XTB não ' +
-    'chegaram a ser guardados. Volta a importar o ficheiro <em>Movimentos_totais_XTB.xlsx</em> ' +
-    'para corrigir — os duplicados são filtrados automaticamente.' +
-    '</div>';
+  const parts = [];
+
+  if (xtbImportNeedsReimport()) {
+    parts.push(
+      '<div style="margin:10px 0;padding:12px 14px;border-radius:12px;background:#fff7ed;' +
+      'border:1px solid #fdba74;color:#9a3412;font-size:13px;line-height:1.5">' +
+      '<strong>⚠️ Importação XTB incompleta</strong><br>' +
+      'Os dados do XTB foram importados por uma versão anterior que descartava ' +
+      'pagamentos repetidos no mesmo segundo. Cerca de 60% dos dividendos XTB não ' +
+      'chegaram a ser guardados. Volta a importar o ficheiro <em>Movimentos_totais_XTB.xlsx</em> ' +
+      'para corrigir — os duplicados são filtrados automaticamente.' +
+      '</div>');
+  }
+
+  // v63t: files the v63r purge emptied out (0 events, needsReimport) stay silently
+  // broken until re-imported — nothing else can recover their data, since the
+  // original rows are gone from IndexedDB. The purge only ever showed a toast
+  // that disappears in seconds; this makes it a persistent, visible banner
+  // until the person actually fixes it.
+  const bd = ensureBrokerData();
+  const stale = (bd.files || []).filter(f => f && f.needsReimport);
+  if (stale.length) {
+    parts.push(
+      '<div style="margin:10px 0;padding:12px 14px;border-radius:12px;background:#fef2f2;' +
+      'border:1px solid #fca5a5;color:#991b1b;font-size:13px;line-height:1.5">' +
+      '<strong>⚠️ ' + stale.length + ' ficheiro' + (stale.length > 1 ? 's precisam' : ' precisa') + ' de ser reimportado' + (stale.length > 1 ? 's' : '') + '</strong><br>' +
+      'Uma correcção anterior removeu dados corrompidos destes ficheiros, mas os ' +
+      'movimentos originais (incluindo dividendos) só voltam a aparecer depois de ' +
+      'os reimportares — o mesmo ficheiro, sem apagar nada primeiro:<br>' +
+      '<ul style="margin:6px 0 0 18px;padding:0">' +
+      stale.map(f => '<li>' + escapeHtml(f.name || "?") + '</li>').join('') +
+      '</ul></div>');
+  }
+
+  host.innerHTML = parts.join("");
 }
 
 async function hashFile(file) {
@@ -12764,6 +12789,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   _setMsg("A renderizar…");
   try { renderAll(); } catch (e) { console.error("Falha no render inicial", e); }
   try { reportActiveSwVersion(); } catch (_) {}
+  try { renderStaleXtbImportBanner(); } catch (_) {}
   // Hide loading overlay with fade
   if (_splash) {
     _splash.style.transition = "opacity 0.3s ease";
