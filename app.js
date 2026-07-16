@@ -1271,7 +1271,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 29; // v63r: auto-purge stale phantom positions from the pre-v63p T212-2026 format bug
+const BROKER_REBUILD_SCHEMA_VERSION = 30; // v63s: diagnostic shows per-security 2026 dividend records + fuzzy-identity coherence check (fixes false "discrepancy" alarms for multi-broker holdings)
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -10881,7 +10881,16 @@ function diagnoseAsset(query) {
     L.push("notas       : " + String(a.notes || "").slice(0, 160));
 
     const secKey = makeBrokerSecurityKey(a);
-    const evs = (bd.events || []).filter(e => makeBrokerSecurityKey(e) === secKey);
+    // v63s: match events the same way touchPos does — a strict key match plus a
+    // fuzzy identity fallback (same ISIN, or same inferred Yahoo ticker, or same
+    // name+ticker). XTB rarely provides an ISIN, so its BUY/SELL events key as
+    // "YAHOO:ADM" while the T212 events for the identical security key as
+    // "ISIN:US...". A plain key-equality filter here missed the XTB side
+    // entirely and made the diagnostic itself report a false "discrepancy" for
+    // every multi-broker holding — the qty was already correct; only this
+    // read-only report was blind to half the evidence.
+    const evs = (bd.events || []).filter(e =>
+      makeBrokerSecurityKey(e) === secKey || sameBrokerSecurityIdentity(e, a));
     const buys = evs.filter(e => e.type === "BUY");
     const sells = evs.filter(e => e.type === "SELL");
     const byBroker = {};
@@ -10891,10 +10900,28 @@ function diagnoseAsset(query) {
     L.push("BUY: " + buys.length + " | SELL: " + sells.length);
     Object.keys(byBroker).forEach(b => L.push("   " + b + " → qty líquida " + (Math.round(byBroker[b] * 1e6) / 1e6)));
 
-    const poss = (bd.positions || []).filter(p => makeBrokerSecurityKey(p) === secKey);
+    const poss = (bd.positions || []).filter(p => makeBrokerSecurityKey(p) === secKey || sameBrokerSecurityIdentity(p, a));
     L.push("--- posições declaradas: " + poss.length + " ---");
     poss.forEach(p => L.push("   " + (p.sourceName || "?") + " · " + (p.positionKind || "?") +
       " · qty=" + p.qty + " · mv=" + p.marketValueEUR));
+
+    // v63s: dividend records for this security — shows exactly what's stored,
+    // not what a fresh rebuild would compute, so a stale/corrupt netAmount is
+    // visible directly instead of being inferred from the monthly chart.
+    const divs2026 = (state.dividends || []).filter(d => {
+      if (!d) return false;
+      if (String(d.date || "").slice(0, 4) !== "2026") return false;
+      const dSecKey = (function(){ try { return makeBrokerSecurityKey(d); } catch(_) { return ""; } })();
+      return dSecKey === secKey || sameBrokerSecurityIdentity(d, a) ||
+        String(d.ticker||"").toUpperCase() === String(a.ticker||"").toUpperCase();
+    });
+    L.push("--- dividendos 2026 registados: " + divs2026.length + " ---");
+    divs2026.slice(0, 12).forEach(d => {
+      const g = getDividendGross(d), n = getDividendNet(d), t = parseNum(d.taxWithheld || 0);
+      L.push("   " + String(d.date||"").slice(0,10) + " bruto=" + g.toFixed(2) + " tax=" + t.toFixed(2) + " liq=" + n.toFixed(2) +
+        (g > 0.5 && n <= 0.001 ? "  *** LÍQUIDO ZERO ***" : ""));
+    });
+    if (divs2026.length > 12) L.push("   … +" + (divs2026.length - 12) + " outros");
     L.push("");
   }
   // v63i: does the stored qty actually match the events that justify it?
@@ -10903,7 +10930,7 @@ function diagnoseAsset(query) {
     const secKey = makeBrokerSecurityKey(a);
     let net = 0;
     (bd.events || []).forEach(e => {
-      if (makeBrokerSecurityKey(e) !== secKey) return;
+      if (makeBrokerSecurityKey(e) !== secKey && !sameBrokerSecurityIdentity(e, a)) return;
       if (e.type === "BUY") net += parseNum(e.qty);
       else if (e.type === "SELL") net -= Math.abs(parseNum(e.qty));
       else if (e.type === "STOCK_DISTRIBUTION") net += Math.max(0, parseNum(e.qty));
@@ -10911,7 +10938,8 @@ function diagnoseAsset(query) {
       else if (e.type === "SPLIT_CLOSE") net -= Math.abs(parseNum(e.qty));
     });
     const snap = (bd.positions || [])
-      .filter(p => makeBrokerSecurityKey(p) === secKey && p.positionKind === "market_snapshot")
+      .filter(p => (makeBrokerSecurityKey(p) === secKey || sameBrokerSecurityIdentity(p, a)) &&
+                   (p.positionKind === "market_snapshot" || p.positionKind === "cost_snapshot"))
       .reduce((s2, p) => s2 + parseNum(p.qty), 0);
     L.push((a.name || "?") + ":");
     L.push("   qty guardada      : " + a.qty);
