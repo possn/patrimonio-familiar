@@ -1178,6 +1178,43 @@ function normalizeDividendRecord(d) {
    company's ticker onto an asset (C3.ai → "AI.PA" = Air Liquide). Once stored,
    the post-rebuild merge fused the two holdings. Re-derive from the ISIN, which
    is authoritative, and force a rebuild so any bad merge is undone. */
+function __recordFileFormat(hash, format) {
+  // no-op placeholder kept for symmetry; format is already stored on the file record
+}
+
+/* v63r: purge stale "positions" data that was produced by the pre-v63p bug.
+   Symptom: a T212 export (filename contains "Movimentos" or was imported with
+   broker "Trading 212") that produced ONLY positions and ZERO ledger events.
+   A genuine T212 ledger export always has events (dividends/buys/sells); zero
+   events from a T212-named file is itself the fingerprint of the bug, since a
+   real positions-only import would come from a differently-named/shaped file.
+   "Reconstruir corretoras" rebuilds from bd.events/bd.positions as they already
+   are — it does not re-parse the original file — so this must run as a
+   correction pass BEFORE any rebuild, not just after re-importing an unchanged
+   file (the file's hash is identical, so plain re-import alone does nothing
+   here; only the content of the CSV changes nothing, only OUR parsing did).
+*/
+function purgeStalePositionsFromLedgerBug() {
+  const bd = ensureBrokerData();
+  if (!Array.isArray(bd.files) || !bd.files.length) return false;
+  const badHashes = new Set();
+  for (const f of bd.files) {
+    if (!f) continue;
+    const looksLikeT212Ledger = /movimentos|trading\s*212|t212/i.test(String(f.name || "")) || String(f.broker || "").toLowerCase().includes("212");
+    const hasZeroEvents = !(parseNum(f.events) > 0);
+    const hasPositions = parseNum(f.positions) > 0;
+    if (looksLikeT212Ledger && hasZeroEvents && hasPositions) badHashes.add(f.hash);
+  }
+  if (!badHashes.size) return false;
+  const before = (bd.positions || []).length;
+  bd.positions = (bd.positions || []).filter(p => !badHashes.has(p.sourceHash));
+  const removed = before - (bd.positions || []).length;
+  // Mark those files as needing re-import so the person gets a clear signal
+  bd.files = (bd.files || []).map(f => badHashes.has(f.hash) ? { ...f, needsReimport: true, positions: 0 } : f);
+  if (removed) console.warn("[purgeStalePositionsFromLedgerBug] removidas", removed, "posições fantasma de", badHashes.size, "ficheiro(s)");
+  return removed > 0;
+}
+
 function repairYahooTickersFromISIN() {
   if (!Array.isArray(state.assets)) return false;
   let fixed = 0;
@@ -1234,7 +1271,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 28; // v63q: cost_snapshot positions no longer double-count on top of ledger events (second layer of defense for the T212 2026 format bug)
+const BROKER_REBUILD_SCHEMA_VERSION = 29; // v63r: auto-purge stale phantom positions from the pre-v63p T212-2026 format bug
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -9081,6 +9118,7 @@ async function importBrokerFiles(files) {
     bd.positions = (bd.positions || []).filter(p => p.sourceHash !== hash);
     refreshKeySets();
     if (prevCount) replacedFiles++;
+    __recordFileFormat(hash, format);
 
     if (format === "workbook_multi") {
       let fileEvents = 0, filePositions = 0, fileRows = 0, recognizedBlocks = 0;
@@ -10974,13 +11012,17 @@ function hardResetBrokerData() {
   state.transactions = (state.transactions || []).filter(t => t && !t.generatedFromBroker);
   state.divSummaries = [];
 
+  const purged = purgeStalePositionsFromLedgerBug();
   rebuildBrokerGeneratedData();
   state.settings.brokerDataSignature = getBrokerDataSignature();
   state.settings.brokerRebuildSchemaVersion = BROKER_REBUILD_SCHEMA_VERSION;
   saveState();
   renderAll();
   const now = (state.assets || []).filter(a => a && a.generatedFromBroker).length;
-  toast("Reconstruído: " + now + " activos de corretora. Faz 'Cotações' a seguir.");
+  const needReimport = (ensureBrokerData().files || []).filter(f => f.needsReimport).map(f => f.name);
+  toast("Reconstruído: " + now + " activos de corretora." +
+    (purged ? " Removidas posições corrompidas — " + (needReimport.length ? "reimporta: " + needReimport.join(", ") : "verifica os imports") + "." : "") +
+    " Faz 'Cotações' a seguir.", 8000);
 }
 
 function showAssetDiagnostic(prefill) {
@@ -12665,6 +12707,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const sig = getBrokerDataSignature();
       const prevSig = (((state || {}).settings || {}).brokerRebuildSig) || "";
       try { repairYahooTickersFromISIN(); } catch (_) {}
+      try { purgeStalePositionsFromLedgerBug(); } catch (_) {}
       const prevSchema = parseInt((((state || {}).settings || {}).brokerRebuildSchemaVersion) || 0, 10) || 0;
       if (!hasBrokerGeneratedMirror() || sig !== prevSig || prevSchema !== BROKER_REBUILD_SCHEMA_VERSION) {
         rebuildBrokerGeneratedData();
