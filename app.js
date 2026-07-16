@@ -1271,7 +1271,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 31; // v63t: persistent visible banner for files needing re-import (was only a fleeting toast) — this is why the Nestlé 2026 dividend, and everything else in T212_2026.csv, went missing after v63r purged the file's phantom positions
+const BROKER_REBUILD_SCHEMA_VERSION = 32; // v63u: fix diagnostic dividend matching — secKey/divBroker are deleted from stored records, so matching had to move to parsing the notes text (ISIN= tag first, ticker fallback)
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -10930,15 +10930,35 @@ function diagnoseAsset(query) {
     poss.forEach(p => L.push("   " + (p.sourceName || "?") + " · " + (p.positionKind || "?") +
       " · qty=" + p.qty + " · mv=" + p.marketValueEUR));
 
-    // v63s: dividend records for this security — shows exactly what's stored,
+    // v63u: dividend records for this security — shows exactly what's stored,
     // not what a fresh rebuild would compute, so a stale/corrupt netAmount is
     // visible directly instead of being inferred from the monthly chart.
+    // BUGFIX (v63s had this broken): a dividend record's identity (secKey,
+    // divBroker) is intentionally deleted after import (see the orphan-WHT
+    // distribution pass) — only free-text `notes` still carries the ISIN/
+    // Ticker/Yahoo tags. Matching on d.isin/d.ticker directly, or on a
+    // recomputed makeBrokerSecurityKey(d), always returned nothing, so this
+    // section reported "0 registados" for every security regardless of what
+    // was actually stored. Parse identity out of the notes text instead.
+    const isinTag = String(a.isin || "").toUpperCase();
+    const tickerTag = String(a.ticker || "").toUpperCase();
+    const yahooTag = String(a.yahooTicker || "").toUpperCase();
+    const nameLower = String(a.name || "").toLowerCase();
     const divs2026 = (state.dividends || []).filter(d => {
       if (!d) return false;
       if (String(d.date || "").slice(0, 4) !== "2026") return false;
-      const dSecKey = (function(){ try { return makeBrokerSecurityKey(d); } catch(_) { return ""; } })();
-      return dSecKey === secKey || sameBrokerSecurityIdentity(d, a) ||
-        String(d.ticker||"").toUpperCase() === String(a.ticker||"").toUpperCase();
+      const notesUpper = String(d.notes || "").toUpperCase();
+      const assetNameLower = String(d.assetName || "").toLowerCase();
+      // ISIN is the strongest signal — trust it alone. Ticker/name matches only
+      // count when there's no ISIN on either side to avoid cross-security noise
+      // (e.g. "TICKER=NESN" matching an unrelated dividend that merely mentions it).
+      if (isinTag && notesUpper.includes("ISIN=" + isinTag)) return true;
+      if (isinTag && notesUpper.includes("ISIN=")) return false; // has a different ISIN — not a match
+      if (yahooTag && notesUpper.includes("YAHOO=" + yahooTag)) return true;
+      if (tickerTag && notesUpper.includes("TICKER=" + tickerTag)) return true;
+      if (tickerTag && assetNameLower === tickerTag.toLowerCase()) return true;
+      if (nameLower && assetNameLower && assetNameLower === nameLower) return true;
+      return false;
     });
     L.push("--- dividendos 2026 registados: " + divs2026.length + " ---");
     divs2026.slice(0, 12).forEach(d => {
