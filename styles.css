@@ -693,9 +693,16 @@ select.input   { cursor: pointer; }
   .healthKpiRow .kpi__v { font-size: 16px; }
   .healthKpiRow .kpi__s { font-size: 11px; }
   .bottomnav    { width: 100%; }
-  .passivebar   { width: calc(100% - 16px); bottom: 76px; }
+  .passivebar   { width: calc(100% - 16px); }
+  /* v64b: .passivebar's "bottom" and .main's "padding-bottom" used to be hardcoded here
+     (bottom:76px / padding:...170px), silently overriding the dynamic
+     calc(var(--bottomnav-h) + var(--passivebar-h) + safe-area-inset + ...) rules
+     defined earlier in this file — on any screen ≤520px wide (i.e. almost every
+     iPhone), which is exactly where the safe-area-inset fix mattered most. That
+     is why content kept clipping under the fixed bars even after that fix
+     shipped. Removed: the dynamic rules already handle narrow screens fine,
+     since they're driven by measured pixel heights, not by viewport width. */
   .kpi-cell__value { font-size: 16px; }
-  .main         { padding: 12px 10px 170px; }
 }
 @media (max-width: 380px) {
   .hero__value  { font-size: 34px; }

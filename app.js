@@ -1271,7 +1271,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 39; // v64a: Rebalancing/allocation suggestion now counts REITs (class Ações/ETFs, sector Imobiliário) as real-estate exposure instead of ignoring them
+const BROKER_REBUILD_SCHEMA_VERSION = 40; // v64b: fixed a THIRD place REITs were miscounted (Alocação panel/getActualForClass); removed stale hardcoded .passivebar/.main rules in the ≤520px media query that overrode yesterday's dynamic safe-area fix
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -15527,7 +15527,19 @@ function renderAllocationPanel() {
     function getActualForClass(a) {
       const targetKey = CLASS_KEY_MAP[a.class] || normStr(a.class);
       return state.assets.filter(x => {
-        const k = assetClassKey(x);
+        let k = assetClassKey(x);
+        // v64b: assetClassKey only reads the literal asset.class string, so REITs
+        // (class "Ações/ETFs" but economically real-estate exposure) were always
+        // counted under acoes/etfs here too — a THIRD place with this same gap,
+        // separate from calcRebalancing/suggestedAllocationFromPreset fixed
+        // yesterday. This panel (renderAllocationPanel/getActualForClass) is what
+        // actually renders the "Alocação alvo" cards, so it needed the same fix.
+        if (k === "acoes/etfs") {
+          try {
+            const meta = getTickerMeta(x);
+            if (meta && meta.sector === "Imobiliário") k = "imobiliario";
+          } catch (_) { /* ticker unresolved — keep as acoes/etfs */ }
+        }
         if (a.class === "Obrigações/Fundos") return k === "obrigacoes" || k === "fundos";
         if (a.class === "Metais Preciosos")  return k === "ouro" || k === "prata";
         return k === targetKey;
