@@ -1271,7 +1271,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 38; // v64: auto-suggest allocation targets in Rebalancing, bridging existing FIRE_ALLOCATION_PRESETS to the person's actual asset classes instead of 9 empty % boxes
+const BROKER_REBUILD_SCHEMA_VERSION = 39; // v64a: Rebalancing/allocation suggestion now counts REITs (class Ações/ETFs, sector Imobiliário) as real-estate exposure instead of ignoring them
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -14118,9 +14118,19 @@ function calcRebalancing() {
   // Ler targets do estado (guardado em settings)
   const targets = (state.settings && state.settings.allocationTargets) || {};
 
+  // v64a: same REIT → Imobiliário reclassification as suggestedAllocationFromPreset.
+  // Without this, someone holding REITs (class "Ações/ETFs") got told to buy
+  // physical property from €0, because their actual real-estate exposure was
+  // being counted under Ações/ETFs instead of Imobiliário.
   const byClass = {};
   for (const a of state.assets) {
-    const k = a.class || "Outros";
+    let k = a.class || "Outros";
+    if (k === "Ações/ETFs" || k === "Acoes/ETFs") {
+      try {
+        const meta = getTickerMeta(a);
+        if (meta && meta.sector === "Imobiliário") k = "Imobiliário";
+      } catch (_) { /* ticker unresolved — keep as Ações/ETFs */ }
+    }
     byClass[k] = (byClass[k] || 0) + parseNum(a.value);
   }
 
@@ -15367,9 +15377,22 @@ function suggestedAllocationFromPreset(phase) {
   const preset = FIRE_ALLOCATION_PRESETS[phase || detectFIREPhase()];
   if (!preset) return {};
 
+  // v64a: REITs (Realty Income, Gladstone*, etc.) are legally shares — class
+  // "Ações/ETFs" — but economically ARE real-estate exposure. Grouping them
+  // under Ações/ETFs made the suggestion tell someone who already holds REITs
+  // to also buy physical property from zero, ignoring exposure they'd
+  // deliberately chosen instead of direct property. Reclassify any
+  // Ações/ETFs-class asset whose real sector (via the same getTickerMeta used
+  // by the Sector chart) is "Imobiliário" into the Imobiliário bucket here.
   const byClass = {};
   for (const a of (state.assets || [])) {
-    const k = a.class || "Outros";
+    let k = a.class || "Outros";
+    if (k === "Ações/ETFs" || k === "Acoes/ETFs") {
+      try {
+        const meta = getTickerMeta(a);
+        if (meta && meta.sector === "Imobiliário") k = "Imobiliário";
+      } catch (_) { /* ticker unresolved — keep as Ações/ETFs */ }
+    }
     byClass[k] = (byClass[k] || 0) + parseNum(a.value);
   }
   const total = Object.values(byClass).reduce((s, v) => s + v, 0) || 1;
