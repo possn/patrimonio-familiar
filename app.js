@@ -1287,7 +1287,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 41; // v64c: reuse a single persistent IndexedDB connection instead of open+close per save; debounce/queue rapid allocation-phase clicks instead of racing or dropping them
+const BROKER_REBUILD_SCHEMA_VERSION = 42; // v64d: added name-based REIT detection fallback (catches Healthpeak, CareTrust, Innovative Industrial and others missing from the fixed 19-ticker list); fixed wrong PROP (oil/gas, not real estate) and MPW mappings
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -5025,6 +5025,7 @@ const TICKER_DB = {
   "MLGO": {s:"Tecnologia",r:"EUA"},
   "MMM": {s:"Industriais",r:"EUA"},
   "MPT": {s:"Imobiliário",r:"EUA"},
+  "MPW": {s:"Imobiliário",r:"EUA"}, // v64d: real Medical Properties Trust ticker — MPT above is a different/stale symbol
   "MRK": {s:"Saúde",r:"EUA"},
   "MRVL": {s:"Tecnologia",r:"EUA"},
   "MSFT": {s:"Tecnologia",r:"EUA"},
@@ -5066,7 +5067,7 @@ const TICKER_DB = {
   "POET": {s:"Tecnologia",r:"EUA"},
   "POL.CC": {s:"Cripto",r:"Cripto"},
   "PPG": {s:"Mat. Básicos",r:"EUA"},
-  "PROP": {s:"Imobiliário",r:"EUA"},
+  "PROP": {s:"Energia",r:"EUA"}, // v64d: was wrongly tagged Imobiliário — Prairie Operating Co. is an oil & gas E&P company
   "PSEC": {s:"Financeiros",r:"EUA"},
   "PSKY": {s:"Tecnologia",r:"EUA"},
   "PYPL": {s:"Consumo Cíclico",r:"EUA"},
@@ -5217,6 +5218,17 @@ function getTickerMeta(asset) {
     if (lookup.endsWith(sfx)) return { sector: lookup.includes("ETF") || ticker.length <= 6 ? "ETF" : "", region: rgn };
 
   // Plain ticker (no suffix) = US equity
+  // v64d: TICKER_DB only had 19 hand-picked REIT tickers, missing real holdings
+  // like Healthpeak (DOC), Innovative Industrial Properties (IIPR), CareTrust
+  // REIT (CTRE) — the last one literally has "REIT" in its name and still
+  // wasn't caught. Rather than keep expanding a static list forever, fall back
+  // to matching real-estate vocabulary in the asset's NAME (not ticker, which is
+  // too ambiguous — many non-REIT tickers coincidentally match 3-4 letter
+  // patterns). This only fires when steps 1–3 above found nothing, so a known,
+  // verified sector is never overridden by a guess.
+  const REIT_NAME_RE = /\b(REIT|REALTY|PROPERT(?:Y|IES)|SELF[\s-]?STORAGE)\b/i;
+  if (REIT_NAME_RE.test(asset.name || "")) return { sector: "Imobiliário", region: "EUA" };
+
   return { sector: "", region: "EUA" };
 }
 
