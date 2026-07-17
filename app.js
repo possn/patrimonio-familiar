@@ -290,15 +290,31 @@ const DB_NAME = "pf_v6", DB_STORE = "kv", DB_KEY = "state";
 
 function idbAvailable() { return typeof indexedDB !== "undefined" && indexedDB; }
 
+// v64c: idbOpen used to open a fresh connection and idbGet/idbSet each closed it
+// again immediately after. Every allocation-phase button click (and anything
+// else calling saveState) paid the full open+upgrade-check+close cost, and two
+// rapid clicks could race — a second open() starting before the first
+// connection had fully closed. That is what made the phase buttons ("Transição",
+// "Independência"...) feel slow or occasionally unresponsive on a real device,
+// on top of state being a multi-MB JSON blob (thousands of dividends/broker
+// events) that has to be reserialized every save. Cache one shared connection
+// and reuse it; only reopen if it was never created or got invalidated.
+let _idbConn = null;
 function idbOpen() {
-  return new Promise((res, rej) => {
+  if (_idbConn) return _idbConn;
+  _idbConn = new Promise((res, rej) => {
     try {
       const req = indexedDB.open(DB_NAME, 1);
       req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains(DB_STORE)) req.result.createObjectStore(DB_STORE); };
-      req.onsuccess = () => res(req.result);
-      req.onerror = () => rej(req.error);
-    } catch (e) { rej(e); }
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onclose = () => { _idbConn = null; }; // browser can force-close (e.g. version change) — allow reopening
+        res(db);
+      };
+      req.onerror = () => { _idbConn = null; rej(req.error); };
+    } catch (e) { _idbConn = null; rej(e); }
   });
+  return _idbConn;
 }
 
 async function idbGet(key) {
@@ -306,8 +322,8 @@ async function idbGet(key) {
   return new Promise((res, rej) => {
     const tx = db.transaction(DB_STORE, "readonly");
     const req = tx.objectStore(DB_STORE).get(key);
-    req.onsuccess = () => { db.close(); res(req.result); };
-    req.onerror = () => { db.close(); rej(req.error); };
+    req.onsuccess = () => res(req.result);
+    req.onerror = () => rej(req.error);
   });
 }
 
@@ -316,8 +332,8 @@ async function idbSet(key, value) {
   return new Promise((res, rej) => {
     const tx = db.transaction(DB_STORE, "readwrite");
     tx.objectStore(DB_STORE).put(value, key);
-    tx.oncomplete = () => { db.close(); res(true); };
-    tx.onerror = () => { db.close(); rej(tx.error); };
+    tx.oncomplete = () => res(true);
+    tx.onerror = () => rej(tx.error);
   });
 }
 
@@ -326,8 +342,8 @@ async function idbDel(key) {
   return new Promise(res => {
     const tx = db.transaction(DB_STORE, "readwrite");
     tx.objectStore(DB_STORE).delete(key);
-    tx.oncomplete = () => { db.close(); res(true); };
-    tx.onerror = () => { db.close(); res(false); };
+    tx.oncomplete = () => res(true);
+    tx.onerror = () => res(false);
   });
 }
 
@@ -1271,7 +1287,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 40; // v64b: fixed a THIRD place REITs were miscounted (Alocação panel/getActualForClass); removed stale hardcoded .passivebar/.main rules in the ≤520px media query that overrode yesterday's dynamic safe-area fix
+const BROKER_REBUILD_SCHEMA_VERSION = 41; // v64c: reuse a single persistent IndexedDB connection instead of open+close per save; debounce/queue rapid allocation-phase clicks instead of racing or dropping them
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -15439,15 +15455,26 @@ function suggestedAllocationFromPreset(phase) {
   return rounded;
 }
 
+let _allocPresetSaveInFlight = null;
 function setAllocationPreset(phase, opts = {}) {
   const { persist = false, rerender = true } = opts || {};
   if (!phase || !FIRE_ALLOCATION_PRESETS[phase]) return false;
+  // v64c: switch + render are cheap and always run immediately, so the UI
+  // responds instantly to a tap. The save is the expensive part (~2-3MB JSON
+  // reserialized to IndexedDB); if one is already in flight when the person
+  // taps a different phase, chain the new save after it instead of dropping it
+  // (silently losing the click) or racing it (two writes landing out of order).
   _allocPreset = phase;
   window._allocPreset = phase;
   if (!state.settings) state.settings = {};
   state.settings.allocationPreset = phase;
-  if (persist) saveState();
   if (rerender) renderAllocationPanel();
+  if (persist) {
+    const doSave = () => saveState();
+    _allocPresetSaveInFlight = _allocPresetSaveInFlight
+      ? _allocPresetSaveInFlight.then(doSave, doSave)
+      : doSave();
+  }
   return true;
 }
 
