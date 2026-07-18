@@ -1287,7 +1287,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 42; // v64d: added name-based REIT detection fallback (catches Healthpeak, CareTrust, Innovative Industrial and others missing from the fixed 19-ticker list); fixed wrong PROP (oil/gas, not real estate) and MPW mappings
+const BROKER_REBUILD_SCHEMA_VERSION = 43; // v64e: fix the real root cause of the footer clipping — offsetParent is always null for position:fixed elements in WebKit/Safari, so the visibility check was zeroing --passivebar-h on every measurement
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -11089,11 +11089,22 @@ function syncFixedBarHeights() {
     const h = nav.getBoundingClientRect().height;
     if (h > 0) root.setProperty("--bottomnav-h", Math.ceil(h) + "px");
   }
-  if (bar && bar.style.display !== "none" && bar.offsetParent !== null) {
-    const h = bar.getBoundingClientRect().height;
-    if (h > 0) root.setProperty("--passivebar-h", Math.ceil(h) + "px");
-  } else {
-    root.setProperty("--passivebar-h", "0px");
+  // v64e: `offsetParent` is null for position:fixed elements in WebKit/Safari —
+  // including on iOS, where this app actually runs — REGARDLESS of whether the
+  // element is visible. That made the "is it hidden?" check below true on every
+  // single call, so --passivebar-h got reset to 0px right after ever being set
+  // correctly, silently undoing the safe-area fix and reintroducing the exact
+  // clipping bug it was meant to solve. Use the CSS display/visibility computed
+  // style instead, which works correctly for fixed-position elements.
+  if (bar) {
+    const cs = window.getComputedStyle ? window.getComputedStyle(bar) : null;
+    const hidden = bar.style.display === "none" || (cs && (cs.display === "none" || cs.visibility === "hidden"));
+    if (!hidden) {
+      const h = bar.getBoundingClientRect().height;
+      if (h > 0) root.setProperty("--passivebar-h", Math.ceil(h) + "px");
+    } else {
+      root.setProperty("--passivebar-h", "0px");
+    }
   }
 }
 
