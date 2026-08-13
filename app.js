@@ -1287,7 +1287,7 @@ const APPRECIATION_DEFAULTS = {
   "outros": 0
 };
 
-const BROKER_REBUILD_SCHEMA_VERSION = 43; // v64e: fix the real root cause of the footer clipping — offsetParent is always null for position:fixed elements in WebKit/Safari, so the visibility check was zeroing --passivebar-h on every measurement
+const BROKER_REBUILD_SCHEMA_VERSION = 43; // v64e: fix the real root cause of the footer clipping — offsetParent is always null for position:fixed elements in WebKit/Safari, so the visibility check was zeroing --passivebar-h on every measurement (no bump needed for v64f: ticker-eligibility fix touches no stored schema)
 
 const DEFAULT_RETURN_SETTINGS = {
   classPassivePct: { ...PASSIVE_DEFAULTS },
@@ -1652,10 +1652,11 @@ function scheduleRenderView(view, opts = {}) {
 }
 
 // v18: cache de elementos DOM para setView — evita querySelectorAll em cada navegação
-let _viewEls = null, _navEls = null;
+let _viewEls = null, _navEls = null, _sideNavEls = null;
 function _initViewCache() {
   if (!_viewEls) _viewEls = Array.from(document.querySelectorAll(".view"));
   if (!_navEls) _navEls = Array.from(document.querySelectorAll(".navbtn"));
+  if (!_sideNavEls) _sideNavEls = Array.from(document.querySelectorAll(".sidenavbtn"));
 }
 
 function switchCashflowPane(pane) {
@@ -1685,6 +1686,7 @@ function setView(view) {
   // "import" merged into cashflow — highlight cashflow when on import pane
   const _navView = view === "import" ? "cashflow" : view;
   for (const b of _navEls) b.classList.toggle("navbtn--active", b.dataset.view === _navView);
+  for (const b of _sideNavEls) b.classList.toggle("sidenavbtn--active", b.dataset.view === _navView);
   try { window.scrollTo(0, 0); } catch (_) {}
   // Phase 2 (deferred): render content after browser has painted the new tab frame.
   // Using double-RAF ensures one paint cycle completes before heavy DOM work starts,
@@ -1705,6 +1707,16 @@ function openModal(id) {
   if (!el) return;
   el.setAttribute("aria-hidden", "false");
   document.body.classList.add("modal-open");
+  // v64f: focar o primeiro campo preenchível assim que a animação de entrada acaba —
+  // poupa um toque a quem vai logo escrever. Sem forçar em ecrãs pequenos (o teclado
+  // a abrir de repente é mais intrusivo que útil em iOS quando o modal ainda está a animar).
+  if (window.innerWidth >= 480) {
+    setTimeout(() => {
+      if (el.getAttribute("aria-hidden") !== "false") return;
+      const field = el.querySelector('input:not([type="hidden"]):not([readonly]):not([disabled]), select:not([disabled])');
+      if (field && field.focus) { try { field.focus({ preventScroll: true }); } catch (_) { try { field.focus(); } catch(__) {} } }
+    }, 240);
+  }
 }
 function closeModal(id) {
   const el = $(id);
@@ -11481,6 +11493,39 @@ function setSettingsPane(which) {
 }
 
 /* ─── WIRING ──────────────────────────────────────────────── */
+// v64f: sidebar off-canvas (telemóvel) / fixa (ecrãs largos, ≥900px)
+function openSidebar() {
+  const sb = document.getElementById("sidebar");
+  const bg = document.getElementById("sidebarBackdrop");
+  const btn = document.getElementById("btnSidebarToggle");
+  if (!sb) return;
+  sb.classList.add("sidebar--open");
+  if (bg) bg.hidden = false;
+  if (btn) btn.setAttribute("aria-expanded", "true");
+  document.body.classList.add("sidebar-open");
+}
+function closeSidebar() {
+  const sb = document.getElementById("sidebar");
+  const bg = document.getElementById("sidebarBackdrop");
+  const btn = document.getElementById("btnSidebarToggle");
+  if (sb) sb.classList.remove("sidebar--open");
+  if (bg) bg.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
+  document.body.classList.remove("sidebar-open");
+}
+function wireSidebar() {
+  const toggle = document.getElementById("btnSidebarToggle");
+  const close = document.getElementById("btnSidebarClose");
+  const backdrop = document.getElementById("sidebarBackdrop");
+  if (toggle) toggle.addEventListener("click", openSidebar);
+  if (close) close.addEventListener("click", closeSidebar);
+  if (backdrop) backdrop.addEventListener("click", closeSidebar);
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeSidebar(); });
+  document.querySelectorAll(".sidenavbtn[data-view]").forEach(b => {
+    b.addEventListener("click", () => { setView(b.dataset.view); closeSidebar(); });
+  });
+}
+
 function wire() {
   if (window.__PF_MAIN_WIRED) return;
   window.__PF_MAIN_WIRED = true;
@@ -11606,6 +11651,9 @@ function wire() {
     const el = document.getElementById(id);
     if (el) el.addEventListener("change", renderFire);
   });
+
+  // Sidebar (v64f)
+  wireSidebar();
 
   // Cashflow
   $("btnAddTx").addEventListener("click", () => openTxModal(null));
@@ -12180,7 +12228,13 @@ async function refreshLiveQuotes() {
 
 
   function hasExplicitTickerTag(asset) {
-    return /\b(?:Ticker|Yahoo)=([A-Z0-9.\-=^]{1,24})\b/i.test(String((asset && asset.notes) || ""));
+    if (/\b(?:Ticker|Yahoo)=([A-Z0-9.\-=^]{1,24})\b/i.test(String((asset && asset.notes) || ""))) return true;
+    // v64f: classes fora de QUOTE_CLASSES (Ouro, Prata, Fundos) também ficam elegíveis
+    // para refresh automático quando o utilizador preencheu o campo Ticker no formulário —
+    // até aqui só o tag "Ticker=" nas notas contava, mas é o campo estruturado (asset.ticker)
+    // que o formulário e o lookup manual ("🔍 Buscar cotação") realmente usam.
+    const raw = String((asset && asset.ticker) || "").trim();
+    return raw.length > 0;
   }
 
   function isPlausibleMarketTicker(raw, asset) {
