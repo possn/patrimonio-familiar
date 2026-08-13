@@ -2633,7 +2633,15 @@ function renderItems() {
   });
 
   if (!src.length) {
-    list.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem ${showingLiabs ? "passivos" : "ativos"}</div><div class="item__s">Usa "Adicionar".</div></div><div class="item__v">—</div></div>`;
+    // v64u: estado vazio consistente com o do Dashboard — ícone + acção directa,
+    // não só texto a dizer "usa o botão X" sem o botão à vista.
+    const kind = showingLiabs ? "passivo" : "activo";
+    list.innerHTML = `<div class="card" style="text-align:center;padding:24px 16px">
+      <div style="font-size:32px;margin-bottom:6px">${showingLiabs ? "📄" : "🌱"}</div>
+      <div style="font-weight:700;margin-bottom:4px">Sem ${showingLiabs ? "passivos" : "ativos"} ainda</div>
+      <div class="card__muted" style="font-size:13px;margin-bottom:14px">Adiciona o primeiro ${kind} para começares a ver os teus números aqui.</div>
+      <button class="btn btn--primary btn--sm" onclick="openItemModal('${showingLiabs ? "liab" : "asset"}')">➕ Adicionar ${kind}</button>
+    </div>`;
     const tog = document.getElementById("btnItemsToggle");
     if (tog) tog.style.display = "none";
     return;
@@ -3288,7 +3296,15 @@ function renderTxList() {
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
   if (!tx.length) {
-    wrap.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem movimentos</div><div class="item__s">Importa o extracto ou adiciona manualmente.</div></div><div class="item__v">—</div></div>`;
+    wrap.innerHTML = `<div class="card" style="text-align:center;padding:24px 16px">
+      <div style="font-size:32px;margin-bottom:6px">🧾</div>
+      <div style="font-weight:700;margin-bottom:4px">Sem movimentos neste período</div>
+      <div class="card__muted" style="font-size:13px;margin-bottom:14px">Importa um extracto bancário ou regista um movimento à mão.</div>
+      <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+        <button class="btn btn--primary btn--sm" onclick="openTxModal()">➕ Adicionar movimento</button>
+        <button class="btn btn--outline btn--sm" onclick="switchCashflowPane('importar')">📥 Importar extracto</button>
+      </div>
+    </div>`;
     $("btnTxToggle").style.display = "none";
     return;
   }
@@ -4593,7 +4609,12 @@ function renderDividends() {
   const divs = (state.dividends || []).slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
   if (!divs.length) {
-    wrap.innerHTML = `<div class="item"><div class="item__l"><div class="item__t">Sem dividendos registados</div><div class="item__s">Usa "+ Dividendo" para registar.</div></div><div class="item__v">—</div></div>`;
+    wrap.innerHTML = `<div class="card" style="text-align:center;padding:24px 16px">
+      <div style="font-size:32px;margin-bottom:6px">💰</div>
+      <div style="font-weight:700;margin-bottom:4px">Sem dividendos registados</div>
+      <div class="card__muted" style="font-size:13px;margin-bottom:14px">Regista o primeiro para começares a ver o histórico e a projecção.</div>
+      <button class="btn btn--primary btn--sm" onclick="openDivModal(null)">➕ Adicionar dividendo</button>
+    </div>`;
     $("btnDivToggle").style.display = "none";
     return;
   }
