@@ -2237,6 +2237,7 @@ function renderDivYTD() {
 }
 
 function renderDashboard() {
+  applyDashboardEmptyState();
   // v18: usar render cache — calcTotals/calcPortfolioYield/calcTWR/calcPortfolioRealMetrics
   // calculados UMA vez por ciclo de render, partilhados por todas as sub-funções.
   const rc = getRenderCache();
@@ -11582,6 +11583,29 @@ function wireFireInputsToggle() {
   });
 }
 
+// v64n: Primeiro arranque — esconde os cartões de detalhe e mostra 3 acções
+// claras quando não há nenhum activo/passivo ainda.
+function applyDashboardEmptyState() {
+  const empty = (!state.assets || state.assets.length === 0) && (!state.liabilities || state.liabilities.length === 0);
+  const emptyEl = document.getElementById("dashboardEmptyState");
+  const dash = document.getElementById("viewDashboard");
+  if (!emptyEl || !dash) return;
+  emptyEl.style.display = empty ? "" : "none";
+  Array.from(dash.children).forEach(child => {
+    if (child === emptyEl) return;
+    if (child.classList && child.classList.contains("hero")) return; // hero fica sempre visível
+    child.style.display = empty ? "none" : "";
+  });
+}
+function wireDashboardEmptyState() {
+  const add = document.getElementById("btnEmptyAddAsset");
+  const broker = document.getElementById("btnEmptyImportBroker");
+  const bank = document.getElementById("btnEmptyImportBank");
+  if (add) add.addEventListener("click", () => openItemModal("asset"));
+  if (broker) broker.addEventListener("click", () => { setView("cashflow"); switchCashflowPane("importar"); });
+  if (bank) bank.addEventListener("click", () => { setView("cashflow"); switchCashflowPane("importar"); });
+}
+
 function wire() {
   if (window.__PF_MAIN_WIRED) return;
   window.__PF_MAIN_WIRED = true;
@@ -11711,6 +11735,7 @@ function wire() {
 // v64j: Modo Simples/Avançado — Parte 1 da simplificação pedida
   wireUiModeToggle();
   wireFireInputsToggle();
+  wireDashboardEmptyState();
 
   // Sidebar (v64f)
   wireSidebar();
