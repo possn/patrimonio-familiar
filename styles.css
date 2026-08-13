@@ -177,6 +177,10 @@ body {
   contain: layout style;
 }
 .view[hidden] { display: none !important; }
+/* v64o: cartões "de consulta ocasional" do Dashboard ficam colapsados por
+   defeito atrás de um único toggle — cada cartão mantém a sua própria lógica
+   de relevância (só aparece quando faz sentido) assim que o grupo abrir. */
+#viewDashboard:not(.dash-secondary-open) .dash-secondary { display: none !important; }
 /* v64j: mecanismo genérico de Modo Simples/Avançado — qualquer elemento
    marcado com .advanced-only fica escondido em modo Simples (o defeito).
    Nada é removido do DOM nem apagado, só deixa de ocupar espaço. */
