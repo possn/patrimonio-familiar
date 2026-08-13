@@ -12899,6 +12899,7 @@ async function fetchQuoteWithFallback(ref) {
   renderAll();
   // Disparar evento para outros listeners (P&L, price alerts)
   document.dispatchEvent(new CustomEvent("quotesUpdated"));
+  updateQuoteButtonStaleness(); // v64t: nunca era chamada — o aviso de "cotações desactualizadas" existia no código mas nunca se acendia
 
   if (btn) {
     btn.disabled = false;
@@ -13224,6 +13225,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try { reportActiveSwVersion(); } catch (_) {}
   try { renderStaleXtbImportBanner(); } catch (_) {}
   try { setupFixedBarSpacing(); } catch (_) {}
+  try { updateQuoteButtonStaleness(); } catch (_) {} // v64t: mostrar logo se as cotações já estão desactualizadas ao abrir a app
   // Hide loading overlay with fade
   if (_splash) {
     _splash.style.transition = "opacity 0.3s ease";
