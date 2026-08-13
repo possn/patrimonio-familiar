@@ -11552,6 +11552,16 @@ function setUiMode(mode) {
   state.settings.simpleMode = (mode !== "advanced");
   saveState();
   applyUiMode();
+  // v64k: se ficarmos presos num separador que acabou de ficar escondido
+  // (ex: Fiscal, a ver quando se muda para Simples), volta para Portfólio
+  // em vez de deixar o ecrã em branco/confuso.
+  if (isSimpleMode()) {
+    const activeBtn = document.querySelector(".analysis-tab.analysis-tab--active");
+    if (activeBtn && activeBtn.classList.contains("advanced-only")) {
+      const fallback = document.querySelector('.analysis-tab[data-tab="portfolio"]');
+      if (fallback) fallback.click();
+    }
+  }
 }
 function wireUiModeToggle() {
   document.querySelectorAll("#uiModeToggle .seg__btn").forEach(b => {
