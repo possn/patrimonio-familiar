@@ -11570,6 +11570,18 @@ function wireUiModeToggle() {
   applyUiMode();
 }
 
+// v64m: painel FIRE — pressupostos escondidos por defeito, resultado sempre visível
+function wireFireInputsToggle() {
+  const btn = document.getElementById("btnToggleFireInputs");
+  const body = document.getElementById("fireInputsBody");
+  if (!btn || !body) return;
+  btn.addEventListener("click", () => {
+    const open = body.style.display !== "none";
+    body.style.display = open ? "none" : "";
+    btn.textContent = open ? "⚙️ Ajustar pressupostos" : "⚙️ Esconder pressupostos";
+  });
+}
+
 function wire() {
   if (window.__PF_MAIN_WIRED) return;
   window.__PF_MAIN_WIRED = true;
@@ -11698,6 +11710,7 @@ function wire() {
 
 // v64j: Modo Simples/Avançado — Parte 1 da simplificação pedida
   wireUiModeToggle();
+  wireFireInputsToggle();
 
   // Sidebar (v64f)
   wireSidebar();
