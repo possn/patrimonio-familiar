@@ -11098,8 +11098,19 @@ function syncFixedBarHeights() {
   const bar = document.getElementById("passivebar");
   const root = document.documentElement.style;
   if (nav) {
-    const h = nav.getBoundingClientRect().height;
-    if (h > 0) root.setProperty("--bottomnav-h", Math.ceil(h) + "px");
+    // v64h: mesmo padrão de defesa do passivebar (ver nota v64e) — .bottomnav
+    // está agora sempre display:none (rodapé removido a favor da sidebar), e
+    // "if (h > 0)" sozinho nunca zera a variável quando o elemento fica
+    // escondido, deixando .main com um espaço reservado para um rodapé que
+    // já não existe. Zera explicitamente sempre que estiver oculto.
+    const cs = window.getComputedStyle ? window.getComputedStyle(nav) : null;
+    const navHidden = nav.style.display === "none" || (cs && (cs.display === "none" || cs.visibility === "hidden"));
+    if (navHidden) {
+      root.setProperty("--bottomnav-h", "0px");
+    } else {
+      const h = nav.getBoundingClientRect().height;
+      if (h > 0) root.setProperty("--bottomnav-h", Math.ceil(h) + "px");
+    }
   }
   // v64e: `offsetParent` is null for position:fixed elements in WebKit/Safari —
   // including on iOS, where this app actually runs — REGARDLESS of whether the

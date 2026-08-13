@@ -486,7 +486,7 @@ select.input   { cursor: pointer; }
 }
 
 /* ─── PASSIVE BAR ─── */
-:root { --bottomnav-h: 78px; } /* fallback; overridden in JS with the real measured height */
+:root { --bottomnav-h: 0px; } /* v64h: rodapé removido — a barra lateral é a navegação única */
 .passivebar {
   position: fixed; left: 50%; transform: translateX(-50%);
   bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + 8px);
@@ -563,12 +563,18 @@ select.input   { cursor: pointer; }
   .sidebar-toggle { display: none; }
   .sidebar { transform: translateX(0); box-shadow: none; }
   .sidebar-backdrop { display: none !important; }
-  .bottomnav, .passivebar { left: calc(50% + 130px); }
+  .passivebar { left: calc(50% + 130px); }
   .topbar { padding-left: calc(260px + 16px); }
   .main { margin-left: 260px; max-width: 680px; }
 }
 
-/* ─── BOTTOM NAV ─── */
+/* ─── BOTTOM NAV ───
+   v64h: removido — a barra lateral (sidebar) é agora a navegação única,
+   em mobile (drawer via ☰) e em ecrã largo (fixa). Mantenho a marcação e
+   o JS de sincronização de estado activo intactos (custam zero, e ficam
+   prontos a reactivar com uma linha caso alguma vez se queira um atalho
+   rápido no polegar outra vez) — só deixa de ocupar espaço visual. */
+.bottomnav { display: none !important; }
 .bottomnav {
   position: fixed; left: 50%; transform: translateX(-50%);
   bottom: 0; width: min(680px, 100%);
