@@ -496,7 +496,7 @@ select.input   { cursor: pointer; }
 /* ─── PASSIVE BAR ─── */
 :root { --bottomnav-h: 78px; } /* v64p: rodapé de volta; fallback antes da medição real em JS */
 .passivebar {
-  position: fixed; left: 50%; transform: translateX(-50%);
+  position: fixed; left: 50%;
   bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + 8px);
   width: min(680px, calc(100% - 16px));
   z-index: 59;
@@ -507,7 +507,14 @@ select.input   { cursor: pointer; }
   padding: 10px 18px;
   display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px;
   align-items: center;
+  transform: translateX(-50%) translateY(0);
+  transition: transform .25s ease, opacity .25s ease;
 }
+/* v64r: em vez de deixar o conteúdo passar por trás enquanto se faz scroll,
+   a barra desliza para fora e volta assim que o scroll pára — nunca chega
+   a sobrepor-se a texto, em nenhum ecrã. */
+body.is-scrolling .passivebar { transform: translateX(-50%) translateY(140%); opacity: 0; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .passivebar { transition: none; } }
 .passivebar__item { display: flex; flex-direction: column; gap: 1px; }
 .passivebar__item:last-child { text-align: right; }
 .passivebar__label {

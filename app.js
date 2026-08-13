@@ -11185,12 +11185,17 @@ function setupFixedBarSpacing() {
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", () => { syncFixedBarHeights(); });
   }
-  // v64q: re-sincronizar (debounced) também ao fazer scroll — cobre o caso
-  // de a chrome do Safari mudar de altura a meio do scroll sem "resize".
+  // v64r: no lugar de espaçamento reservado, esconder a passivebar durante o
+  // scroll activo (desliza para fora) e voltar a mostrá-la ao parar — elimina
+  // a sobreposição em vez de só reduzir o risco dela acontecer.
   let scrollTimer = null;
   window.addEventListener("scroll", () => {
+    document.body.classList.add("is-scrolling");
     clearTimeout(scrollTimer);
-    scrollTimer = setTimeout(syncFixedBarHeights, 150);
+    scrollTimer = setTimeout(() => {
+      document.body.classList.remove("is-scrolling");
+      syncFixedBarHeights();
+    }, 250);
   }, { passive: true });
   const bar = document.getElementById("passivebar");
   const nav = document.querySelector(".bottomnav");
@@ -11937,11 +11942,18 @@ function wire() {
   if ($("btnDiagnose")) $("btnDiagnose").addEventListener("click", showAssetDiagnostic);
   if ($("btnHardReset")) $("btnHardReset").addEventListener("click", hardResetBrokerData);
   if ($("btnForceUpdate")) $("btnForceUpdate").addEventListener("click", forceAppUpdate);
-  $("jsonInput").addEventListener("change", () => { $("btnImportJSON").disabled = !($("jsonInput").files && $("jsonInput").files.length); });
-  $("btnImportJSON").addEventListener("click", async () => {
+  // v64r: "Importar JSON" dependia de um <input type="file" id="jsonInput">
+  // que já não existia no HTML (removido nalguma limpeza anterior) — o botão
+  // reagia ao toque mas `$("jsonInput")` devolvia o NOOP_EL de segurança,
+  // sem `.files`, por isso a importação nunca arrancava, em silêncio. Voltou
+  // a ter o campo de ficheiro (escondido) e passa a um único toque: clicar
+  // no botão abre logo o selector, e escolher o ficheiro importa de imediato.
+  $("btnImportJSON").addEventListener("click", () => $("jsonInput").click());
+  $("jsonInput").addEventListener("change", async () => {
     const f = $("jsonInput").files && $("jsonInput").files[0];
     if (!f) return;
     try { await importJSON(f); } catch (e) { toast("Erro a importar JSON."); }
+    $("jsonInput").value = ""; // permite re-seleccionar o mesmo ficheiro depois
   });
   $("btnReset").addEventListener("click", resetAll);
 
