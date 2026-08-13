@@ -255,6 +255,13 @@ Este valor é usado como fonte principal no cálculo do Rendimento Passivo.`
 <b>YoY</b> (Year over Year): variação ano a ano<br><br>
 Os dados são baseados nos <b>snapshots</b> que guardas usando o botão <b>"Registar mês"</b> no Dashboard.<br><br>
 Regista um snapshot no fim de cada mês para teres um historial completo.`
+  },
+  twr: {
+    title: "O que é TWR?",
+    body: `<b>TWR</b> (Time-Weighted Return / Retorno Ponderado pelo Tempo) mede o desempenho real dos teus investimentos, ignorando o efeito de quando entraste ou saíste dinheiro.<br><br>
+<b>Porquê importa:</b> se investires 1000€ mesmo antes de uma subida, o teu retorno em euros parece óptimo — mas isso é sorte de timing, não desempenho. O TWR remove essa distorção, tal como os fundos de investimento reportam a sua performance.<br><br>
+<b>Sem histórico suficiente</b> (definido em "anos mínimos" ao lado), a app usa uma estimativa baseada no rendimento e valorização esperados de cada ativo — menos precisa, mas disponível desde o primeiro dia.<br><br>
+Isto só afecta previsões e comparações de performance — o valor da tua carteira e o rendimento passivo mostrado no Dashboard não mudam.`
   }
 };
 
@@ -2634,6 +2641,35 @@ function appreciationBadge(it) {
 }
 
 /* ─── MODAL: ITEM ─────────────────────────────────────────── */
+// v64o: colapsáveis do formulário de activo — reduz o formulário ao essencial
+// para o primeiro preenchimento, mas expande sozinho se já houver dados (edição).
+function syncItemModalCollapsibles() {
+  const ytEl = document.getElementById("mYieldType");
+  const detailFields = document.getElementById("yieldDetailFields");
+  if (detailFields) detailFields.style.display = (ytEl && ytEl.value !== "none") ? "" : "none";
+
+  const cbEl = document.getElementById("mCostBasis");
+  const notesEl = document.getElementById("mNotes");
+  const extra = document.getElementById("itemExtraFields");
+  const extraBtn = document.getElementById("btnToggleItemExtra");
+  const hasExtraData = !!((cbEl && cbEl.value) || (notesEl && notesEl.value));
+  if (extra) extra.style.display = hasExtraData ? "" : "none";
+  if (extraBtn) extraBtn.textContent = hasExtraData ? "➖ Mais detalhes (opcional)" : "➕ Mais detalhes (opcional)";
+}
+function wireItemModalCollapsibles() {
+  const ytEl = document.getElementById("mYieldType");
+  if (ytEl) ytEl.addEventListener("change", syncItemModalCollapsibles);
+  const extraBtn = document.getElementById("btnToggleItemExtra");
+  const extra = document.getElementById("itemExtraFields");
+  if (extraBtn && extra) {
+    extraBtn.addEventListener("click", () => {
+      const open = extra.style.display !== "none";
+      extra.style.display = open ? "none" : "";
+      extraBtn.textContent = open ? "➕ Mais detalhes (opcional)" : "➖ Mais detalhes (opcional)";
+    });
+  }
+}
+
 function openItemModal(kind) {
   editingItemId = null;
   $("mId").value = "";
@@ -2670,6 +2706,7 @@ function openItemModal(kind) {
   openModal("modalItem");
   wireCurrencyModal();
   wireMarketLookup();
+  syncItemModalCollapsibles();
 }
 
 function buildClassSelect(kind) {
@@ -2859,6 +2896,7 @@ function editItem(id) {
   }
   $("btnSaveItem").dataset.kind = kind;
   openModal("modalItem");
+  syncItemModalCollapsibles();
 }
 
 function saveItemFromModal() {
@@ -11453,6 +11491,7 @@ function renderReturnSettingsCard() {
         <label style="display:flex;align-items:center;gap:10px;font-weight:700">
           <input type="checkbox" id="prefPreferTWR" ${rs.preferTWR ? "checked" : ""}>
           Preferir TWR real quando houver histórico suficiente
+          <button class="info-btn" onclick="openTip('twr')" title="O que é TWR?">ℹ️</button>
         </label>
         <div class="return-setting-row__input" style="min-width:168px">
           <input class="input input--sm" id="prefTwrMinYears" inputmode="decimal" value="${String(parseNum(rs.twrMinYears || DEFAULT_RETURN_SETTINGS.twrMinYears))}">
@@ -11606,6 +11645,17 @@ function wireDashboardEmptyState() {
   if (bank) bank.addEventListener("click", () => { setView("cashflow"); switchCashflowPane("importar"); });
 }
 
+// v64o: toggle único para os cartões "de consulta ocasional" do Dashboard
+function wireDashSecondaryToggle() {
+  const btn = document.getElementById("btnToggleDashSecondary");
+  const dash = document.getElementById("viewDashboard");
+  if (!btn || !dash) return;
+  btn.addEventListener("click", () => {
+    const open = dash.classList.toggle("dash-secondary-open");
+    btn.textContent = open ? "📂 Ver menos detalhes" : "📂 Ver mais detalhes";
+  });
+}
+
 function wire() {
   if (window.__PF_MAIN_WIRED) return;
   window.__PF_MAIN_WIRED = true;
@@ -11736,6 +11786,8 @@ function wire() {
   wireUiModeToggle();
   wireFireInputsToggle();
   wireDashboardEmptyState();
+  wireItemModalCollapsibles();
+  wireDashSecondaryToggle();
 
   // Sidebar (v64f)
   wireSidebar();
