@@ -165,7 +165,7 @@ body {
   cursor: pointer;
   transition: transform .15s, box-shadow .15s;
 }
-.fab:hover  { transform: scale(1.06); box-shadow: 0 12px 32px rgba(91,92,230,.35); }
+.fab:hover  { transform: scale(1.06); box-shadow: 0 12px 32px rgba(92,110,84,.35); }
 .fab:active { transform: scale(.93); }
 
 /* ─── MAIN ─── */
@@ -177,6 +177,10 @@ body {
   contain: layout style;
 }
 .view[hidden] { display: none !important; }
+/* v64j: mecanismo genérico de Modo Simples/Avançado — qualquer elemento
+   marcado com .advanced-only fica escondido em modo Simples (o defeito).
+   Nada é removido do DOM nem apagado, só deixa de ocupar espaço. */
+body.simple-mode .advanced-only { display: none !important; }
 /* v64f: entra em fade+slide subtil ao trocar de separador — dispara sozinha
    sempre que [hidden] é removido (display:none → block), sem tocar no JS. */
 @keyframes viewEnter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
@@ -375,9 +379,9 @@ body {
 .btn:active { transform: scale(.96); opacity: .88; }
 .btn--primary {
   border: 0; background: var(--vio); color: #fff;
-  box-shadow: 0 4px 14px rgba(91,92,230,.28);
+  box-shadow: 0 4px 14px rgba(92,110,84,.28);
 }
-.btn--primary:hover { background: var(--vio2); box-shadow: 0 6px 20px rgba(91,92,230,.36); }
+.btn--primary:hover { background: var(--vio2); box-shadow: 0 6px 20px rgba(92,110,84,.36); }
 .btn--ghost    { background: transparent; border-color: var(--line); }
 .btn--ghost:hover { background: var(--card2); border-color: var(--vio); color: var(--vio); }
 .btn--outline  { background: transparent; border-color: var(--vio); color: var(--vio); }
@@ -868,8 +872,8 @@ select.input   { cursor: pointer; }
 
 /* Intro card */
 .ai-intro-card {
-  background: linear-gradient(135deg, rgba(91,92,230,.04) 0%, rgba(155,111,239,.04) 100%);
-  border-color: rgba(91,92,230,.2) !important;
+  background: linear-gradient(135deg, rgba(92,110,84,.04) 0%, rgba(155,111,239,.04) 100%);
+  border-color: rgba(92,110,84,.2) !important;
 }
 
 /* Modos de análise */
@@ -940,7 +944,7 @@ select.input   { cursor: pointer; }
 
 /* Dark mode IA */
 @media (prefers-color-scheme: dark) {
-  .ai-intro-card { background: rgba(124,127,239,.06) !important; }
+  .ai-intro-card { background: rgba(168,189,156,.06) !important; }
   .ai-mode-btn span { background: var(--card2); }
   .ai-result-body { color: var(--text2); }
   .ai-result-body .ai-section-head { color: var(--text); }

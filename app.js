@@ -1880,7 +1880,7 @@ function renderGoal() {
   if (wrap) wrap.style.display = "";
   if (fill) {
     fill.style.width = pct + "%";
-    fill.style.background = done ? "#10b981" : "#5b5ce6";
+    fill.style.background = done ? "#10b981" : "#5c6e54";
   }
   if (cur) cur.textContent = `${fmtEUR(monthly)}/mês atual`;
   if (tgt) tgt.textContent = `Objetivo: ${fmtEUR(goal)}/mês`;
@@ -2395,7 +2395,7 @@ function renderSummary() {
   if (dashSub) dashSub.textContent = `Por valor · ${items.length} ativos · clica para editar`;
 }
 
-const PALETTE = ["#5b5ce6","#3b82f6","#39d6d8","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899","#06b6d4","#84cc16","#f97316","#64748b"];
+const PALETTE = ["#5c6e54","#3b82f6","#39d6d8","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899","#06b6d4","#84cc16","#f97316","#64748b"];
 
 function renderDistChart() {
   const by = {};
@@ -2467,7 +2467,7 @@ function renderTrendChart() {
       data: {
         labels,
         datasets: [
-          { label: "Património líquido", data: netData, tension: .4, pointRadius: h.length <= 12 ? 4 : 2, borderColor: "#5b5ce6", backgroundColor: "rgba(91,92,230,.08)", fill: true, borderWidth: 2 },
+          { label: "Património líquido", data: netData, tension: .4, pointRadius: h.length <= 12 ? 4 : 2, borderColor: "#5c6e54", backgroundColor: "rgba(92,110,84,.08)", fill: true, borderWidth: 2 },
           { label: "Total ativos", data: assetData, tension: .4, pointRadius: 0, borderDash: [4,4], borderColor: "#39d6d8", borderWidth: 1.5 },
           { label: "Rend. passivo/ano", data: passData, tension: .4, pointRadius: 0, borderColor: "#10b981", borderWidth: 1.5 }
         ]
@@ -3787,10 +3787,10 @@ function renderDivSummaryChart() {
           data: yieldData,
           type: "line",
           yAxisID: "y2",
-          borderColor: "#5b5ce6",
+          borderColor: "#5c6e54",
           backgroundColor: "transparent",
           pointRadius: 5,
-          pointBackgroundColor: "#5b5ce6",
+          pointBackgroundColor: "#5c6e54",
           borderWidth: 2,
           tension: 0.3
         }
@@ -3877,7 +3877,7 @@ function renderDivProjection() {
   const scenarios = [
     { name: "Conservador", yield: Math.max(0.1, baseYield - 1), color: "#f59e0b" },
     { name: "Base (yield mantido)", yield: baseYield, color: "#10b981" },
-    { name: "Otimista", yield: baseYield + 1, color: "#5b5ce6" }
+    { name: "Otimista", yield: baseYield + 1, color: "#5c6e54" }
   ];
 
   const allData = scenarios.map(sc => {
@@ -6406,8 +6406,8 @@ function calcAndRenderCompound() {
         {
           label: "Juro composto",
           data: data.map(d => d.value),
-          tension: .4, borderColor: "#5b5ce6",
-          backgroundColor: "rgba(91,92,230,.09)", fill: true,
+          tension: .4, borderColor: "#5c6e54",
+          backgroundColor: "rgba(92,110,84,.09)", fill: true,
           pointRadius: 0, borderWidth: 2.5
         },
         {
@@ -8992,7 +8992,7 @@ function renderPortfolioSourcesCard() {
         <div style="font-weight:900;font-size:18px;margin-top:4px;color:var(--text)">${fmtEUR(manualValue)}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px">${manualAssets.length} ativo${manualAssets.length !== 1 ? "s" : ""}</div>
       </div>
-      <div style="background:var(--card2);border:1px solid rgba(124,127,239,.45);border-radius:14px;padding:12px;color:var(--text)">
+      <div style="background:var(--card2);border:1px solid rgba(168,189,156,.45);border-radius:14px;padding:12px;color:var(--text)">
         <div style="font-size:11px;color:var(--muted)">Corretoras</div>
         <div style="font-weight:900;font-size:18px;margin-top:4px;color:var(--text)">${fmtEUR(brokerValue)}</div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px">${brokerAssets.length} ativo${brokerAssets.length !== 1 ? "s" : ""} · ${fmtPct(brokerPct)}</div>
@@ -11537,6 +11537,29 @@ function wireSidebar() {
   });
 }
 
+// v64j: Modo Simples/Avançado — Parte 1 da simplificação pedida
+function isSimpleMode() {
+  return !(state.settings && state.settings.simpleMode === false); // simples por defeito
+}
+function applyUiMode() {
+  document.body.classList.toggle("simple-mode", isSimpleMode());
+  document.querySelectorAll("#uiModeToggle .seg__btn").forEach(b => {
+    b.classList.toggle("seg__btn--active", b.dataset.mode === (isSimpleMode() ? "simple" : "advanced"));
+  });
+}
+function setUiMode(mode) {
+  if (!state.settings) state.settings = {};
+  state.settings.simpleMode = (mode !== "advanced");
+  saveState();
+  applyUiMode();
+}
+function wireUiModeToggle() {
+  document.querySelectorAll("#uiModeToggle .seg__btn").forEach(b => {
+    b.addEventListener("click", () => setUiMode(b.dataset.mode));
+  });
+  applyUiMode();
+}
+
 function wire() {
   if (window.__PF_MAIN_WIRED) return;
   window.__PF_MAIN_WIRED = true;
@@ -11662,6 +11685,9 @@ function wire() {
     const el = document.getElementById(id);
     if (el) el.addEventListener("change", renderFire);
   });
+
+// v64j: Modo Simples/Avançado — Parte 1 da simplificação pedida
+  wireUiModeToggle();
 
   // Sidebar (v64f)
   wireSidebar();
@@ -12121,7 +12147,7 @@ async function refreshLiveQuotes() {
     if (!el) {
       el = document.createElement("div");
       el.id = "quoteRefreshProgress";
-      el.style.cssText = "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:#5b5ce6;color:#fff;padding:10px 20px;border-radius:20px;font-weight:700;font-size:14px;z-index:998;max-width:90vw;text-align:center;box-shadow:0 8px 24px rgba(91,92,230,.3)";
+      el.style.cssText = "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:#5c6e54;color:#fff;padding:10px 20px;border-radius:20px;font-weight:700;font-size:14px;z-index:998;max-width:90vw;text-align:center;box-shadow:0 8px 24px rgba(92,110,84,.3)";
       document.body.appendChild(el);
     }
     el.textContent = msg;
