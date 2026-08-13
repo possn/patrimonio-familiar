@@ -11172,15 +11172,31 @@ function syncFixedBarHeights() {
 
 function setupFixedBarSpacing() {
   syncFixedBarHeights();
-  // Re-measure after fonts/content settle, on resize (rotation, keyboard), and
-  // whenever the passivebar's own content changes (e.g. numbers wrap to 2 lines
-  // on a narrow device after a large portfolio value is rendered).
+  // Re-measure após fontes/conteúdo assentarem, em resize (rotação, teclado),
+  // e sempre que o conteúdo da passivebar mudar (ex: números passam a 2
+  // linhas num ecrã estreito depois de um valor grande de carteira).
   setTimeout(syncFixedBarHeights, 300);
+  setTimeout(syncFixedBarHeights, 1200); // v64q: 2ª rede de segurança — fontes/imagens que só assentam mais tarde
   window.addEventListener("resize", () => { syncFixedBarHeights(); });
   window.addEventListener("orientationchange", () => { setTimeout(syncFixedBarHeights, 200); });
+  // v64q: no Safari/iOS a barra de endereço esconde/mostra durante o scroll,
+  // o que muda a altura visível e o safe-area-inset SEM disparar sempre o
+  // evento "resize" normal — usar visualViewport, feito para isto, quando existe.
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", () => { syncFixedBarHeights(); });
+  }
+  // v64q: re-sincronizar (debounced) também ao fazer scroll — cobre o caso
+  // de a chrome do Safari mudar de altura a meio do scroll sem "resize".
+  let scrollTimer = null;
+  window.addEventListener("scroll", () => {
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(syncFixedBarHeights, 150);
+  }, { passive: true });
   const bar = document.getElementById("passivebar");
-  if (bar && "ResizeObserver" in window) {
-    try { new ResizeObserver(() => syncFixedBarHeights()).observe(bar); } catch (_) {}
+  const nav = document.querySelector(".bottomnav");
+  if ("ResizeObserver" in window) {
+    if (bar) { try { new ResizeObserver(() => syncFixedBarHeights()).observe(bar); } catch (_) {} }
+    if (nav) { try { new ResizeObserver(() => syncFixedBarHeights()).observe(nav); } catch (_) {} }
   }
 }
 
