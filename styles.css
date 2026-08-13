@@ -171,7 +171,7 @@ body {
 /* ─── MAIN ─── */
 :root { --passivebar-h: 62px; } /* fallback; overridden in JS with the real measured height */
 .main {
-  padding: 14px 12px calc(var(--bottomnav-h) + var(--passivebar-h) + env(safe-area-inset-bottom, 0px) + 24px);
+  padding: 14px 12px calc(var(--bottomnav-h) + var(--passivebar-h) + env(safe-area-inset-bottom, 0px) + 40px);
   max-width: 680px;
   margin: 0 auto;
   contain: layout style;
