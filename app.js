@@ -11755,6 +11755,16 @@ function wireDashSecondaryToggle() {
   });
 }
 
+// v64v: debounce genérico — evita recalcular listas grandes (500+ activos)
+// a cada tecla; útil em qualquer input de pesquisa/filtro futuro também.
+function debounce(fn, wait = 150) {
+  let t = null;
+  return function debounced(...args) {
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), wait);
+  };
+}
+
 function wire() {
   if (window.__PF_MAIN_WIRED) return;
   window.__PF_MAIN_WIRED = true;
@@ -11797,7 +11807,7 @@ function wire() {
   // Assets
   $("segAssets").addEventListener("click", () => setModeLiabs(false));
   $("segLiabs").addEventListener("click", () => setModeLiabs(true));
-  $("qSearch").addEventListener("input", renderItems);
+  $("qSearch").addEventListener("input", debounce(renderItems, 180));
   $("qClass").addEventListener("change", renderItems);
   $("qSort").addEventListener("change", renderItems);
   $("btnAddItem").addEventListener("click", () => openItemModal(showingLiabs ? "liab" : "asset"));
@@ -12116,7 +12126,7 @@ function wire() {
   const btnSearch = document.getElementById("btnSearchToggle");
   if (btnSearch) btnSearch.addEventListener("click", toggleSearch);
   const gSearch = document.getElementById("globalSearch");
-  if (gSearch) gSearch.addEventListener("input", e => renderSearchResults(e.target.value));
+  if (gSearch) gSearch.addEventListener("input", debounce(e => renderSearchResults(e.target.value), 180));
 
   // Apagar movimento
   const btnDeleteTx = document.getElementById("btnDeleteTx");
