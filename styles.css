@@ -494,21 +494,19 @@ select.input   { cursor: pointer; }
 }
 
 /* ─── PASSIVE BAR ─── */
-:root { --bottomnav-h: 0px; } /* v64h: rodapé removido — a barra lateral é a navegação única */
+:root { --bottomnav-h: 78px; } /* v64p: rodapé de volta; fallback antes da medição real em JS */
 .passivebar {
   position: fixed; left: 50%; transform: translateX(-50%);
   bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + 8px);
   width: min(680px, calc(100% - 16px));
   z-index: 59;
-  background: var(--nav-bg);
+  background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--r);
   box-shadow: var(--shadow-md);
   padding: 10px 18px;
   display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px;
   align-items: center;
-  backdrop-filter: blur(16px) saturate(150%);
-  -webkit-backdrop-filter: blur(16px) saturate(150%);
 }
 .passivebar__item { display: flex; flex-direction: column; gap: 1px; }
 .passivebar__item:last-child { text-align: right; }
@@ -582,7 +580,12 @@ select.input   { cursor: pointer; }
    o JS de sincronização de estado activo intactos (custam zero, e ficam
    prontos a reactivar com uma linha caso alguma vez se queira um atalho
    rápido no polegar outra vez) — só deixa de ocupar espaço visual. */
-.bottomnav { display: none !important; }
+/* v64p: trazido de volta a pedido — o acesso de um toque no polegar é
+   mais rápido do que abrir a sidebar para os separadores mais usados.
+   Fica só em mobile; em ecrã largo a sidebar já é permanente e chega. */
+@media (min-width: 900px) {
+  .bottomnav { display: none !important; }
+}
 .bottomnav {
   position: fixed; left: 50%; transform: translateX(-50%);
   bottom: 0; width: min(680px, 100%);
