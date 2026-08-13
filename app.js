@@ -2243,8 +2243,53 @@ function renderDivYTD() {
   if (divCountEl) divCountEl.textContent = label;
 }
 
+// v64s: lembrete de backup — os dados só existem neste dispositivo
+const BACKUP_REMINDER_DAYS = 30;
+const BACKUP_SNOOZE_DAYS = 7;
+function hideBackupReminder() {
+  const el = document.getElementById("backupReminderCard");
+  if (el) el.style.display = "none";
+}
+function applyBackupReminder() {
+  const el = document.getElementById("backupReminderCard");
+  const sub = document.getElementById("backupReminderSub");
+  if (!el) return;
+  // sem activos ainda (primeiro arranque) não faz sentido pedir backup de nada
+  const empty = (!state.assets || state.assets.length === 0) && (!state.liabilities || state.liabilities.length === 0);
+  if (empty) { el.style.display = "none"; return; }
+  const s = state.settings || {};
+  const now = Date.now();
+  const snoozedUntil = s.backupReminderSnoozedUntil ? new Date(s.backupReminderSnoozedUntil).getTime() : 0;
+  if (snoozedUntil > now) { el.style.display = "none"; return; }
+  const last = s.lastJsonExport ? new Date(s.lastJsonExport).getTime() : null;
+  const daysSince = last ? Math.floor((now - last) / 86400000) : null;
+  if (last === null) {
+    if (sub) sub.textContent = "Ainda não fizeste nenhum backup. Os teus dados vivem só neste telemóvel — sem exportar, um telemóvel novo ou uma limpeza do Safari perdem tudo.";
+    el.style.display = "";
+  } else if (daysSince >= BACKUP_REMINDER_DAYS) {
+    if (sub) sub.textContent = `Já lá vão ${daysSince} dias desde o último backup. Demora 2 segundos — vale a pena.`;
+    el.style.display = "";
+  } else {
+    el.style.display = "none";
+  }
+}
+function wireBackupReminder() {
+  const btnExport = document.getElementById("btnBackupReminderExport");
+  const btnSnooze = document.getElementById("btnBackupReminderSnooze");
+  if (btnExport) btnExport.addEventListener("click", exportJSON);
+  if (btnSnooze) btnSnooze.addEventListener("click", () => {
+    if (!state.settings) state.settings = {};
+    const d = new Date(Date.now() + BACKUP_SNOOZE_DAYS * 86400000);
+    state.settings.backupReminderSnoozedUntil = d.toISOString();
+    saveState();
+    hideBackupReminder();
+    toast(`Ok, lembro-te outra vez daqui a ${BACKUP_SNOOZE_DAYS} dias.`);
+  });
+}
+
 function renderDashboard() {
   applyDashboardEmptyState();
+  applyBackupReminder();
   // v18: usar render cache — calcTotals/calcPortfolioYield/calcTWR/calcPortfolioRealMetrics
   // calculados UMA vez por ciclo de render, partilhados por todas as sub-funções.
   const rc = getRenderCache();
@@ -11391,6 +11436,11 @@ function exportJSON() {
       if (a.parentNode) a.parentNode.removeChild(a);
     }, 1500);
     toast(`Backup exportado (${(json.length / 1024 / 1024).toFixed(1)} MB).`);
+    // v64s: guarda a data do último export para o lembrete de backup no Dashboard
+    if (!state.settings) state.settings = {};
+    state.settings.lastJsonExport = new Date().toISOString();
+    saveState();
+    hideBackupReminder();
   } catch (err) {
     console.error("[exportJSON]", err);
     toast("Erro ao exportar: " + (err && err.message ? err.message : "desconhecido"));
@@ -11596,6 +11646,13 @@ function wireSidebar() {
   document.querySelectorAll(".sidenavbtn[data-view]").forEach(b => {
     b.addEventListener("click", () => { setView(b.dataset.view); closeSidebar(); });
   });
+  // v64s: acções rápidas — a sidebar deixou de ser só um duplicado do rodapé
+  // agora que o rodapé voltou (v64p); estas duas não têm atalho de um toque
+  // em lado nenhum, ficavam sempre a 2-3 toques dentro de Definições/Dashboard.
+  const exportBtn = document.getElementById("sideBtnExportJSON");
+  const snapshotBtn = document.getElementById("sideBtnSnapshot");
+  if (exportBtn) exportBtn.addEventListener("click", () => { exportJSON(); closeSidebar(); });
+  if (snapshotBtn) snapshotBtn.addEventListener("click", () => { snapshotMonth(); closeSidebar(); });
 }
 
 // v64j: Modo Simples/Avançado — Parte 1 da simplificação pedida
@@ -11809,6 +11866,7 @@ function wire() {
   wireDashboardEmptyState();
   wireItemModalCollapsibles();
   wireDashSecondaryToggle();
+  wireBackupReminder();
 
   // Sidebar (v64f)
   wireSidebar();
@@ -11827,18 +11885,10 @@ function wire() {
     renderCashflow();
   });
 
-  // Import CSV
-  $("fileInput").addEventListener("change", () => { $("btnImport").disabled = !($("fileInput").files && $("fileInput").files.length); });
-  $("btnImport").addEventListener("click", async () => {
-    const f = $("fileInput").files && $("fileInput").files[0];
-    if (!f) return;
-    try {
-      const text = await fileToText(f);
-      const rows = csvToObjects(text);
-      importRows(rows);
-    } catch (e) { toast("Falha no import: " + (e && e.message ? e.message : String(e))); }
-  });
-  $("btnTemplate").addEventListener("click", downloadTemplate);
+  // v64s: bloco morto removido — "fileInput"/"btnImport"/"btnTemplate" já não
+  // existem no HTML desde que este ecrã de import foi fundido no Balanço
+  // (ver nota antiga "import merged into cashflow"). O binding nunca crashava
+  // graças ao NOOP_EL de segurança do $(), mas também nunca fazia nada.
 
   // Importar corretoras (multi-ficheiro / multi-ano)
   const brokerFilesInput = document.getElementById("brokerFiles");
@@ -11886,8 +11936,13 @@ function wire() {
   if (btnClearBrokerImports) btnClearBrokerImports.addEventListener("click", clearBrokerImports);
 
   // Importar extracto do banco (universal: CSV, XLSX, PDF)
-  const bankFileInput = document.getElementById("bankImportFile") || document.getElementById("bankFile");
-  const btnImportBank = document.getElementById("btnImportBankCsv") || document.getElementById("btnImportBank");
+  // v64s: "|| document.getElementById(\"bankFile\")" / "bankCsvFile" removidos —
+  // são IDs antigos que já não existem no HTML; como getElementById nunca
+  // devolve null aqui por causa do "||", nunca chegavam a ser avaliados de
+  // qualquer forma. Os IDs actuais (bankImportFile/btnImportBankCsv) já
+  // cobrem o caminho real.
+  const bankFileInput = document.getElementById("bankImportFile");
+  const btnImportBank = document.getElementById("btnImportBankCsv");
   if (bankFileInput && btnImportBank) {
     bankFileInput.addEventListener("change", () => {
       btnImportBank.disabled = !bankFileInput.files?.length;
@@ -11912,30 +11967,12 @@ function wire() {
     });
   }
 
-  // Bank CSV import (legacy - kept for Import tab)
-  (function bindBankCsvImport() {
-    const input = $("bankImportFile") || $("bankCsvFile"), btn = $("btnImportBankCsv"), nameEl = $("bankCsvName");
-    if (!input || !btn) return;
-    if (nameEl && nameEl.textContent !== undefined) nameEl.textContent = "";
-    btn.disabled = true;
-    input.addEventListener("change", () => {
-      bankCsvSelectedFile = (input.files && input.files[0]) ? input.files[0] : null;
-      if (nameEl && nameEl.textContent !== undefined) nameEl.textContent = bankCsvSelectedFile ? bankCsvSelectedFile.name : "";
-      btn.disabled = !bankCsvSelectedFile;
-    });
-    btn.addEventListener("click", async e => {
-      e.preventDefault(); e.stopPropagation();
-      try {
-        const f = bankCsvSelectedFile || (input.files && input.files[0]) || null;
-        if (!f) { toast("Escolhe primeiro o ficheiro CSV do banco."); return; }
-        await importBankMovementsCsv(f);
-      } catch (err) {
-        showBankResult("error", `Erro na importação: ${escapeHtml(err && err.message ? err.message : String(err))}`);
-        toast("Falhou a importação do ficheiro do banco.");
-        console.error(err);
-      }
-    });
-  })();
+  // v64s: bloco "legacy" removido — estava ligado ao MESMO botão
+  // (btnImportBankCsv/bankImportFile) que o bloco "Importar extracto do
+  // banco" logo acima, fazendo CADA import bancário correr duas vezes por
+  // dois caminhos diferentes (importBankFile E importBankMovementsCsv),
+  // com risco real de duplicar movimentos importados. O bloco acima
+  // (importBankFile, universal CSV/XLSX/PDF) é o caminho actual e correcto.
 
   // JSON backup
   $("btnExportJSON").addEventListener("click", exportJSON);
