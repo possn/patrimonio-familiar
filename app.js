@@ -9604,6 +9604,13 @@ async function importBankFile(file) {
   let parsed = [];
   let bankFmt = "generic";
   let bankLabel = name.endsWith(".pdf") ? "Santander PDF" : "Genérico";
+  // v64y: declarada aqui (nível da função), não dentro do "if (name.endsWith('.pdf'))"
+  // — antes disso, "const santanderText" só existia dentro desse bloco, mas era
+  // usada outra vez mais abaixo, num bloco de verificação separado que só corre
+  // com extractos grandes/suspeitos (>320 movimentos). Nesse caso a variável já
+  // não existia -> "Can't find variable: santanderText", sempre que o extracto
+  // fosse grande o suficiente para disparar essa segunda verificação.
+  let santanderText = "";
 
   function tryParser(label, fn) {
     if (parsed.length) return;
@@ -9630,7 +9637,7 @@ async function importBankFile(file) {
     bankLabel = (bankFmt === "generic" && name.endsWith(".pdf")) ? "Santander PDF" : (bankNames0[bankFmt] || (name.endsWith(".pdf") ? "Santander PDF" : "Genérico"));
 
     const looksLikeSantanderPdf = /movimentos da sua conta/i.test(text) || /saldo dispon[ií]vel/i.test(text) || bankFmt === "santander";
-    const santanderText = looksLikeSantanderPdf ? prepareSantanderTextForParse(text || "") : (text || "");
+    santanderText = looksLikeSantanderPdf ? prepareSantanderTextForParse(text || "") : (text || "");
 
     if (looksLikeSantanderPdf) {
       try {
