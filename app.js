@@ -171,7 +171,12 @@ Na app, o rendimento base projectado da carteira é calculado automaticamente co
 • Juros de PPR e fundos<br><br>
 A app calcula dois valores:<br>
 • <b>Teórico</b>: baseado nos yields que introduziste<br>
-• <b>Real</b>: baseado nos dividendos que registaste (mais preciso)`
+• <b>Real</b>: baseado nos dividendos que registaste (mais preciso)<br><br>
+<b>Onde vês isto na app</b> — é o mesmo número, mostrado de ângulos diferentes:<br>
+• Esta barra e o cartão "Rend. passivo/mês": o total actual, todas as fontes<br>
+• Cartão "Objetivo de rendimento": o mesmo total, comparado com a tua meta mensal<br>
+• Separador <b>Dividendos</b>: só a fatia de acções/ETFs, com histórico e detalhe por posição<br><br>
+Não são números diferentes — é o mesmo rendimento, visto no todo (aqui) ou em detalhe (Dividendos).`
   },
   fire: {
     title: "O que é FIRE?",
@@ -6286,6 +6291,9 @@ function renderCompoundPanel() {
             <div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase">P&L realizado</div>
             <div style="font-size:13px;font-weight:900;color:${rm.totalRealizedPnL>=0?"#059669":"#dc2626"}">${rm.totalRealizedPnL>=0?"+":""}${fmtEUR(rm.totalRealizedPnL)}</div>
           </div>
+        </div>
+        <div style="font-size:10.5px;color:var(--muted);margin-top:6px;line-height:1.4">
+          <b>Retorno real</b> = taxa anualizada (TWR) já obtida · <b>P&L realizado</b> = ganho já embolsado em vendas (€, não %) · o resultado abaixo é uma <b>simulação</b> a partir destes números, não mais um valor real.
         </div>` : "";
       note.innerHTML = `
         <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">
