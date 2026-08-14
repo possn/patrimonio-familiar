@@ -6798,7 +6798,12 @@ function renderFire() {
 
   const exp0 = outM * 12;
   const totals = calcTotals();
-  const passiveAnnual = totals.passiveAnnual;
+  // v64za: FIRE usava totals.passiveAnnual (sempre a versão "teórica", baseada
+  // nos yields introduzidos) em vez de getDisplayedPassiveAnnual() (prefere o
+  // "real", baseado nos dividendos registados, quando existe — a mesma lógica
+  // que a barra fixa e o Objetivo de rendimento já usam). Resultado: dois
+  // números de "rendimento passivo" diferentes na mesma app, sem explicação.
+  const passiveAnnual = getDisplayedPassiveAnnual(totals);
   const passiveYieldRate = cap0 > 0 ? passiveAnnual / cap0 : 0;
 
   // Update KPIs
@@ -13383,7 +13388,7 @@ function exportPortfolioXLSX() {
     { Métrica:"Ativos Total", Valor:t.assetsTotal },
     { Métrica:"Passivos Total", Valor:t.liabsTotal },
     { Métrica:"Património Líquido", Valor:t.net },
-    { Métrica:"Rendimento Passivo Anual", Valor:t.passiveAnnual },
+    { Métrica:"Rendimento Passivo Anual", Valor:getDisplayedPassiveAnnual(t) },
     { Métrica:"Data Exportação", Valor:isoToday() }
   ]), "Resumo");
   XLSX.writeFile(wb, `patrimonio_${isoToday()}.xlsx`);
@@ -14136,7 +14141,7 @@ function renderPortfolioQuality(rc) {
   }
   const last6 = [...byMonth.keys()].sort().slice(-6);
   const avgOut = last6.length ? last6.reduce((s, k) => s + byMonth.get(k).out, 0) / last6.length : 0;
-  const coverage = avgOut > 0 ? t.passiveAnnual / (avgOut * 12) * 100 : 0;
+  const coverage = avgOut > 0 ? getDisplayedPassiveAnnual(t) / (avgOut * 12) * 100 : 0;
 
   if (card) card.style.display = "";
   el.innerHTML = `
@@ -14684,7 +14689,7 @@ function renderDrawdownPanel() {
   const infEl = document.getElementById("drawdownInflation");
   const yrEl  = document.getElementById("drawdownYears");
 
-  const withdrawal  = parseNum((wdEl  || {}).value) || t.passiveAnnual || 24000;
+  const withdrawal  = parseNum((wdEl  || {}).value) || getDisplayedPassiveAnnual(t) || 24000;
   const returnRate  = parseNum((retEl || {}).value) || 5;
   const inflationRate = parseNum((infEl || {}).value) || 2.5;
   const years = parseInt((yrEl || {}).value || "40");
@@ -14843,9 +14848,9 @@ BALANÇO GLOBAL
   Património líquido: ${fmtEUR(t.net)}
 
 RENDIMENTO PASSIVO
-  Anual estimado:    ${fmtEUR(t.passiveAnnual)}
-  Mensal estimado:   ${fmtEUR(t.passiveAnnual/12)}
-  Rendimento base:   ${fmt(t.assetsTotal>0?t.passiveAnnual/t.assetsTotal*100:0,2)}%
+  Anual estimado:    ${fmtEUR(getDisplayedPassiveAnnual(t))}
+  Mensal estimado:   ${fmtEUR(getDisplayedPassiveAnnual(t)/12)}
+  Rendimento base:   ${fmt(t.assetsTotal>0?getDisplayedPassiveAnnual(t)/t.assetsTotal*100:0,2)}%
 
 DISTRIBUIÇÃO POR CLASSE
   ${classBreakdown}
@@ -16466,8 +16471,8 @@ function exportAnnualReport() {
     "═══════════════════════════════════════",
     "RENDIMENTO & RETORNO",
     "═══════════════════════════════════════",
-    `Rendimento passivo anual: ${fmtEUR(t.passiveAnnual)}`,
-    `Rendimento mensal:        ${fmtEUR(t.passiveAnnual/12)}`,
+    `Rendimento passivo anual: ${fmtEUR(getDisplayedPassiveAnnual(t))}`,
+    `Rendimento mensal:        ${fmtEUR(getDisplayedPassiveAnnual(t)/12)}`,
     `Rendimento base projectado: ${fmtPct(py.weightedYield)}`,
     `Retorno total:          ${fmtPct(py.totalReturnBlended)}`,
     twr ? `TWR anualizado:           ${fmtPct(twr.annualised)} (${twr.years} anos)` : "",
