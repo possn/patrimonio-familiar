@@ -2185,7 +2185,7 @@ function renderSearchResults(q) {
     }
   }
   // Transactions
-  for (const t of state.transactions) {
+  for (const t of getAllCashflowTransactions()) {
     if (`${t.category} ${t.notes || ""}`.toLowerCase().includes(ql)) {
       results.push({ type: t.type === "in" ? "Entrada" : "Saída", label: t.category, sub: `${t.date} · ${fmtEUR(parseNum(t.amount))}`, action: () => { setView("cashflow"); openTxModal(t.id); toggleSearch(); } });
     }
@@ -2360,7 +2360,7 @@ function renderDashboard() {
       autEl.style.color = rm0b.totalRealizedPnL >= 0 ? "#059669" : "#dc2626";
     } else {
       const byMonth = new Map();
-      for (const tx of (state.transactions||[])) {
+      for (const tx of getAllCashflowTransactions()) {
         if (isInterAccountTransfer(tx)) continue;
         const d = (tx.date||"").slice(0,7); if (!d) continue;
         const cur = byMonth.get(d)||{out:0}; if (tx.type==="out") cur.out += parseNum(tx.amount);
@@ -3083,6 +3083,17 @@ function isBankLedgerTx(t) {
 
 function getBalanceBaseTransactions() {
   return ensureBankTransactionsArray().filter(Boolean);
+}
+
+// v64z: state.transactions (movimentos gerados por corretoras, ex: dividendos)
+// e state.bankTransactions (extractos bancários + "+ Movimento" manual) são
+// DUAS fontes separadas. FIRE, Saúde Financeira, Qualidade, Análise IA, fase
+// FIRE, Dashboard e pesquisa global só liam a primeira — por isso mostravam
+// despesas/rendimento a 0€ mesmo com um extracto bancário real importado.
+// Esta função junta as duas; usar em vez de "state.transactions" sempre que
+// o objectivo for ver TODOS os movimentos de cashflow, não só os de corretora.
+function getAllCashflowTransactions() {
+  return [...(state.transactions || []), ...(state.bankTransactions || [])].filter(Boolean);
 }
 
 function getExpandedBalanceTransactions() {
@@ -6230,7 +6241,7 @@ function buildPortfolioEngineSummary(py = null, extraTiles = [], footnote = "") 
 function calcAvgMonthlySavings(months = 6) {
   const now = new Date();
   const byMonth = new Map();
-  for (const t of state.transactions) {
+  for (const t of getAllCashflowTransactions()) {
     if (isInterAccountTransfer(t)) continue;
     const d = String(t.date || "").slice(0, 7);
     if (!d) continue;
@@ -6761,7 +6772,7 @@ function renderFire() {
 
   // Cashflow from transactions
   const byMonth = new Map();
-  for (const t of (state.transactions||[])) {
+  for (const t of getAllCashflowTransactions()) {
     if (isInterAccountTransfer(t)) continue;
     const d = t.date||""; if (d.length < 7) continue;
     const ym = d.slice(0,7);
@@ -13620,7 +13631,7 @@ function renderHealthRatios(rc) {
 
   // Fluxo mensal médio (últimos 6 meses)
   const byMonth = new Map();
-  for (const tx of state.transactions) {
+  for (const tx of getAllCashflowTransactions()) {
     if (isInterAccountTransfer(tx)) continue;
     const d = (tx.date || "").slice(0, 7); if (!d) continue;
     const cur = byMonth.get(d) || { in: 0, out: 0 };
@@ -14116,7 +14127,7 @@ function renderPortfolioQuality(rc) {
 
   // Yield coverage — rendimento passivo cobre despesas?
   const byMonth = new Map();
-  for (const tx of state.transactions) {
+  for (const tx of getAllCashflowTransactions()) {
     if (isInterAccountTransfer(tx)) continue;
     const d = (tx.date || "").slice(0, 7); if (!d) continue;
     const cur = byMonth.get(d) || { out: 0 };
@@ -14778,7 +14789,7 @@ function buildPortfolioContext() {
 
   // Cashflow últimos 3 meses
   const byMonth = new Map();
-  for (const tx of state.transactions) {
+  for (const tx of getAllCashflowTransactions()) {
     if (isInterAccountTransfer(tx)) continue;
     const d = (tx.date||"").slice(0,7); if (!d) continue;
     const cur = byMonth.get(d)||{in:0,out:0};
@@ -15822,7 +15833,7 @@ function detectFIREPhase() {
   // Try to estimate FIRE phase from current data
   const t = calcTotals();
   const byMonth = new Map();
-  for (const tx of state.transactions) {
+  for (const tx of getAllCashflowTransactions()) {
     if (isInterAccountTransfer(tx)) continue;
     const d = (tx.date||"").slice(0,7); if (!d) continue;
     const cur = byMonth.get(d)||{out:0}; if (tx.type==="out") cur.out += parseNum(tx.amount);
